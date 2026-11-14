@@ -41,7 +41,11 @@ import { dispatchInlineRichFormat } from '../viewport/InlineTextEditor';
 
 const SWATCHES = ['#0f172a', '#1d4ed8', '#dc2626', '#15803d', '#9333ea', '#facc15', '#ffffff'];
 
-export function RightInspector() {
+export interface RightInspectorProps {
+  variant?: 'desktop' | 'sheet';
+}
+
+export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}) {
   const pages = useEditorStore((s) => s.pages);
   const activePageId = useEditorStore((s) => s.activePageId);
   const elements = useEditorStore((s) => s.elements);
@@ -127,6 +131,18 @@ export function RightInspector() {
   };
 
   if (!activePage) {
+    if (variant === 'sheet') {
+      return (
+        <div className="flex w-full flex-col bg-white p-4 dark:bg-slate-950">
+          <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+            Inspector
+          </div>
+          <p className="mt-4 text-xs text-slate-500 dark:text-slate-400">
+            Open a PDF document to inspect page metrics and edit element properties.
+          </p>
+        </div>
+      );
+    }
     return (
       <aside className="hidden w-72 shrink-0 flex-col border-l border-slate-200 bg-white p-4 dark:border-slate-800 dark:bg-slate-950 lg:flex">
         <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
@@ -152,11 +168,21 @@ export function RightInspector() {
         .map((e) => (e.kind === 'image-replacement' ? e.originalImageId : '')),
     );
 
+    const Wrapper = variant === 'sheet' ? 'div' : 'aside';
+    const wrapperProps =
+      variant === 'sheet'
+        ? {
+            'data-testid': 'mobile-inspector-content',
+            className: 'flex w-full flex-col bg-white dark:bg-slate-950',
+          }
+        : {
+            'data-testid': 'right-inspector',
+            className:
+              'hidden w-72 shrink-0 flex-col overflow-y-auto border-l border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950 lg:flex',
+          };
+
     return (
-      <aside
-        data-testid="right-inspector"
-        className="hidden w-72 shrink-0 flex-col overflow-y-auto border-l border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950 lg:flex"
-      >
+      <Wrapper {...wrapperProps}>
         <div className="border-b border-slate-200 px-4 py-3 dark:border-slate-800">
           <div className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
             Page Properties
@@ -398,7 +424,7 @@ export function RightInspector() {
             </>
           )}
         </div>
-      </aside>
+      </Wrapper>
     );
   }
 
@@ -408,11 +434,21 @@ export function RightInspector() {
     selectedEl.kind === 'image-replacement' ||
     selectedEl.kind === 'signature';
 
+  const SelectedWrapper = variant === 'sheet' ? 'div' : 'aside';
+  const selectedWrapperProps =
+    variant === 'sheet'
+      ? {
+          'data-testid': 'mobile-inspector-content',
+          className: 'flex w-full flex-col bg-white dark:bg-slate-950',
+        }
+      : {
+          'data-testid': 'right-inspector',
+          className:
+            'hidden w-72 shrink-0 flex-col overflow-y-auto border-l border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950 lg:flex',
+        };
+
   return (
-    <aside
-      data-testid="right-inspector"
-      className="hidden w-72 shrink-0 flex-col overflow-y-auto border-l border-slate-200 bg-white dark:border-slate-800 dark:bg-slate-950 lg:flex"
-    >
+    <SelectedWrapper {...selectedWrapperProps}>
       <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-800">
         <div>
           <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
@@ -1243,6 +1279,6 @@ export function RightInspector() {
           )}
         </div>
       </div>
-    </aside>
+    </SelectedWrapper>
   );
 }

@@ -518,7 +518,10 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   };
 
   const handleLayerPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
+    const storeState = useEditorStore.getState();
+    if (e.button !== 0 || !e.isPrimary || storeState.activeTouchCount >= 2 || storeState.isPinching) {
+      return;
+    }
     setActivePage(page.id);
 
     if (pendingSignaturePlacement) {
@@ -547,6 +550,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       setDraftStrokePoints(pts);
 
       const onMove = (me: PointerEvent) => {
+        if (useEditorStore.getState().isPinching) return;
         pts.push(getBasePointFromEvent(me.clientX, me.clientY));
         setDraftStrokePoints([...pts]);
       };
@@ -601,6 +605,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       let latestRect: RectBox = { x: startPt.x, y: startPt.y, width: 1, height: 1 };
 
       const onMove = (me: PointerEvent) => {
+        if (useEditorStore.getState().isPinching) return;
         const curPt = getBasePointFromEvent(me.clientX, me.clientY);
         latestRect = {
           x: Math.min(startPt.x, curPt.x),
@@ -1183,6 +1188,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
           if (hoverBasePoint) setHoverBasePoint(null);
         }}
         onClick={(e) => {
+          if (useEditorStore.getState().isPinching) return;
           if (pendingSignaturePlacement) return;
           if (toolMode !== 'text') return;
           const pt = getBasePointFromEvent(e.clientX, e.clientY);
@@ -1213,6 +1219,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
         style={{
           width: `${displayDims.width}px`,
           height: `${displayDims.height}px`,
+          touchAction: toolMode === 'draw' || toolMode === 'highlight' ? 'none' : undefined,
         }}
         className={`relative overflow-hidden bg-white shadow-xl ring-1 ring-slate-300 dark:ring-slate-700 ${cursorClass}`}
       >

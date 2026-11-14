@@ -18,6 +18,7 @@ import {
 } from '@/engine/documentController';
 import { generateSamplePdfBytes } from '@/engine/samplePdf';
 import { useEditorStore } from '@/store/useEditorStore';
+import { BrandLogo } from '../BrandLogo';
 import { PageCanvas } from './PageCanvas';
 
 export interface DocumentViewportHandle {
@@ -34,9 +35,18 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
   const zoomMode = useEditorStore((s) => s.zoomMode);
   const setZoom = useEditorStore((s) => s.setZoom);
   const setActivePage = useEditorStore((s) => s.setActivePage);
+  const setPinchState = useEditorStore((s) => s.setPinchState);
+  const pendingSignaturePlacement = useEditorStore((s) => s.pendingSignaturePlacement);
+  const cancelPendingSignaturePlacement = useEditorStore((s) => s.cancelPendingSignaturePlacement);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const touchPointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+  const pinchSessionRef = useRef<{
+    lastDist: number;
+    lastMidX: number;
+    lastMidY: number;
+  } | null>(null);
   const [dropActive, setDropActive] = useState(false);
 
   const recalculateAutoZoom = useCallback(() => {
@@ -113,6 +123,144 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
     return () => el.removeEventListener('wheel', onWheel);
   }, [setZoom]);
 
+  // Multi-touch Pinch-to-Zoom & Two-Finger Pan
+  useEffect(() => {
+    const el = containerRef.current;
+    if (!el) return;
+
+    const applyPinchGeometry = (
+      p1: { x: number; y: number },
+      p2: { x: number; y: number },
+    ) => {
+      const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      const midX = (p1.x + p2.x) / 2;
+      const midY = (p1.y + p2.y) / 2;
+      const session = pinchSessionRef.current;
+      if (!session || session.lastDist < 8 || dist < 8) {
+        pinchSessionRef.current = { lastDist: dist, lastMidX: midX, lastMidY: midY };
+        return;
+      }
+
+      const ratio = dist / session.lastDist;
+      const prevZoom = useEditorStore.getState().zoom;
+      const nextZoom = Math.min(4, Math.max(0.25, Number((prevZoom * ratio).toFixed(3))));
+      const scaleChange = nextZoom / prevZoom;
+
+      const rect = el.getBoundingClientRect();
+      const relX = midX - rect.left;
+      const relY = midY - rect.top;
+      const contentX = el.scrollLeft + relX;
+      const contentY = el.scrollTop + relY;
+      const panDx = midX - session.lastMidX;
+      const panDy = midY - session.lastMidY;
+
+      setZoom(nextZoom, 'custom');
+      requestAnimationFrame(() => {
+        el.scrollLeft = Math.max(0, contentX * scaleChange - relX - panDx);
+        el.scrollTop = Math.max(0, contentY * scaleChange - relY - panDy);
+      });
+
+      pinchSessionRef.current = { lastDist: dist, lastMidX: midX, lastMidY: midY };
+    };
+
+    const endTouchPointer = (pointerId: number) => {
+      if (!touchPointersRef.current.delete(pointerId)) return;
+      const remaining = touchPointersRef.current.size;
+      if (remaining < 2) {
+        pinchSessionRef.current = null;
+        el.style.touchAction = 'pan-x pan-y';
+        setPinchState(false, remaining);
+      } else {
+        setPinchState(true, remaining);
+      }
+    };
+
+    const onPointerDown = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return;
+      touchPointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      const count = touchPointersRef.current.size;
+      if (count >= 2) {
+        el.style.touchAction = 'none';
+        setPinchState(true, count);
+        const pts = Array.from(touchPointersRef.current.values());
+        pinchSessionRef.current = {
+          lastDist: Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y),
+          lastMidX: (pts[0].x + pts[1].x) / 2,
+          lastMidY: (pts[0].y + pts[1].y) / 2,
+        };
+      } else {
+        setPinchState(false, count);
+      }
+    };
+
+    const onPointerMove = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch' || !touchPointersRef.current.has(e.pointerId)) return;
+      touchPointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
+      if (touchPointersRef.current.size >= 2) {
+        const pts = Array.from(touchPointersRef.current.values());
+        applyPinchGeometry(pts[0], pts[1]);
+      }
+    };
+
+    const onPointerEnd = (e: PointerEvent) => {
+      if (e.pointerType !== 'touch') return;
+      endTouchPointer(e.pointerId);
+    };
+
+    // Fallback native TouchEvent pinch guard (prevents iOS/browser page-level pinch & handles synthetic TouchEvents)
+    const onTouchStart = (e: TouchEvent) => {
+      if (e.touches.length >= 2 && touchPointersRef.current.size < 2) {
+        setPinchState(true, e.touches.length);
+        const t0 = e.touches[0];
+        const t1 = e.touches[1];
+        pinchSessionRef.current = {
+          lastDist: Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY),
+          lastMidX: (t0.clientX + t1.clientX) / 2,
+          lastMidY: (t0.clientY + t1.clientY) / 2,
+        };
+      }
+    };
+
+    const onTouchMove = (e: TouchEvent) => {
+      if (e.touches.length >= 2) {
+        if (e.cancelable) e.preventDefault();
+        if (touchPointersRef.current.size < 2) {
+          applyPinchGeometry(
+            { x: e.touches[0].clientX, y: e.touches[0].clientY },
+            { x: e.touches[1].clientX, y: e.touches[1].clientY },
+          );
+        }
+      }
+    };
+
+    const onTouchEnd = (e: TouchEvent) => {
+      if (e.touches.length < 2 && touchPointersRef.current.size < 2) {
+        pinchSessionRef.current = null;
+        setPinchState(false, e.touches.length);
+      }
+    };
+
+    el.addEventListener('pointerdown', onPointerDown, true);
+    window.addEventListener('pointermove', onPointerMove, { passive: true });
+    window.addEventListener('pointerup', onPointerEnd);
+    window.addEventListener('pointercancel', onPointerEnd);
+    el.addEventListener('touchstart', onTouchStart, { passive: true });
+    el.addEventListener('touchmove', onTouchMove, { passive: false });
+    el.addEventListener('touchend', onTouchEnd, { passive: true });
+    el.addEventListener('touchcancel', onTouchEnd, { passive: true });
+
+    return () => {
+      el.removeEventListener('pointerdown', onPointerDown, true);
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', onPointerEnd);
+      window.removeEventListener('pointercancel', onPointerEnd);
+      el.removeEventListener('touchstart', onTouchStart);
+      el.removeEventListener('touchmove', onTouchMove);
+      el.removeEventListener('touchend', onTouchEnd);
+      el.removeEventListener('touchcancel', onTouchEnd);
+    };
+  }, [setZoom, setPinchState]);
+
   // Sync active page on scroll
   const handleScroll = () => {
     const el = containerRef.current;
@@ -174,28 +322,46 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
       onDragLeave={() => setDropActive(false)}
       onDrop={handleDrop}
       data-testid="document-viewport"
+      style={{ touchAction: 'pan-x pan-y' }}
       className="relative flex-1 overflow-auto bg-slate-200/80 dark:bg-slate-900"
     >
+      {pendingSignaturePlacement && pages.length > 0 && (
+        <div
+          data-testid="signature-placement-banner"
+          className="sticky top-2 z-40 mx-auto mt-2 flex w-fit max-w-[calc(100%-1.5rem)] items-center gap-2 rounded-full border border-blue-500/40 bg-slate-900/95 px-3.5 py-2 text-xs font-medium text-white shadow-xl backdrop-blur"
+        >
+          <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-sky-400" />
+          <span className="truncate">İmzayı yerleştirmek istediğiniz yere dokunun</span>
+          <button
+            type="button"
+            data-testid="banner-cancel-signature-btn"
+            onClick={cancelPendingSignaturePlacement}
+            className="shrink-0 rounded-full bg-white/15 px-2.5 py-1 text-[11px] font-semibold text-sky-200 hover:bg-white/25"
+          >
+            İptal
+          </button>
+        </div>
+      )}
+
       {pages.length === 0 ? (
-        <div className="flex h-full w-full items-center justify-center p-6">
-          <div className="w-full max-w-lg rounded-2xl border-2 border-dashed border-slate-300 bg-white/90 p-10 text-center shadow-xl dark:border-slate-700 dark:bg-slate-950/90">
-            <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl bg-blue-600/15 text-blue-500">
-              <FileUp className="h-7 w-7" />
+        <div className="flex h-full w-full items-center justify-center p-4 sm:p-6">
+          <div className="w-full max-w-lg rounded-2xl border-2 border-dashed border-slate-300 bg-white/90 p-6 text-center shadow-xl dark:border-slate-700 dark:bg-slate-950/90 sm:p-10">
+            <div className="mx-auto mb-3 flex items-center justify-center">
+              <BrandLogo variant="stacked" className="h-32 w-auto sm:h-36" decorative />
             </div>
             <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
               Drop a PDF here to start editing
             </h1>
             <p className="mt-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
-              100% client-side WebAssembly architecture. Edit existing PDF text in-place, move or
-              replace embedded images, sign documents, and merge or split pages privately in your
-              browser.
+              gullacpdf (GüllaçPdf) runs 100% client-side with WebAssembly. Edit existing PDF text
+              in-place, manage images, place signatures/parafs, and organize pages privately.
             </p>
             <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
                 data-testid="welcome-open-btn"
-                className="inline-flex items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-500"
+                className="inline-flex min-h-[44px] items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-500"
               >
                 <FileUp className="h-4 w-4" />
                 Open PDF File
@@ -204,7 +370,7 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
                 type="button"
                 onClick={() => void handleLoadSample()}
                 data-testid="welcome-sample-btn"
-                className="inline-flex items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                className="inline-flex min-h-[44px] items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
               >
                 <Sparkles className="h-4 w-4 text-amber-500" />
                 Load Sample PDF

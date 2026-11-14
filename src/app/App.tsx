@@ -1,6 +1,11 @@
 import { useEffect, useRef } from 'react';
 import { AlertCircle, Loader2, X } from 'lucide-react';
 import { RightInspector } from '@/components/inspector/RightInspector';
+import { MobileBottomDock } from '@/components/mobile/MobileBottomDock';
+import { MobileExportSheet } from '@/components/mobile/MobileExportSheet';
+import { MobileInspectorSheet } from '@/components/mobile/MobileInspectorSheet';
+import { MobilePagesSheet } from '@/components/mobile/MobilePagesSheet';
+import { MobileToolsSheet } from '@/components/mobile/MobileToolsSheet';
 import { PageNumberingModal } from '@/components/modals/PageNumberingModal';
 import { PageOrganizeModal } from '@/components/modals/PageOrganizeModal';
 import { PasswordModal } from '@/components/modals/PasswordModal';
@@ -15,6 +20,7 @@ import {
 import { exportCurrentPdf } from '@/engine/documentController';
 import { pdfjsService } from '@/engine/pdfjsService';
 import { wasmWorkerClient } from '@/engine/wasmWorkerClient';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { useEditorStore } from '@/store/useEditorStore';
 import { blobRegistry } from '@/utils/blobRegistry';
 import { loadUserCustomFonts } from '@/utils/customFontStorage';
@@ -25,8 +31,40 @@ export default function App() {
   const loadingMessage = useEditorStore((s) => s.loadingMessage);
   const errorBanner = useEditorStore((s) => s.errorBanner);
   const setErrorBanner = useEditorStore((s) => s.setErrorBanner);
+  const mobileSheet = useEditorStore((s) => s.mobileSheet);
+  const setMobileSheet = useEditorStore((s) => s.setMobileSheet);
+  const setMobileInspectorSnap = useEditorStore((s) => s.setMobileInspectorSnap);
+  const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
+  const isDesktopLg = useMediaQuery('(min-width: 1024px)');
+  const prevSelectionLenRef = useRef(0);
 
   const viewportRef = useRef<DocumentViewportHandle | null>(null);
+
+  // Auto-surface collapsed contextual inspector bar when selecting an element on mobile/tablet
+  useEffect(() => {
+    const prevLen = prevSelectionLenRef.current;
+    const nextLen = selectedElementIds.length;
+    prevSelectionLenRef.current = nextLen;
+
+    if (isDesktopLg) {
+      if (useEditorStore.getState().mobileSheet !== 'none') {
+        setMobileSheet('none');
+      }
+      return;
+    }
+
+    if (nextLen > 0 && prevLen === 0) {
+      const curSheet = useEditorStore.getState().mobileSheet;
+      if (curSheet === 'none' || curSheet === 'tools') {
+        setMobileInspectorSnap('collapsed');
+        setMobileSheet('inspector');
+      }
+    } else if (nextLen === 0 && prevLen > 0) {
+      if (useEditorStore.getState().mobileSheet === 'inspector') {
+        setMobileSheet('none');
+      }
+    }
+  }, [selectedElementIds, isDesktopLg, setMobileSheet, setMobileInspectorSnap]);
 
   // Sync Tailwind dark class
   useEffect(() => {
@@ -143,7 +181,7 @@ export default function App() {
   }, []);
 
   return (
-    <div className="flex h-screen w-screen flex-col overflow-hidden bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
+    <div className="flex h-dvh w-screen flex-col overflow-hidden overscroll-none bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       <TopToolbar />
 
       {errorBanner && (
@@ -171,8 +209,18 @@ export default function App() {
           onScrollToPage={(idx) => viewportRef.current?.scrollToPage(idx)}
         />
         <DocumentViewport ref={viewportRef} />
-        <RightInspector />
+        {isDesktopLg && <RightInspector variant="desktop" />}
       </div>
+
+      {!isDesktopLg && mobileSheet === 'inspector' && <MobileInspectorSheet />}
+      <MobileBottomDock />
+      {mobileSheet === 'pages' && (
+        <MobilePagesSheet
+          onScrollToPage={(idx) => viewportRef.current?.scrollToPage(idx)}
+        />
+      )}
+      {mobileSheet === 'tools' && <MobileToolsSheet />}
+      {mobileSheet === 'export' && <MobileExportSheet />}
 
       {/* Modals */}
       <PasswordModal />

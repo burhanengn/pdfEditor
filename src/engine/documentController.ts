@@ -256,6 +256,67 @@ export async function exportCurrentPdf(): Promise<void> {
   }
 }
 
+export function canUseWebSharePdf(): boolean {
+  if (typeof navigator === 'undefined' || typeof navigator.share !== 'function') {
+    return false;
+  }
+  if (typeof navigator.canShare !== 'function') {
+    return true;
+  }
+  try {
+    const probe = new File([new Uint8Array([0x25, 0x50, 0x44, 0x46])], 'probe.pdf', {
+      type: 'application/pdf',
+    });
+    return navigator.canShare({ files: [probe] });
+  } catch {
+    return false;
+  }
+}
+
+export async function shareCurrentPdf(): Promise<'shared' | 'downloaded' | 'cancelled'> {
+  const store = useEditorStore.getState();
+  if (store.pages.length === 0) return 'cancelled';
+  store.setLoading(true, 'Preparing PDF for share…');
+  store.setErrorBanner(null);
+
+  try {
+    const bytes = await compileCurrentDocumentBytes();
+    const baseName = store.documentName.replace(/\.pdf$/i, '') || 'document';
+    const filename = `${baseName}-edited.pdf`;
+    const copy = new Uint8Array(bytes.byteLength);
+    copy.set(bytes);
+    const pdfFile = new File([copy], filename, { type: 'application/pdf' });
+
+    if (
+      typeof navigator !== 'undefined' &&
+      typeof navigator.share === 'function' &&
+      (!navigator.canShare || navigator.canShare({ files: [pdfFile] }))
+    ) {
+      try {
+        await navigator.share({
+          title: filename,
+          text: `${filename} — gullacpdf`,
+          files: [pdfFile],
+        });
+        return 'shared';
+      } catch (shareErr) {
+        if (shareErr instanceof DOMException && shareErr.name === 'AbortError') {
+          return 'cancelled';
+        }
+        // Fallback to direct download if browser rejects share programmatically
+      }
+    }
+
+    triggerDownload(bytes, filename, 'application/pdf');
+    return 'downloaded';
+  } catch (err) {
+    store.setErrorBanner(err instanceof Error ? err.message : 'Failed to share PDF.');
+    return 'cancelled';
+  } finally {
+    useEditorStore.getState().setLoading(false, '');
+  }
+}
+
 export async function exportSplitDocuments(
   rangeExpression: string,
   mode: 'single-pdf' | 'split-zip-by-range' | 'split-zip-per-page',

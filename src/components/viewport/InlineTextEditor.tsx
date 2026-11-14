@@ -157,6 +157,43 @@ export function InlineTextEditor({
     return () => cancelAnimationFrame(raf);
   }, [beginTransaction]);
 
+  // Mobile virtual keyboard avoidance via visualViewport resize/scroll
+  useEffect(() => {
+    const vv = typeof window !== 'undefined' ? window.visualViewport : null;
+    if (!vv) return;
+
+    const ensureVisibleAboveKeyboard = () => {
+      const ed = editorRef.current;
+      if (!ed) return;
+      const rect = ed.getBoundingClientRect();
+      const visibleBottom = vv.offsetTop + vv.height - 20;
+      const visibleTop = vv.offsetTop + 60;
+      const scrollHost = ed.closest('[data-testid="document-viewport"]') as HTMLElement | null;
+
+      if (rect.bottom > visibleBottom) {
+        const delta = rect.bottom - visibleBottom;
+        if (scrollHost) {
+          scrollHost.scrollBy({ top: delta, behavior: 'smooth' });
+        } else {
+          ed.scrollIntoView({ block: 'center', behavior: 'smooth' });
+        }
+      } else if (rect.top < visibleTop) {
+        const delta = rect.top - visibleTop;
+        if (scrollHost) {
+          scrollHost.scrollBy({ top: delta, behavior: 'smooth' });
+        }
+      }
+    };
+
+    ensureVisibleAboveKeyboard();
+    vv.addEventListener('resize', ensureVisibleAboveKeyboard);
+    vv.addEventListener('scroll', ensureVisibleAboveKeyboard);
+    return () => {
+      vv.removeEventListener('resize', ensureVisibleAboveKeyboard);
+      vv.removeEventListener('scroll', ensureVisibleAboveKeyboard);
+    };
+  }, []);
+
   // Listen to Rich Format events (Superscript / Subscript / Inline Bold / Inline Italic) from Inspector
   useEffect(() => {
     const onRichFormat = (evt: Event) => {

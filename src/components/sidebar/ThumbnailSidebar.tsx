@@ -59,7 +59,7 @@ export function ThumbnailSidebar({ onScrollToPage }: ThumbnailSidebarProps) {
       }}
       onDragLeave={() => setFileDropActive(false)}
       onDrop={handleSidebarDrop}
-      className={`relative flex h-full w-56 shrink-0 flex-col border-r border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-950 ${
+      className={`relative hidden h-full w-56 shrink-0 flex-col border-r border-slate-200 bg-slate-50 dark:border-slate-800 dark:bg-slate-950 md:flex ${
         fileDropActive ? 'ring-2 ring-inset ring-blue-500' : ''
       }`}
     >

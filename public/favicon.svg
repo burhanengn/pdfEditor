@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="128" height="128" fill="none">
+  <defs>
+    <!-- Ana Ön Sayfa Gradyanı -->
+    <linearGradient id="gullac_front" x1="24" y1="20" x2="104" y2="112" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#3B82F6" />
+      <stop offset="55%" stop-color="#2563EB" />
+      <stop offset="100%" stop-color="#1D4ED8" />
+    </linearGradient>
+
+    <!-- Orta Katman (Yarı Saydam Cam/Güllac Yaprağı Efekti) -->
+    <linearGradient id="gullac_mid" x1="20" y1="32" x2="108" y2="96" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8" stop-opacity="0.85" />
+      <stop offset="100%" stop-color="#0284C7" stop-opacity="0.9" />
+    </linearGradient>
+
+    <!-- Arka Katman -->
+    <linearGradient id="gullac_back" x1="30" y1="16" x2="98" y2="88" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#93C5FD" stop-opacity="0.45" />
+      <stop offset="100%" stop-color="#3B82F6" stop-opacity="0.35" />
+    </linearGradient>
+
+    <!-- Sayfa Kıvrımı Vurgusu -->
+    <linearGradient id="gullac_fold" x1="76" y1="16" x2="100" y2="40" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#BAE6FD" />
+      <stop offset="100%" stop-color="#60A5FA" />
+    </linearGradient>
+  </defs>
+
+  <!-- 3. Katman (En Arka Yaprak - Hafif Sağa ve Yukarı Kaydırılmış) -->
+  <rect x="34" y="12" width="66" height="84" rx="14" transform="rotate(6 67 54)" fill="url(#gullac_back)" />
+
+  <!-- 2. Katman (Orta Yaprak - Hafif Sola Açılı) -->
+  <rect x="22" y="22" width="68" height="86" rx="14" transform="rotate(-5 56 65)" fill="url(#gullac_mid)" />
+
+  <!-- 1. Katman (Ana Ön Sayfa + Sağ Üst Kıvrımlı Kesim) -->
+  <path d="M38 22H76L98 44V98C98 105.732 91.732 112 84 112H38C30.268 112 24 105.732 24 98V36C24 28.268 30.268 22 38 22Z" fill="url(#gullac_front)" />
+
+  <!-- Sağ Üst Sayfa Kıvrımı (Dog-Ear) -->
+  <path d="M76 22V36C76 40.4183 79.5817 44 84 44H98L76 22Z" fill="url(#gullac_fold)" />
+
+  <!-- Soyut 'G' & Metin/Düzenleme İmleci Formu (Negatif Alan / Beyaz Vektör) -->
+  <path d="M66 56H54C47.3726 56 42 61.3726 42 68V76C42 82.6274 47.3726 88 54 88H68C73.5228 88 78 83.5228 78 78V72H61" stroke="#FFFFFF" stroke-width="6.5" stroke-linecap="round" stroke-linejoin="round" />
+
+  <!-- Aktif Seçim / Düzenleme Noktası (Bounding Box Tutamacı Vurgusu) -->
+  <circle cx="78" cy="60" r="4" fill="#38BDF8" />
+</svg>

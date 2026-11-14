@@ -63,6 +63,9 @@ export interface SignatureBatchScope {
   rangeExpr?: string;
 }
 
+export type MobileSheetTab = 'none' | 'pages' | 'tools' | 'inspector' | 'export';
+export type MobileInspectorSnap = 'collapsed' | 'half';
+
 interface EditorState {
   documentName: string;
   sourceDocs: Record<string, SourceDocument>;
@@ -102,6 +105,10 @@ interface EditorState {
   splitModalOpen: boolean;
   organizeModalOpen: boolean;
   pageNumberingModalOpen: boolean;
+  mobileSheet: MobileSheetTab;
+  mobileInspectorSnap: MobileInspectorSnap;
+  isPinching: boolean;
+  activeTouchCount: number;
 
   savedSignatures: SavedSignature[];
 
@@ -130,6 +137,9 @@ interface EditorState {
   setSplitModalOpen: (open: boolean) => void;
   setOrganizeModalOpen: (open: boolean) => void;
   setPageNumberingModalOpen: (open: boolean) => void;
+  setMobileSheet: (sheet: MobileSheetTab) => void;
+  setMobileInspectorSnap: (snap: MobileInspectorSnap) => void;
+  setPinchState: (isPinching: boolean, activeTouchCount?: number) => void;
   setPageNumbering: (config: PageNumberingConfig | null) => void;
 
   loadInitialDocument: (doc: SourceDocument, pages: PageMeta[]) => void;
@@ -426,6 +436,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   splitModalOpen: false,
   organizeModalOpen: false,
   pageNumberingModalOpen: false,
+  mobileSheet: 'none',
+  mobileInspectorSnap: 'collapsed',
+  isPinching: false,
+  activeTouchCount: 0,
 
   savedSignatures: [],
 
@@ -469,6 +483,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   setSplitModalOpen: (splitModalOpen) => set({ splitModalOpen }),
   setOrganizeModalOpen: (organizeModalOpen) => set({ organizeModalOpen }),
   setPageNumberingModalOpen: (pageNumberingModalOpen) => set({ pageNumberingModalOpen }),
+  setMobileSheet: (mobileSheet) => set({ mobileSheet }),
+  setMobileInspectorSnap: (mobileInspectorSnap) => set({ mobileInspectorSnap }),
+  setPinchState: (isPinching, activeTouchCount) =>
+    set((s) => ({
+      isPinching,
+      activeTouchCount: activeTouchCount !== undefined ? activeTouchCount : s.activeTouchCount,
+    })),
   setPageNumbering: (pageNumbering) => {
     const state = get();
     const snapshot = cloneSnapshot(state.pages, state.elements, state.pageNumbering);
@@ -1500,6 +1521,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       toolMode: 'select',
       selectedElementIds: [],
       editingTextElementId: null,
+      mobileSheet: 'none',
     }),
 
   cancelPendingSignaturePlacement: () => set({ pendingSignaturePlacement: null }),

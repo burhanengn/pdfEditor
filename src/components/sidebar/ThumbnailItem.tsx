@@ -11,6 +11,7 @@ interface ThumbnailItemProps {
   isActive: boolean;
   totalPages: number;
   scale?: number;
+  testIdPrefix?: string;
   onSelect: (modifiers: { shiftKey: boolean; ctrlOrMetaKey: boolean }) => void;
   onRotateCW: () => void;
   onDuplicate: () => void;
@@ -23,6 +24,7 @@ export function ThumbnailItem({
   isActive,
   totalPages,
   scale = 0.22,
+  testIdPrefix = 'thumbnail-page-',
   onSelect,
   onRotateCW,
   onDuplicate,
@@ -62,7 +64,7 @@ export function ThumbnailItem({
       aria-selected={isActive}
       aria-label={`Page ${pageIndex + 1}`}
       tabIndex={0}
-      data-testid={`thumbnail-page-${pageIndex + 1}`}
+      data-testid={`${testIdPrefix}${pageIndex + 1}`}
       onClick={(e) =>
         onSelect({ shiftKey: e.shiftKey, ctrlOrMetaKey: e.ctrlKey || e.metaKey })
       }

@@ -15,6 +15,7 @@ import {
   Redo2,
   Scissors,
   ShieldAlert,
+  SlidersHorizontal,
   Square,
   Sun,
   Type,
@@ -31,6 +32,7 @@ import {
 } from '@/engine/documentController';
 import { useEditorStore } from '@/store/useEditorStore';
 import type { ToolMode, ZoomMode } from '@/types/pdf';
+import { BrandLogo } from '../BrandLogo';
 
 const QUICK_COLORS = ['#ef4444', '#2563eb', '#0f172a', '#16a34a', '#facc15'];
 
@@ -63,6 +65,8 @@ export function TopToolbar() {
   const setSplitModalOpen = useEditorStore((s) => s.setSplitModalOpen);
   const setOrganizeModalOpen = useEditorStore((s) => s.setOrganizeModalOpen);
   const setPageNumberingModalOpen = useEditorStore((s) => s.setPageNumberingModalOpen);
+  const mobileSheet = useEditorStore((s) => s.mobileSheet);
+  const setMobileSheet = useEditorStore((s) => s.setMobileSheet);
   const pageNumbering = useEditorStore((s) => s.pageNumbering);
   const pendingSignaturePlacement = useEditorStore((s) => s.pendingSignaturePlacement);
   const cancelPendingSignaturePlacement = useEditorStore(
@@ -119,22 +123,24 @@ export function TopToolbar() {
   };
 
   return (
-    <header className="z-30 flex flex-col border-b border-slate-200 bg-white/95 backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
-      <div className="flex h-12 items-center justify-between gap-2 overflow-x-auto px-2.5">
+    <header className="safe-pt z-30 flex flex-col border-b border-slate-200 bg-white/95 backdrop-blur dark:border-slate-800 dark:bg-slate-950/95">
+      <div className="flex h-12 items-center justify-between gap-1.5 px-2 sm:gap-2 sm:px-2.5">
         {/* Left: Brand & File Actions */}
-        <div className="flex shrink-0 items-center gap-1">
-          <div className="flex shrink-0 items-center gap-1.5 pr-1">
-            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-blue-600 text-xs font-bold text-white shadow-sm">
-              A
-            </div>
-            <div className="hidden xl:block">
-              <div className="text-xs font-bold tracking-tight text-slate-900 dark:text-slate-100">
-                AetherPDF
-              </div>
-              <div className="max-w-[96px] 2xl:max-w-[140px] truncate text-[10px] text-slate-500 dark:text-slate-400">
-                {hasPages ? documentName : 'Wasm PDF Studio'}
-              </div>
-            </div>
+        <div className="flex min-w-0 shrink-0 items-center gap-1">
+          <div
+            data-testid="brand-logo-container"
+            className="flex shrink-0 items-center gap-2 pr-1"
+          >
+            <BrandLogo variant="mark" className="h-7 w-7 shrink-0 md:hidden" />
+            <BrandLogo variant="horizontal-auto" className="hidden h-8 w-auto shrink-0 md:block" />
+            {hasPages && (
+              <span
+                title={documentName}
+                className="hidden max-w-[110px] truncate rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300 2xl:inline"
+              >
+                {documentName}
+              </span>
+            )}
           </div>
 
           <div className="h-5 w-px shrink-0 bg-slate-200 dark:bg-slate-800" />
@@ -143,9 +149,10 @@ export function TopToolbar() {
             type="button"
             onClick={() => openInputRef.current?.click()}
             data-testid="toolbar-open-btn"
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
+            title="Open PDF File"
+            className="inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800"
           >
-            <FolderOpen className="h-3.5 w-3.5" />
+            <FolderOpen className="h-4 w-4 md:h-3.5 md:w-3.5" />
             <span className="hidden sm:inline">Open</span>
           </button>
           <input
@@ -167,7 +174,7 @@ export function TopToolbar() {
             onClick={() => mergeInputRef.current?.click()}
             data-testid="toolbar-merge-btn"
             title="Merge PDFs"
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:text-slate-200 dark:hover:bg-slate-800"
+            className="hidden shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:text-slate-200 dark:hover:bg-slate-800 md:inline-flex"
           >
             <FilePlus2 className="h-3.5 w-3.5" />
             <span className="hidden 2xl:inline">Merge</span>
@@ -191,7 +198,7 @@ export function TopToolbar() {
             onClick={() => setSplitModalOpen(true)}
             data-testid="toolbar-split-btn"
             title="Split / Extract Pages"
-            className="inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:text-slate-200 dark:hover:bg-slate-800"
+            className="hidden shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 disabled:opacity-40 dark:text-slate-200 dark:hover:bg-slate-800 md:inline-flex"
           >
             <Scissors className="h-3.5 w-3.5" />
             <span className="hidden 2xl:inline">Split</span>
@@ -203,7 +210,7 @@ export function TopToolbar() {
             onClick={() => setPageNumberingModalOpen(true)}
             data-testid="toolbar-page-numbers-btn"
             title="Sayfa Numarası Ekle (Page Numbers)"
-            className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition disabled:opacity-40 ${
+            className={`hidden shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition disabled:opacity-40 md:inline-flex ${
               pageNumbering?.enabled
                 ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
                 : 'text-slate-700 hover:bg-slate-100 dark:text-slate-200 dark:hover:bg-slate-800'
@@ -218,7 +225,7 @@ export function TopToolbar() {
               type="button"
               data-testid="cancel-signature-placement-btn"
               onClick={cancelPendingSignaturePlacement}
-              className="inline-flex shrink-0 items-center gap-1 rounded-lg border border-blue-500/50 bg-blue-50 px-2 py-1 text-[11px] font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-500/40 dark:bg-blue-950/70 dark:text-blue-200"
+              className="hidden shrink-0 items-center gap-1 rounded-lg border border-blue-500/50 bg-blue-50 px-2 py-1 text-[11px] font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-500/40 dark:bg-blue-950/70 dark:text-blue-200 md:inline-flex"
             >
               Click page to place • Cancel (Esc)
             </button>
@@ -239,8 +246,8 @@ export function TopToolbar() {
           />
         </div>
 
-        {/* Center: Primary Editing Tool Modes */}
-        <div className="flex shrink-0 items-center gap-0.5 rounded-xl border border-slate-200 bg-slate-100/80 p-0.5 dark:border-slate-800 dark:bg-slate-900">
+        {/* Center: Primary Editing Tool Modes (Desktop & Tablet >= 768px; Mobile uses Bottom Dock Tools sheet) */}
+        <div className="hidden shrink-0 items-center gap-0.5 rounded-xl border border-slate-200 bg-slate-100/80 p-0.5 dark:border-slate-800 dark:bg-slate-900 md:flex">
           {toolButtons.map((btn) => {
             const Icon = btn.icon;
             const active = toolMode === btn.id;
@@ -355,7 +362,7 @@ export function TopToolbar() {
             type="button"
             onClick={() => setSnapEnabled(!snapEnabled)}
             title={snapEnabled ? 'Snap Guides: On' : 'Snap Guides: Off'}
-            className={`rounded-lg p-1.5 transition ${
+            className={`hidden rounded-lg p-1.5 transition sm:inline-flex ${
               snapEnabled
                 ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
                 : 'text-slate-500 hover:bg-slate-100 dark:text-slate-400 dark:hover:bg-slate-800'
@@ -366,10 +373,24 @@ export function TopToolbar() {
 
           <button
             type="button"
+            onClick={() => setMobileSheet(mobileSheet === 'inspector' ? 'none' : 'inspector')}
+            title="Properties / Özelleştir"
+            data-testid="tablet-inspector-btn"
+            className={`hidden rounded-lg p-1.5 transition md:inline-flex lg:hidden ${
+              mobileSheet === 'inspector'
+                ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800'
+            }`}
+          >
+            <SlidersHorizontal className="h-4 w-4" />
+          </button>
+
+          <button
+            type="button"
             onClick={toggleTheme}
             title="Toggle Light / Dark Theme"
             data-testid="theme-toggle-btn"
-            className="rounded-lg p-1.5 text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+            className="min-h-[36px] min-w-[36px] inline-flex items-center justify-center rounded-lg p-1.5 text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
           >
             {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </button>
@@ -379,17 +400,18 @@ export function TopToolbar() {
             disabled={!hasPages || isLoading}
             onClick={() => void exportCurrentPdf()}
             data-testid="export-pdf-btn"
-            className="inline-flex items-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-500 disabled:opacity-40"
+            className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-500 disabled:opacity-40 sm:px-3"
           >
             <Download className="h-3.5 w-3.5" />
-            <span>Export PDF</span>
+            <span className="hidden sm:inline">Export PDF</span>
+            <span className="sm:hidden">PDF</span>
           </button>
         </div>
       </div>
 
       {/* Contextual sub-toolbar for Draw / Annotate */}
       {hasPages && toolMode === 'draw' && (
-        <div className="flex items-center gap-4 border-t border-slate-200 bg-slate-50 px-4 py-1.5 text-xs dark:border-slate-800 dark:bg-slate-900">
+        <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-xs dark:border-slate-800 dark:bg-slate-900 sm:px-4">
           <span className="font-medium text-slate-500 dark:text-slate-400">Freehand Ink:</span>
           <div className="flex items-center gap-1.5">
             {QUICK_COLORS.map((c) => (
@@ -426,7 +448,7 @@ export function TopToolbar() {
       )}
 
       {hasPages && toolMode === 'highlight' && (
-        <div className="flex items-center gap-4 border-t border-slate-200 bg-slate-50 px-4 py-1.5 text-xs dark:border-slate-800 dark:bg-slate-900">
+        <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-xs dark:border-slate-800 dark:bg-slate-900 sm:px-4">
           <span className="font-medium text-slate-500 dark:text-slate-400">Annotation Mode:</span>
           <div className="flex items-center gap-1">
             <button

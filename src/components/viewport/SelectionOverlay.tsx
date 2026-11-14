@@ -66,7 +66,10 @@ export function SelectionOverlay({
   );
 
   const handleMovePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0) return;
+    if (e.button !== 0 || !e.isPrimary) return;
+    if (useEditorStore.getState().activeTouchCount >= 2 || useEditorStore.getState().isPinching) {
+      return;
+    }
     if (e.altKey && onAltClickCycle) {
       e.stopPropagation();
       onAltClickCycle(e.clientX, e.clientY);
@@ -89,6 +92,7 @@ export function SelectionOverlay({
     beginTransaction();
 
     const onMove = (moveEvent: PointerEvent) => {
+      if (useEditorStore.getState().isPinching) return;
       const dxPx = moveEvent.clientX - startClientX;
       const dyPx = moveEvent.clientY - startClientY;
       const baseDelta = deltaDisplayToBase(dxPx, dyPx, userRotation, zoom);
@@ -128,7 +132,10 @@ export function SelectionOverlay({
     handle: ResizeHandle,
     e: ReactPointerEvent<HTMLDivElement>,
   ) => {
-    if (e.button !== 0 || element.locked) return;
+    if (e.button !== 0 || !e.isPrimary || element.locked) return;
+    if (useEditorStore.getState().activeTouchCount >= 2 || useEditorStore.getState().isPinching) {
+      return;
+    }
     e.stopPropagation();
     const target = e.currentTarget;
     target.setPointerCapture(e.pointerId);
@@ -148,6 +155,7 @@ export function SelectionOverlay({
     beginTransaction();
 
     const onMove = (moveEvent: PointerEvent) => {
+      if (useEditorStore.getState().isPinching) return;
       const dxPx = moveEvent.clientX - startClientX;
       const dyPx = moveEvent.clientY - startClientY;
       const nextRect = computeRotatedResizeRect({
@@ -187,7 +195,10 @@ export function SelectionOverlay({
   };
 
   const handleRotatePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
-    if (e.button !== 0 || element.locked) return;
+    if (e.button !== 0 || !e.isPrimary || element.locked) return;
+    if (useEditorStore.getState().activeTouchCount >= 2 || useEditorStore.getState().isPinching) {
+      return;
+    }
     e.stopPropagation();
     const target = e.currentTarget;
     target.setPointerCapture(e.pointerId);
@@ -204,6 +215,7 @@ export function SelectionOverlay({
     beginTransaction();
 
     const onMove = (moveEvent: PointerEvent) => {
+      if (useEditorStore.getState().isPinching) return;
       const curAngle =
         (Math.atan2(moveEvent.clientY - centerClientY, moveEvent.clientX - centerClientX) * 180) /
         Math.PI;
@@ -282,6 +294,7 @@ export function SelectionOverlay({
           transform: `rotate(${frame.rotation}deg)`,
           transformOrigin: 'center center',
           zIndex: 500,
+          touchAction: element.locked ? 'pan-x pan-y' : 'none',
         }}
         className="cursor-move border-2 border-blue-500 shadow-[0_0_0_1px_rgba(255,255,255,0.6)]"
       >
@@ -296,8 +309,9 @@ export function SelectionOverlay({
               left: '50%',
               top: -28,
               transform: 'translateX(-50%)',
+              touchAction: 'none',
             }}
-            className="flex cursor-grab flex-col items-center active:cursor-grabbing"
+            className="touch-handle-target relative flex cursor-grab flex-col items-center active:cursor-grabbing"
           >
             <div className="flex h-5 w-5 items-center justify-center rounded-full border border-blue-500 bg-white text-blue-600 shadow">
               <RotateCw className="h-3 w-3" />
@@ -324,6 +338,7 @@ export function SelectionOverlay({
         {!element.locked &&
           HANDLE_LIST.map((h) => {
             const dynamicCursor = computeRotatedResizeCursor(h.id, frame.rotation);
+            const isCorner = h.id.length === 2;
             return (
               <div
                 key={h.id}
@@ -335,9 +350,11 @@ export function SelectionOverlay({
                   width: 10,
                   height: 10,
                   cursor: dynamicCursor,
+                  touchAction: 'none',
+                  zIndex: isCorner ? 2 : 1,
                   ...h.style,
                 }}
-                className="rounded-sm border border-blue-600 bg-white shadow-sm hover:scale-125"
+                className="touch-handle-target rounded-sm border border-blue-600 bg-white shadow-sm hover:scale-125"
               />
             );
           })}
