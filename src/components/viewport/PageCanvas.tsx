@@ -1,0 +1,1323 @@
+import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import {
+  getElementLayerTier,
+  type CanvasElement,
+  type HighlightElement,
+  type StrokeElement,
+  type TextAddElement,
+} from '@/types/elements';
+import type { DetectedImageObject, DetectedTextBlock, PageMeta, RectBox } from '@/types/pdf';
+import {
+  axisAlignedRectBaseToDisplay,
+  getDisplayDimensions,
+  pointDisplayToBase,
+  pointInRotatedRect,
+  rectBaseToDisplayFrame,
+} from '@/engine/coordinates';
+import { resolveFontDisplayStatus } from '@/engine/fonts';
+import { computePageNumberLayout } from '@/engine/pageNumbers';
+import { pointsToSmoothSvgPath } from '@/engine/pdfCompiler';
+import { pdfjsService } from '@/engine/pdfjsService';
+import { wasmWorkerClient } from '@/engine/wasmWorkerClient';
+import { useEditorStore } from '@/store/useEditorStore';
+import { createId } from '@/utils/id';
+import { InlineTextEditor } from './InlineTextEditor';
+import { SelectionOverlay } from './SelectionOverlay';
+
+interface PageCanvasProps {
+  page: PageMeta;
+  pageIndex: number;
+  zoom: number;
+}
+
+function isUnmodifiedBehindImage(
+  el: CanvasElement,
+  extractedImages?: DetectedImageObject[],
+): boolean {
+  if (el.kind !== 'image-replacement' || !el.behindContent || el.deleted) return false;
+  const orig = extractedImages?.find((img) => img.id === el.originalImageId);
+  const origOpacity = orig?.opacity ?? 1;
+  const origRot = orig?.rotation ?? 0;
+  return (
+    Math.abs(el.x - el.originalRect.x) < 0.25 &&
+    Math.abs(el.y - el.originalRect.y) < 0.25 &&
+    Math.abs(el.width - el.originalRect.width) < 0.25 &&
+    Math.abs(el.height - el.originalRect.height) < 0.25 &&
+    Math.abs(el.rotation - origRot) < 0.25 &&
+    Math.abs(el.opacity - origOpacity) < 0.02
+  );
+}
+
+export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
+  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const layerRef = useRef<HTMLDivElement | null>(null);
+
+  const sourceBytes = useEditorStore((s) => s.sourceDocs[page.sourceDocId]?.bytes);
+  const toolMode = useEditorStore((s) => s.toolMode);
+  const allElements = useEditorStore((s) => s.elements);
+  const userFonts = useEditorStore((s) => s.userFonts);
+  const extractedFonts = useEditorStore((s) => s.extractedFonts);
+  const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
+  const editingTextElementId = useEditorStore((s) => s.editingTextElementId);
+  const extraction = useEditorStore((s) => s.pageExtractions[page.id]);
+
+  const drawColor = useEditorStore((s) => s.drawColor);
+  const drawWidth = useEditorStore((s) => s.drawWidth);
+  const drawOpacity = useEditorStore((s) => s.drawOpacity);
+  const highlightColor = useEditorStore((s) => s.highlightColor);
+  const highlightShape = useEditorStore((s) => s.highlightShape);
+
+  const setActivePage = useEditorStore((s) => s.setActivePage);
+  const selectElements = useEditorStore((s) => s.selectElements);
+  const setEditingTextElementId = useEditorStore((s) => s.setEditingTextElementId);
+  const setPageExtraction = useEditorStore((s) => s.setPageExtraction);
+  const addElement = useEditorStore((s) => s.addElement);
+  const setToolMode = useEditorStore((s) => s.setToolMode);
+  const startEditDetectedText = useEditorStore((s) => s.startEditDetectedText);
+  const promoteDetectedImage = useEditorStore((s) => s.promoteDetectedImage);
+  const pendingSignaturePlacement = useEditorStore((s) => s.pendingSignaturePlacement);
+  const placeSignatureAt = useEditorStore((s) => s.placeSignatureAt);
+  const pageNumbering = useEditorStore((s) => s.pageNumbering);
+  const totalPages = useEditorStore((s) => s.pages.length);
+
+  const [hoveredTextId, setHoveredTextId] = useState<string | null>(null);
+  const [hoveredImageId, setHoveredImageId] = useState<string | null>(null);
+  const [hoverBasePoint, setHoverBasePoint] = useState<{ x: number; y: number } | null>(null);
+  const suppressNextDetectedTextClickRef = useRef(false);
+
+  // Live MuPDF stream-stripped page preview so deleted/moved images & edited text
+  // reveal authentic underlying table lines, shading, and graphics without white mask patches.
+  const [cleanPreview, setCleanPreview] = useState<{
+    key: string;
+    docId: string;
+    bytes: Uint8Array;
+  } | null>(null);
+  const [renderedStripKey, setRenderedStripKey] = useState<string>('');
+  const [canvasPaperTransparent, setCanvasPaperTransparent] = useState<boolean>(true);
+  const activeCleanDocIdRef = useRef<string | null>(null);
+
+  // Live drawing / highlight draft states
+  const [draftStrokePoints, setDraftStrokePoints] = useState<Array<{ x: number; y: number }> | null>(
+    null,
+  );
+  const [draftRect, setDraftRect] = useState<RectBox | null>(null);
+
+  const displayDims = getDisplayDimensions(
+    page.baseWidth,
+    page.baseHeight,
+    page.userRotation,
+    zoom,
+  );
+
+  const pageElements = useMemo(
+    () =>
+      allElements
+        .filter((el) => el.pageId === page.id)
+        .sort(
+          (a, b) => getElementLayerTier(a) - getElementLayerTier(b) || a.zIndex - b.zIndex,
+        ),
+    [allElements, page.id],
+  );
+
+  const getCssZIndexForElement = (el: CanvasElement): number => {
+    const tier = getElementLayerTier(el);
+    return tier * 100 + Math.max(0, Math.min(89, el.zIndex));
+  };
+
+  const stripRequest = useMemo(() => {
+    const textRects: RectBox[] = [];
+    const imageRects: RectBox[] = [];
+    for (const el of pageElements) {
+      if (el.kind === 'text-edit') {
+        textRects.push(el.originalRect);
+      } else if (el.kind === 'image-replacement') {
+        // Merely selecting a behind-content watermark without moving/resizing/deleting it
+        // keeps it rendered cleanly in the PDF base canvas behind text and table borders.
+        if (isUnmodifiedBehindImage(el, extraction?.images)) continue;
+        imageRects.push(el.originalRect);
+      }
+    }
+    const serialize = (r: RectBox) =>
+      `${Math.round(r.x * 10)}:${Math.round(r.y * 10)}:${Math.round(r.width * 10)}:${Math.round(r.height * 10)}`;
+    const tKey = textRects.map(serialize).sort().join('|');
+    const iKey = imageRects.map(serialize).sort().join('|');
+    const key = tKey || iKey ? `t[${tKey}]i[${iKey}]` : '';
+    return { textRects, imageRects, key };
+  }, [pageElements, extraction?.images]);
+
+  const hasVisibleBehindImages = useMemo(
+    () =>
+      pageElements.some(
+        (el) =>
+          (el.kind === 'image' || el.kind === 'image-replacement') &&
+          el.behindContent === true &&
+          !(el.kind === 'image-replacement' && el.deleted) &&
+          !isUnmodifiedBehindImage(el, extraction?.images),
+      ),
+    [pageElements, extraction?.images],
+  );
+
+  const latestStripRectsRef = useRef<{ textRects: RectBox[]; imageRects: RectBox[] }>({
+    textRects: stripRequest.textRects,
+    imageRects: stripRequest.imageRects,
+  });
+  latestStripRectsRef.current = {
+    textRects: stripRequest.textRects,
+    imageRects: stripRequest.imageRects,
+  };
+
+  // Prepare clean stripped 1-page PDF in MuPDF Worker whenever original text or images are edited/deleted
+  useEffect(() => {
+    if (!sourceBytes) return;
+    const reqKey = stripRequest.key;
+    if (!reqKey) {
+      setCleanPreview((prev) => {
+        if (prev) void pdfjsService.releaseDocument(prev.docId);
+        return null;
+      });
+      activeCleanDocIdRef.current = null;
+      return;
+    }
+
+    let cancelled = false;
+    const { textRects, imageRects } = latestStripRectsRef.current;
+    wasmWorkerClient
+      .call('prepareCleanPage', {
+        sourceDocId: page.sourceDocId,
+        bytes: sourceBytes,
+        sourcePageIndex: page.sourcePageIndex,
+        textRects,
+        imageRects,
+      })
+      .then(({ bytes }) => {
+        if (cancelled) return;
+        const docId = `${page.id}::clean::${reqKey}`;
+        const prevId = activeCleanDocIdRef.current;
+        if (prevId && prevId !== docId) {
+          void pdfjsService.releaseDocument(prevId);
+        }
+        activeCleanDocIdRef.current = docId;
+        setCleanPreview({ key: reqKey, docId, bytes });
+      })
+      .catch(() => {
+        // Fallback keeps canvas intact if clean preview preparation fails
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [sourceBytes, page.id, page.sourceDocId, page.sourcePageIndex, stripRequest.key]);
+
+  // Release stripped preview proxy on unmount
+  useEffect(() => {
+    return () => {
+      if (activeCleanDocIdRef.current) {
+        void pdfjsService.releaseDocument(activeCleanDocIdRef.current);
+        activeCleanDocIdRef.current = null;
+      }
+    };
+  }, []);
+
+  const usingCleanDoc = Boolean(stripRequest.key && cleanPreview && cleanPreview.key === stripRequest.key);
+  const renderDocId = usingCleanDoc ? cleanPreview!.docId : page.sourceDocId;
+  const renderBytes = usingCleanDoc ? cleanPreview!.bytes : sourceBytes;
+  const renderPageIndex = usingCleanDoc ? 0 : page.sourcePageIndex;
+  const targetStripKeyForRender = usingCleanDoc ? cleanPreview!.key : '';
+
+  // Render PDF page canvas via pdfjs-dist worker
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || !renderBytes) return;
+
+    let cancelled = false;
+    const handle = pdfjsService.renderPageToCanvas({
+      sourceDocId: renderDocId,
+      bytes: renderBytes,
+      sourcePageIndex: renderPageIndex,
+      canvas,
+      zoom,
+      userRotation: page.userRotation,
+      dpr: Math.min(window.devicePixelRatio || 1, 2),
+      background: hasVisibleBehindImages ? 'rgba(0, 0, 0, 0)' : undefined,
+    });
+
+    handle.promise
+      .then(() => {
+        if (!cancelled) {
+          if (hasVisibleBehindImages && canvas.width > 4 && canvas.height > 4) {
+            try {
+              const ctx = canvas.getContext('2d', { willReadFrequently: true });
+              if (ctx) {
+                const a1 = ctx.getImageData(1, 1, 1, 1).data[3];
+                const a2 = ctx.getImageData(canvas.width - 2, 1, 1, 1).data[3];
+                const a3 = ctx.getImageData(1, canvas.height - 2, 1, 1).data[3];
+                const a4 = ctx.getImageData(canvas.width - 2, canvas.height - 2, 1, 1).data[3];
+                setCanvasPaperTransparent(a1 === 0 || a2 === 0 || a3 === 0 || a4 === 0);
+              }
+            } catch {
+              setCanvasPaperTransparent(false);
+            }
+          } else {
+            setCanvasPaperTransparent(true);
+          }
+          setRenderedStripKey(targetStripKeyForRender);
+        }
+      })
+      .catch(() => {
+        // Cancelled during rapid scroll/zoom
+      });
+
+    return () => {
+      cancelled = true;
+      handle.cancel();
+    };
+  }, [
+    renderDocId,
+    renderBytes,
+    renderPageIndex,
+    page.userRotation,
+    zoom,
+    targetStripKeyForRender,
+    hasVisibleBehindImages,
+  ]);
+
+  // Lazily extract MuPDF StructuredText paragraphs + PDF.js XObject images & table rules
+  useEffect(() => {
+    if (!sourceBytes || extraction) return;
+    let cancelled = false;
+
+    (async () => {
+      const { images, horizontalRules, verticalRules, cellRects } =
+        await pdfjsService.extractPageImagesAndRules(
+          page.sourceDocId,
+          sourceBytes,
+          page.sourcePageIndex,
+          page.id,
+        );
+      if (cancelled) return;
+
+      try {
+        const { textBlocks } = await wasmWorkerClient.call('extractPageText', {
+          sourceDocId: page.sourceDocId,
+          bytes: sourceBytes,
+          sourcePageIndex: page.sourcePageIndex,
+          pageId: page.id,
+          horizontalRules,
+          verticalRules,
+          cellRects,
+        });
+        if (!cancelled) {
+          setPageExtraction(page.id, {
+            textBlocks,
+            images,
+            horizontalRules,
+            verticalRules,
+            cellRects,
+          });
+        }
+      } catch {
+        const fallback = await pdfjsService.extractPageContent(
+          page.sourceDocId,
+          sourceBytes,
+          page.sourcePageIndex,
+          page.id,
+        );
+        if (!cancelled) {
+          setPageExtraction(page.id, {
+            textBlocks: fallback.textBlocks,
+            images,
+            horizontalRules,
+            verticalRules,
+            cellRects,
+          });
+        }
+      }
+    })().catch(() => {
+      // Ignore if document changed
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [page.id, page.sourceDocId, page.sourcePageIndex, sourceBytes, extraction, setPageExtraction]);
+
+  const isBaseStripped =
+    stripRequest.key.length > 0 && renderedStripKey === stripRequest.key;
+
+  // Transitional mask ONLY during ~15ms before clean-stripped canvas completes for edited text;
+  // deleted/moved images never draw an opaque white box so underlying tables stay visible.
+  const maskedOriginalRects = useMemo(() => {
+    if (isBaseStripped) return [];
+    const masks: Array<{ id: string; rect: RectBox; color: string }> = [];
+    for (const el of pageElements) {
+      if (el.kind === 'text-edit') {
+        masks.push({ id: `mask-${el.id}`, rect: el.originalRect, color: el.maskColor ?? '#ffffff' });
+      }
+    }
+    return masks;
+  }, [pageElements, isBaseStripped]);
+
+  const editedBlockIds = useMemo(
+    () =>
+      new Set(
+        pageElements
+          .filter((el) => el.kind === 'text-edit')
+          .map((el) => el.originalBlockId),
+      ),
+    [pageElements],
+  );
+
+  const promotedImageIds = useMemo(
+    () =>
+      new Set(
+        pageElements
+          .filter((el) => el.kind === 'image-replacement')
+          .map((el) => el.originalImageId),
+      ),
+    [pageElements],
+  );
+
+  const visibleElements = useMemo(
+    () =>
+      pageElements.filter(
+        (el) =>
+          !(
+            (el.kind === 'text-edit' || el.kind === 'image-replacement') &&
+            el.deleted
+          ),
+      ),
+    [pageElements],
+  );
+
+  const getBasePointFromEvent = (clientX: number, clientY: number) => {
+    const rect = layerRef.current!.getBoundingClientRect();
+    const dx = clientX - rect.left;
+    const dy = clientY - rect.top;
+    return pointDisplayToBase(dx, dy, page.baseWidth, page.baseHeight, page.userRotation, zoom);
+  };
+
+  const sampleCanvasBackgroundColor = (dispRect: RectBox): string => {
+    const canvas = canvasRef.current;
+    if (!canvas) return '#ffffff';
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    if (!ctx) return '#ffffff';
+
+    const scaleX = canvas.width / Math.max(1, displayDims.width);
+    const scaleY = canvas.height / Math.max(1, displayDims.height);
+    const samplePoints = [
+      { x: Math.round((dispRect.x - 2) * scaleX), y: Math.round((dispRect.y + dispRect.height / 2) * scaleY) },
+      { x: Math.round((dispRect.x + dispRect.width + 2) * scaleX), y: Math.round((dispRect.y + dispRect.height / 2) * scaleY) },
+      { x: Math.round((dispRect.x + dispRect.width / 2) * scaleX), y: Math.round((dispRect.y - 2) * scaleY) },
+      { x: Math.round((dispRect.x + dispRect.width / 2) * scaleX), y: Math.round((dispRect.y + dispRect.height + 2) * scaleY) },
+    ];
+
+    const buckets = new Map<string, number>();
+    for (const pt of samplePoints) {
+      const px = Math.max(0, Math.min(canvas.width - 1, pt.x));
+      const py = Math.max(0, Math.min(canvas.height - 1, pt.y));
+      try {
+        const data = ctx.getImageData(px, py, 1, 1).data;
+        const hex = `#${data[0].toString(16).padStart(2, '0')}${data[1].toString(16).padStart(2, '0')}${data[2].toString(16).padStart(2, '0')}`;
+        buckets.set(hex, (buckets.get(hex) ?? 0) + 1);
+      } catch {
+        // Ignore readback error
+      }
+    }
+
+    let bestColor = '#ffffff';
+    let bestCount = -1;
+    for (const [hex, count] of buckets.entries()) {
+      if (count > bestCount) {
+        bestCount = count;
+        bestColor = hex;
+      }
+    }
+    return bestColor;
+  };
+
+  const handleAltCycleAtClientPoint = (clientX: number, clientY: number) => {
+    const pt = getBasePointFromEvent(clientX, clientY);
+    type HitCandidate =
+      | { kind: 'element'; element: CanvasElement; tier: number; zIndex: number }
+      | { kind: 'detected-text'; block: DetectedTextBlock; tier: number; zIndex: number }
+      | { kind: 'detected-image'; img: DetectedImageObject; tier: number; zIndex: number };
+
+    const candidates: HitCandidate[] = [];
+    for (const el of visibleElements) {
+      if (
+        pointInRotatedRect(
+          pt.x,
+          pt.y,
+          { x: el.x, y: el.y, width: el.width, height: el.height },
+          el.rotation,
+          2,
+        )
+      ) {
+        candidates.push({
+          kind: 'element',
+          element: el,
+          tier: getElementLayerTier(el),
+          zIndex: getCssZIndexForElement(el),
+        });
+      }
+    }
+
+    if (extraction) {
+      for (const block of extraction.textBlocks) {
+        if (editedBlockIds.has(block.id)) continue;
+        if (pointInRotatedRect(pt.x, pt.y, block, 0, 2)) {
+          candidates.push({ kind: 'detected-text', block, tier: 3, zIndex: 305 });
+        }
+      }
+      for (const img of extraction.images) {
+        if (promotedImageIds.has(img.id)) continue;
+        if (pointInRotatedRect(pt.x, pt.y, img, 0, 2)) {
+          const isBg = Boolean(img.isHeaderOrBackground || img.behindContent);
+          candidates.push({
+            kind: 'detected-image',
+            img,
+            tier: isBg ? 1 : 2,
+            zIndex: isBg ? 105 : 205,
+          });
+        }
+      }
+    }
+
+    if (candidates.length === 0) return;
+
+    candidates.sort((a, b) => b.tier - a.tier || b.zIndex - a.zIndex);
+    const activeSelId = selectedElementIds[0];
+    const currIdx = candidates.findIndex(
+      (c) => c.kind === 'element' && c.element.id === activeSelId,
+    );
+    const nextIdx = currIdx >= 0 ? (currIdx + 1) % candidates.length : Math.min(1, candidates.length - 1);
+    const chosen = candidates[nextIdx];
+
+    setActivePage(page.id);
+    if (chosen.kind === 'element') {
+      setEditingTextElementId(null);
+      selectElements([chosen.element.id]);
+    } else if (chosen.kind === 'detected-image') {
+      setEditingTextElementId(null);
+      promoteDetectedImage(chosen.img);
+    } else {
+      const disp = axisAlignedRectBaseToDisplay(
+        {
+          x: chosen.block.x,
+          y: chosen.block.y,
+          width: chosen.block.width,
+          height: chosen.block.height,
+        },
+        page.baseWidth,
+        page.baseHeight,
+        page.userRotation,
+        zoom,
+      );
+      startEditDetectedText(chosen.block, sampleCanvasBackgroundColor(disp));
+    }
+  };
+
+  const handleLayerPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (e.button !== 0) return;
+    setActivePage(page.id);
+
+    if (pendingSignaturePlacement) {
+      e.stopPropagation();
+      e.preventDefault();
+      const pt = getBasePointFromEvent(e.clientX, e.clientY);
+      placeSignatureAt(page.id, pt.x, pt.y);
+      setHoverBasePoint(null);
+      return;
+    }
+
+    if (toolMode === 'select') {
+      selectElements([]);
+      setEditingTextElementId(null);
+      return;
+    }
+
+    if (toolMode === 'text') {
+      return;
+    }
+
+    if (toolMode === 'draw') {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      const startPt = getBasePointFromEvent(e.clientX, e.clientY);
+      const pts = [startPt];
+      setDraftStrokePoints(pts);
+
+      const onMove = (me: PointerEvent) => {
+        pts.push(getBasePointFromEvent(me.clientX, me.clientY));
+        setDraftStrokePoints([...pts]);
+      };
+
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
+
+        if (pts.length >= 2) {
+          const minX = Math.min(...pts.map((p) => p.x));
+          const maxX = Math.max(...pts.map((p) => p.x));
+          const minY = Math.min(...pts.map((p) => p.y));
+          const maxY = Math.max(...pts.map((p) => p.y));
+          const w = Math.max(8, maxX - minX);
+          const h = Math.max(8, maxY - minY);
+
+          const strokeEl: StrokeElement = {
+            id: createId('stroke'),
+            pageId: page.id,
+            kind: 'stroke',
+            x: minX,
+            y: minY,
+            width: w,
+            height: h,
+            rotation: 0,
+            opacity: drawOpacity,
+            zIndex: 0,
+            points: pts.map((p) => ({
+              x: (p.x - minX) / w,
+              y: (p.y - minY) / h,
+            })),
+            strokeColor: drawColor,
+            strokeWidth: drawWidth,
+          };
+          addElement(strokeEl, true);
+        }
+        setDraftStrokePoints(null);
+      };
+
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
+      return;
+    }
+
+    if (toolMode === 'highlight') {
+      e.currentTarget.setPointerCapture(e.pointerId);
+      const startPt = getBasePointFromEvent(e.clientX, e.clientY);
+      setDraftRect({ x: startPt.x, y: startPt.y, width: 1, height: 1 });
+
+      let latestRect: RectBox = { x: startPt.x, y: startPt.y, width: 1, height: 1 };
+
+      const onMove = (me: PointerEvent) => {
+        const curPt = getBasePointFromEvent(me.clientX, me.clientY);
+        latestRect = {
+          x: Math.min(startPt.x, curPt.x),
+          y: Math.min(startPt.y, curPt.y),
+          width: Math.abs(curPt.x - startPt.x),
+          height: Math.abs(curPt.y - startPt.y),
+        };
+        setDraftRect(latestRect);
+      };
+
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', onUp);
+        if (latestRect.width >= 6 && latestRect.height >= 6) {
+          const el: HighlightElement = {
+            id: createId('ann'),
+            pageId: page.id,
+            kind: 'highlight',
+            shape: highlightShape,
+            x: latestRect.x,
+            y: latestRect.y,
+            width: latestRect.width,
+            height: latestRect.height,
+            rotation: 0,
+            opacity: highlightShape === 'highlight' ? 0.38 : highlightShape === 'redact' ? 1 : 0.85,
+            zIndex: 0,
+            fillColor: highlightShape === 'redact' ? '#000000' : highlightColor,
+            strokeColor: highlightShape === 'rect' ? highlightColor : undefined,
+            strokeWidth: highlightShape === 'rect' ? 2 : 0,
+          };
+          addElement(el, true);
+          setToolMode('select');
+        }
+        setDraftRect(null);
+      };
+
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', onUp);
+    }
+  };
+
+  const renderElement = (el: CanvasElement) => {
+    const isEditingThis = editingTextElementId === el.id;
+    if (isEditingThis && (el.kind === 'text-add' || el.kind === 'text-edit')) {
+      return (
+        <InlineTextEditor
+          key={el.id}
+          element={el}
+          baseWidth={page.baseWidth}
+          baseHeight={page.baseHeight}
+          userRotation={page.userRotation}
+          zoom={zoom}
+          isBaseStripped={isBaseStripped}
+          onFinish={() => setEditingTextElementId(null)}
+        />
+      );
+    }
+
+    const frame = rectBaseToDisplayFrame(
+      { x: el.x, y: el.y, width: el.width, height: el.height },
+      el.rotation,
+      page.baseWidth,
+      page.baseHeight,
+      page.userRotation,
+      zoom,
+    );
+
+    const isSelected = selectedElementIds.includes(el.id);
+
+    const handleSelect = (e: ReactPointerEvent<HTMLDivElement>) => {
+      if (pendingSignaturePlacement) return;
+      if (toolMode !== 'select') return;
+      e.stopPropagation();
+      setActivePage(page.id);
+      if (e.altKey) {
+        handleAltCycleAtClientPoint(e.clientX, e.clientY);
+        return;
+      }
+      selectElements([el.id]);
+    };
+
+    if (el.kind === 'text-add' || el.kind === 'text-edit') {
+      const fontStatus = resolveFontDisplayStatus({
+        fontFamily: el.fontFamily,
+        fallbackFontFamily: el.fallbackFontFamily,
+        originalFontName: el.originalFontName,
+        isCustomFont: el.isCustomFont,
+        text: el.text,
+        userFonts,
+        extractedFonts,
+      });
+      const hScale = el.horizontalScale && el.horizontalScale !== 1 ? el.horizontalScale : 1;
+      const letterSpacingPx =
+        el.letterSpacing && el.letterSpacing !== 0
+          ? `${(el.letterSpacing * zoom).toFixed(2)}px`
+          : undefined;
+      return (
+        <div
+          key={el.id}
+          data-testid={`canvas-element-${el.id}`}
+          data-layer-tier={getElementLayerTier(el)}
+          onPointerDown={handleSelect}
+          onDoubleClick={(e) => {
+            if (toolMode !== 'select') return;
+            e.stopPropagation();
+            selectElements([el.id]);
+            setEditingTextElementId(el.id);
+          }}
+          style={{
+            position: 'absolute',
+            left: `${frame.left}px`,
+            top: `${frame.top}px`,
+            width: `${frame.width}px`,
+            minHeight: `${frame.height}px`,
+            transform: `rotate(${frame.rotation}deg)`,
+            transformOrigin: 'center center',
+            opacity: el.opacity,
+            zIndex: getCssZIndexForElement(el),
+            boxSizing: 'border-box',
+            fontFamily: fontStatus.cssFamily,
+            fontSize: `${el.fontSize * zoom}px`,
+            fontWeight: el.bold ? 700 : 400,
+            fontStyle: el.italic ? 'italic' : 'normal',
+            fontStretch: hScale < 0.92 ? 'condensed' : hScale > 1.08 ? 'expanded' : 'normal',
+            letterSpacing: letterSpacingPx,
+            color: el.color,
+            lineHeight: el.lineHeight,
+            textAlign: el.align,
+            backgroundColor: el.kind === 'text-add' ? el.backgroundColor : undefined,
+            whiteSpace: 'pre-wrap',
+            overflowWrap: 'break-word',
+            wordBreak: 'normal',
+          }}
+          className={`select-none ${
+            toolMode === 'select' && !isSelected ? 'hover:ring-1 hover:ring-blue-400/70' : ''
+          }`}
+        >
+          {el.runs && el.runs.length > 0
+            ? el.runs.map((run, idx) => {
+                const rBold = run.bold ?? el.bold;
+                const rItalic = run.italic ?? el.italic;
+                const style = {
+                  fontWeight: rBold ? 700 : 400,
+                  fontStyle: rItalic ? ('italic' as const) : ('normal' as const),
+                };
+                if (run.script === 'super') {
+                  return (
+                    <sup
+                      key={idx}
+                      style={{
+                        ...style,
+                        fontSize: '0.60em',
+                        position: 'static',
+                        top: 0,
+                        bottom: 'auto',
+                        verticalAlign: '0.48em',
+                        lineHeight: 0,
+                      }}
+                    >
+                      {run.text}
+                    </sup>
+                  );
+                }
+                if (run.script === 'sub') {
+                  return (
+                    <sub
+                      key={idx}
+                      style={{
+                        ...style,
+                        fontSize: '0.60em',
+                        position: 'static',
+                        top: 'auto',
+                        bottom: 0,
+                        verticalAlign: '-0.22em',
+                        lineHeight: 0,
+                      }}
+                    >
+                      {run.text}
+                    </sub>
+                  );
+                }
+                return (
+                  <span key={idx} style={style}>
+                    {run.text}
+                  </span>
+                );
+              })
+            : el.text}
+        </div>
+      );
+    }
+
+    if (el.kind === 'image' || el.kind === 'image-replacement' || el.kind === 'signature') {
+      const isBehindImage =
+        (el.kind === 'image' || el.kind === 'image-replacement') && el.behindContent === true;
+      const keepOriginalBehindInCanvas =
+        el.kind === 'image-replacement' && isUnmodifiedBehindImage(el, extraction?.images);
+      const tierZIndex = getCssZIndexForElement(el);
+      const imageZIndex = isBehindImage
+        ? keepOriginalBehindInCanvas || canvasPaperTransparent
+          ? 5
+          : 12
+        : tierZIndex;
+      const flipScaleX = (el.kind === 'image' || el.kind === 'image-replacement') && el.flipX ? -1 : 1;
+      const flipScaleY = (el.kind === 'image' || el.kind === 'image-replacement') && el.flipY ? -1 : 1;
+      const innerFlipTransform =
+        flipScaleX !== 1 || flipScaleY !== 1 ? `scale(${flipScaleX}, ${flipScaleY})` : undefined;
+
+      return (
+        <div
+          key={el.id}
+          data-testid={`canvas-element-${el.id}`}
+          data-layer-tier={getElementLayerTier(el)}
+          onPointerDown={handleSelect}
+          style={{
+            position: 'absolute',
+            left: `${frame.left}px`,
+            top: `${frame.top}px`,
+            width: `${frame.width}px`,
+            height: `${frame.height}px`,
+            transform: `rotate(${frame.rotation}deg)`,
+            transformOrigin: 'center center',
+            opacity: keepOriginalBehindInCanvas ? 1 : el.opacity,
+            zIndex: imageZIndex,
+            mixBlendMode:
+              isBehindImage && !keepOriginalBehindInCanvas && !canvasPaperTransparent
+                ? 'multiply'
+                : 'normal',
+          }}
+          className="select-none"
+        >
+          {keepOriginalBehindInCanvas ? null : el.kind === 'signature' &&
+            !el.realisticInk &&
+            el.svgPaths &&
+            el.viewBoxWidth &&
+            el.viewBoxHeight ? (
+            <svg
+              viewBox={`0 0 ${el.viewBoxWidth} ${el.viewBoxHeight}`}
+              preserveAspectRatio="none"
+              className="h-full w-full overflow-visible"
+            >
+              {el.svgPaths.map((p, idx) => (
+                <path
+                  key={idx}
+                  d={p.d}
+                  fill={p.fill ? p.color : 'none'}
+                  stroke={p.strokeWidth > 0 ? p.color : 'none'}
+                  strokeWidth={p.strokeWidth}
+                  opacity={p.opacity ?? 1}
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              ))}
+            </svg>
+          ) : (
+            <img
+              src={el.previewUrl}
+              alt={el.kind === 'signature' ? el.label : el.name}
+              draggable={false}
+              style={innerFlipTransform ? { transform: innerFlipTransform } : undefined}
+              className="h-full w-full object-fill pointer-events-none"
+            />
+          )}
+        </div>
+      );
+    }
+
+    if (el.kind === 'stroke') {
+      const d = pointsToSmoothSvgPath(el.points, el.width, el.height);
+      return (
+        <div
+          key={el.id}
+          data-testid={`canvas-element-${el.id}`}
+          data-layer-tier={getElementLayerTier(el)}
+          onPointerDown={handleSelect}
+          style={{
+            position: 'absolute',
+            left: `${frame.left}px`,
+            top: `${frame.top}px`,
+            width: `${frame.width}px`,
+            height: `${frame.height}px`,
+            transform: `rotate(${frame.rotation}deg)`,
+            transformOrigin: 'center center',
+            opacity: el.opacity,
+            zIndex: getCssZIndexForElement(el),
+          }}
+        >
+          <svg
+            viewBox={`0 0 ${el.width} ${el.height}`}
+            preserveAspectRatio="none"
+            className="h-full w-full overflow-visible"
+          >
+            <path
+              d={d}
+              fill="none"
+              stroke={el.strokeColor}
+              strokeWidth={el.strokeWidth}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </div>
+      );
+    }
+
+    if (el.kind === 'highlight') {
+      return (
+        <div
+          key={el.id}
+          data-testid={`canvas-element-${el.id}`}
+          data-layer-tier={getElementLayerTier(el)}
+          onPointerDown={handleSelect}
+          style={{
+            position: 'absolute',
+            left: `${frame.left}px`,
+            top: `${frame.top}px`,
+            width: `${frame.width}px`,
+            height: `${frame.height}px`,
+            transform: `rotate(${frame.rotation}deg)`,
+            transformOrigin: 'center center',
+            opacity: el.opacity,
+            backgroundColor: el.shape === 'rect' ? 'transparent' : el.fillColor,
+            border:
+              el.shape === 'rect' && el.strokeColor
+                ? `${(el.strokeWidth ?? 2) * zoom}px solid ${el.strokeColor}`
+                : undefined,
+            zIndex: getCssZIndexForElement(el),
+          }}
+        />
+      );
+    }
+
+    return null;
+  };
+
+  const renderDetectedOverlays = () => {
+    if (toolMode !== 'select' || pendingSignaturePlacement || !extraction) return null;
+
+    return (
+      <>
+        {extraction.images.map((img: DetectedImageObject) => {
+          if (promotedImageIds.has(img.id)) return null;
+          const disp = axisAlignedRectBaseToDisplay(
+            { x: img.x, y: img.y, width: img.width, height: img.height },
+            page.baseWidth,
+            page.baseHeight,
+            page.userRotation,
+            zoom,
+          );
+          const hovered = hoveredImageId === img.id;
+          const isBg = Boolean(img.isHeaderOrBackground || img.behindContent);
+          return (
+            <div
+              key={img.id}
+              data-testid={`detected-image-${img.id}`}
+              data-detected-image="true"
+              data-layer-tier={isBg ? 1 : 2}
+              onMouseEnter={() => setHoveredImageId(img.id)}
+              onMouseLeave={() => setHoveredImageId(null)}
+              onPointerDown={(e) => {
+                if (e.button !== 0) return;
+                e.stopPropagation();
+                if (e.altKey) {
+                  handleAltCycleAtClientPoint(e.clientX, e.clientY);
+                  return;
+                }
+                promoteDetectedImage(img);
+              }}
+              style={{
+                position: 'absolute',
+                left: `${disp.x}px`,
+                top: `${disp.y}px`,
+                width: `${disp.width}px`,
+                height: `${disp.height}px`,
+                zIndex: isBg ? 105 : 205,
+              }}
+              title="Click to select, move, resize, rotate, or delete embedded image"
+              className={`cursor-pointer transition ${
+                hovered
+                  ? 'border-2 border-dashed border-emerald-500 bg-emerald-500/10'
+                  : 'border border-transparent hover:border-emerald-400/50'
+              }`}
+            />
+          );
+        })}
+
+        {extraction.textBlocks.map((block: DetectedTextBlock) => {
+          if (editedBlockIds.has(block.id)) return null;
+          const disp = axisAlignedRectBaseToDisplay(
+            { x: block.x, y: block.y, width: block.width, height: block.height },
+            page.baseWidth,
+            page.baseHeight,
+            page.userRotation,
+            zoom,
+          );
+          const hovered = hoveredTextId === block.id;
+          return (
+            <div
+              key={block.id}
+              data-testid={`detected-text-${block.id}`}
+              data-detected-text="true"
+              data-layer-tier={3}
+              onMouseEnter={() => setHoveredTextId(block.id)}
+              onMouseLeave={() => setHoveredTextId(null)}
+              onPointerDown={(e) => {
+                if (e.button !== 0) return;
+                e.stopPropagation();
+                if (e.altKey) {
+                  suppressNextDetectedTextClickRef.current = true;
+                  handleAltCycleAtClientPoint(e.clientX, e.clientY);
+                }
+              }}
+              onClick={(e) => {
+                e.stopPropagation();
+                if (suppressNextDetectedTextClickRef.current) {
+                  suppressNextDetectedTextClickRef.current = false;
+                  return;
+                }
+                startEditDetectedText(block, sampleCanvasBackgroundColor(disp));
+              }}
+              style={{
+                position: 'absolute',
+                left: `${disp.x}px`,
+                top: `${disp.y}px`,
+                width: `${disp.width}px`,
+                height: `${disp.height}px`,
+                zIndex: 305,
+              }}
+              title="Click to edit PDF text in-place"
+              className={`cursor-text rounded-[2px] transition ${
+                hovered
+                  ? 'border border-dashed border-blue-500 bg-blue-500/10'
+                  : 'border border-transparent'
+              }`}
+            />
+          );
+        })}
+      </>
+    );
+  };
+
+  const renderDraftPreview = () => {
+    if (draftStrokePoints && draftStrokePoints.length > 0) {
+      const dispPts = draftStrokePoints.map((pt) => {
+        const disp = rectBaseToDisplayFrame(
+          { x: pt.x, y: pt.y, width: 0, height: 0 },
+          0,
+          page.baseWidth,
+          page.baseHeight,
+          page.userRotation,
+          zoom,
+        );
+        return { x: disp.centerX, y: disp.centerY };
+      });
+      const d =
+        dispPts.length === 1
+          ? `M ${dispPts[0].x} ${dispPts[0].y} L ${dispPts[0].x + 0.5} ${dispPts[0].y + 0.5}`
+          : `M ${dispPts.map((p) => `${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' L ')}`;
+      return (
+        <svg
+          className="pointer-events-none absolute inset-0 h-full w-full"
+          style={{ zIndex: 45 }}
+        >
+          <path
+            d={d}
+            fill="none"
+            stroke={drawColor}
+            strokeWidth={drawWidth * zoom}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            opacity={drawOpacity}
+          />
+        </svg>
+      );
+    }
+
+    if (draftRect) {
+      const disp = axisAlignedRectBaseToDisplay(
+        draftRect,
+        page.baseWidth,
+        page.baseHeight,
+        page.userRotation,
+        zoom,
+      );
+      return (
+        <div
+          className="pointer-events-none absolute"
+          style={{
+            left: `${disp.x}px`,
+            top: `${disp.y}px`,
+            width: `${disp.width}px`,
+            height: `${disp.height}px`,
+            backgroundColor:
+              highlightShape === 'redact'
+                ? '#000000'
+                : highlightShape === 'highlight'
+                  ? highlightColor
+                  : 'transparent',
+            opacity: highlightShape === 'highlight' ? 0.38 : 1,
+            border: highlightShape === 'rect' ? `2px solid ${highlightColor}` : undefined,
+            zIndex: 45,
+          }}
+        />
+      );
+    }
+
+    return null;
+  };
+
+  const renderGhostSignaturePreview = () => {
+    if (!pendingSignaturePlacement || !hoverBasePoint) return null;
+    const { signature, widthPt, heightPt } = pendingSignaturePlacement;
+    const disp = axisAlignedRectBaseToDisplay(
+      {
+        x: hoverBasePoint.x - widthPt / 2,
+        y: hoverBasePoint.y - heightPt / 2,
+        width: widthPt,
+        height: heightPt,
+      },
+      page.baseWidth,
+      page.baseHeight,
+      page.userRotation,
+      zoom,
+    );
+    return (
+      <div
+        data-testid="signature-ghost-preview"
+        className="pointer-events-none absolute border-2 border-dashed border-blue-500/80 bg-blue-500/5 rounded"
+        style={{
+          left: `${disp.x}px`,
+          top: `${disp.y}px`,
+          width: `${disp.width}px`,
+          height: `${disp.height}px`,
+          opacity: 0.72,
+          zIndex: 520,
+        }}
+      >
+        <img
+          src={signature.dataUrl}
+          alt="Signature placement preview"
+          className="h-full w-full object-fill"
+        />
+        <span className="absolute -top-5 left-0 rounded bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white shadow whitespace-nowrap">
+          Click to place (Esc to cancel)
+        </span>
+      </div>
+    );
+  };
+
+  const pageNumberBox = useMemo(() => {
+    if (!pageNumbering?.enabled) return null;
+    const rotated = page.userRotation === 90 || page.userRotation === 270;
+    const effW = rotated ? page.baseHeight : page.baseWidth;
+    const effH = rotated ? page.baseWidth : page.baseHeight;
+    return computePageNumberLayout(effW, effH, pageIndex, totalPages, pageNumbering);
+  }, [pageNumbering, page.baseWidth, page.baseHeight, page.userRotation, pageIndex, totalPages]);
+
+  const cursorClass = pendingSignaturePlacement
+    ? 'cursor-crosshair'
+    : toolMode === 'text'
+      ? 'cursor-text'
+      : toolMode === 'draw' || toolMode === 'highlight'
+        ? 'cursor-crosshair'
+        : 'cursor-default';
+
+  return (
+    <div className="flex flex-col items-center">
+      <div
+        ref={layerRef}
+        data-page-canvas-layer="true"
+        data-testid={`pdf-page-${pageIndex + 1}`}
+        onPointerDown={handleLayerPointerDown}
+        onPointerMove={(e) => {
+          if (!pendingSignaturePlacement) return;
+          setHoverBasePoint(getBasePointFromEvent(e.clientX, e.clientY));
+        }}
+        onPointerLeave={() => {
+          if (hoverBasePoint) setHoverBasePoint(null);
+        }}
+        onClick={(e) => {
+          if (pendingSignaturePlacement) return;
+          if (toolMode !== 'text') return;
+          const pt = getBasePointFromEvent(e.clientX, e.clientY);
+          const newText: TextAddElement = {
+            id: createId('txt'),
+            pageId: page.id,
+            kind: 'text-add',
+            x: Math.max(8, Math.min(page.baseWidth - 150, pt.x)),
+            y: Math.max(8, Math.min(page.baseHeight - 36, pt.y - 10)),
+            width: 180,
+            height: 30,
+            rotation: 0,
+            opacity: 1,
+            zIndex: 0,
+            text: 'Type text here',
+            fontFamily: 'Helvetica',
+            fontSize: 15,
+            color: '#0f172a',
+            bold: false,
+            italic: false,
+            align: 'left',
+            lineHeight: 1.2,
+          };
+          addElement(newText, true);
+          setToolMode('select');
+          setEditingTextElementId(newText.id);
+        }}
+        style={{
+          width: `${displayDims.width}px`,
+          height: `${displayDims.height}px`,
+        }}
+        className={`relative overflow-hidden bg-white shadow-xl ring-1 ring-slate-300 dark:ring-slate-700 ${cursorClass}`}
+      >
+        <canvas
+          ref={canvasRef}
+          style={{ position: 'relative', zIndex: 10 }}
+          className="pointer-events-none block"
+        />
+
+        {/* Live masks over modified/deleted PDF text or embedded images */}
+        {maskedOriginalRects.map((m) => {
+          const disp = axisAlignedRectBaseToDisplay(
+            m.rect,
+            page.baseWidth,
+            page.baseHeight,
+            page.userRotation,
+            zoom,
+          );
+          return (
+            <div
+              key={m.id}
+              style={{
+                position: 'absolute',
+                left: `${disp.x - 1}px`,
+                top: `${disp.y - 1}px`,
+                width: `${disp.width + 2}px`,
+                height: `${disp.height + 2}px`,
+                backgroundColor: m.color,
+                zIndex: 10,
+              }}
+              className="pointer-events-none"
+            />
+          );
+        })}
+
+        {renderDetectedOverlays()}
+
+        {visibleElements.map(renderElement)}
+
+        {renderDraftPreview()}
+
+        {renderGhostSignaturePreview()}
+
+        {pageNumberBox && pageNumbering && (
+          <div
+            data-testid={`page-number-preview-${pageIndex + 1}`}
+            className="pointer-events-none select-none"
+            style={{
+              position: 'absolute',
+              left: `${pageNumberBox.x * zoom}px`,
+              top: `${pageNumberBox.y * zoom}px`,
+              width: `${pageNumberBox.width * zoom}px`,
+              height: `${pageNumberBox.height * zoom}px`,
+              fontFamily: resolveFontDisplayStatus({
+                fontFamily: pageNumbering.fontFamily,
+                text: pageNumberBox.text,
+                userFonts,
+                extractedFonts,
+              }).cssFamily,
+              fontSize: `${pageNumbering.fontSize * zoom}px`,
+              color: pageNumbering.color,
+              opacity: pageNumbering.opacity,
+              textAlign: pageNumberBox.align,
+              lineHeight: 1.2,
+              zIndex: 480,
+            }}
+          >
+            {pageNumberBox.text}
+          </div>
+        )}
+
+        {/* Active selection overlay(s) */}
+        {toolMode === 'select' &&
+          !pendingSignaturePlacement &&
+          visibleElements
+            .filter((el) => selectedElementIds.includes(el.id) && editingTextElementId !== el.id)
+            .map((sel) => (
+              <SelectionOverlay
+                key={`sel-${sel.id}`}
+                element={sel}
+                siblingRects={visibleElements
+                  .filter((other) => other.id !== sel.id)
+                  .map((other) => ({
+                    x: other.x,
+                    y: other.y,
+                    width: other.width,
+                    height: other.height,
+                  }))}
+                baseWidth={page.baseWidth}
+                baseHeight={page.baseHeight}
+                userRotation={page.userRotation}
+                zoom={zoom}
+                onAltClickCycle={(cx, cy) => handleAltCycleAtClientPoint(cx, cy)}
+                onStartTextEdit={
+                  sel.kind === 'text-add' || sel.kind === 'text-edit'
+                    ? () => setEditingTextElementId(sel.id)
+                    : undefined
+                }
+              />
+            ))}
+      </div>
+
+      <div className="mt-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+        Page {pageIndex + 1}
+      </div>
+    </div>
+  );
+}
