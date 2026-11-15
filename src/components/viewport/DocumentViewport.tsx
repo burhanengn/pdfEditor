@@ -9,7 +9,8 @@ import {
   type DragEvent,
 } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { FileUp, Sparkles } from 'lucide-react';
+import { FilePlus, FileUp, Sparkles } from 'lucide-react';
+import type { BlankPagePreset } from '@/engine/blankPdf';
 import {
   computeViewportSurfaceMetrics,
   findAnchorPageIndex,
@@ -20,6 +21,7 @@ import {
   VIEWPORT_PAGE_GAP,
 } from '@/engine/coordinates';
 import {
+  createBlankDocument,
   insertImageFileOnPage,
   mergePdfFile,
   openPdfBytes,
@@ -578,9 +580,15 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
     })();
   };
 
+  const [blankPreset, setBlankPreset] = useState<BlankPagePreset>('a4-portrait');
+
   const handleLoadSample = async () => {
     const bytes = await generateSamplePdfBytes();
     await openPdfBytes('Sample-Architecture-Brief.pdf', bytes);
+  };
+
+  const handleCreateBlank = async (preset: BlankPagePreset = blankPreset) => {
+    await createBlankDocument({ preset });
   };
 
   return (
@@ -624,13 +632,23 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
               <BrandLogo variant="stacked" className="h-32 w-auto sm:h-36" decorative />
             </div>
             <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
-              Drop a PDF here to start editing
+              Drop a PDF or start with a blank page
             </h1>
             <p className="mt-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
               gullacpdf (GüllaçPdf) runs 100% client-side with WebAssembly. Edit existing PDF text
-              in-place, manage images, place signatures/parafs, and organize pages privately.
+              in-place, start from a blank PDF page, manage images, place signatures/parafs, and
+              organize pages privately.
             </p>
             <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+              <button
+                type="button"
+                onClick={() => void handleCreateBlank()}
+                data-testid="welcome-blank-btn"
+                className="inline-flex min-h-[44px] items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-500"
+              >
+                <FilePlus className="h-4 w-4" />
+                Boş Sayfa ile Başla
+              </button>
               <button
                 type="button"
                 onClick={() => fileInputRef.current?.click()}
@@ -649,6 +667,33 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
                 <Sparkles className="h-4 w-4 text-amber-500" />
                 Load Sample PDF
               </button>
+            </div>
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-1.5 text-[11px]">
+              <span className="text-slate-400 dark:text-slate-500">Sayfa boyutu:</span>
+              {(
+                [
+                  ['a4-portrait', 'A4 Dikey'],
+                  ['a4-landscape', 'A4 Yatay'],
+                  ['letter-portrait', 'Letter'],
+                ] as const
+              ).map(([presetId, label]) => {
+                const active = blankPreset === presetId;
+                return (
+                  <button
+                    key={presetId}
+                    type="button"
+                    onClick={() => setBlankPreset(presetId)}
+                    data-testid={`welcome-preset-${presetId}`}
+                    className={`rounded-md border px-2 py-1 font-medium transition-colors ${
+                      active
+                        ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:border-emerald-500/70 dark:bg-emerald-950/50 dark:text-emerald-300'
+                        : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
+                    }`}
+                  >
+                    {label}
+                  </button>
+                );
+              })}
             </div>
             <input
               ref={fileInputRef}

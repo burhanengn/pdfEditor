@@ -8,7 +8,8 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { mergePdfFile } from '@/engine/documentController';
+import { FilePlus } from 'lucide-react';
+import { insertBlankPageInDocument, mergePdfFile } from '@/engine/documentController';
 import { useEditorStore } from '@/store/useEditorStore';
 import { ThumbnailItem } from '@/components/sidebar/ThumbnailItem';
 
@@ -85,6 +86,15 @@ export function PageOrganizeModal() {
             >
               <Copy className="h-3.5 w-3.5" />
               Duplicate
+            </button>
+            <button
+              type="button"
+              data-testid="organize-add-blank-page-btn"
+              onClick={() => void insertBlankPageInDocument()}
+              className="inline-flex items-center gap-1 rounded-lg border border-emerald-300 bg-emerald-50 px-2.5 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300 dark:hover:bg-emerald-900/60"
+            >
+              <FilePlus className="h-3.5 w-3.5" />
+              + Boş Sayfa
             </button>
             <button
               type="button"

@@ -35,7 +35,12 @@ import {
   Unlock,
   Upload,
 } from 'lucide-react';
-import { removeUserCustomFont, uploadCustomFontFiles } from '@/engine/documentController';
+import { FilePlus } from 'lucide-react';
+import {
+  insertBlankPageInDocument,
+  removeUserCustomFont,
+  uploadCustomFontFiles,
+} from '@/engine/documentController';
 import {
   FONT_OPTIONS,
   isBuiltinFontFamily,
@@ -306,6 +311,15 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                 Delete
               </button>
             </div>
+            <button
+              type="button"
+              data-testid="inspector-add-blank-page-btn"
+              onClick={() => void insertBlankPageInDocument({ insertAfterPageId: activePage.id })}
+              className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-emerald-200 bg-emerald-50/70 py-2 font-medium text-emerald-700 hover:bg-emerald-100/80 dark:border-emerald-900/50 dark:bg-emerald-950/30 dark:text-emerald-300 dark:hover:bg-emerald-950/60"
+            >
+              <FilePlus className="h-3.5 w-3.5" />
+              Boş Sayfa Ekle
+            </button>
             <button
               type="button"
               data-testid="inspector-page-numbers-btn"

@@ -11,7 +11,8 @@ import {
   Trash2,
   X,
 } from 'lucide-react';
-import { mergePdfFile } from '@/engine/documentController';
+import { FilePlus } from 'lucide-react';
+import { insertBlankPageInDocument, mergePdfFile } from '@/engine/documentController';
 import { useEditorStore } from '@/store/useEditorStore';
 import { ThumbnailItem } from '../sidebar/ThumbnailItem';
 
@@ -88,6 +89,15 @@ export function MobilePagesSheet({ onScrollToPage }: MobilePagesSheetProps) {
 
         {/* Touch Action Row */}
         <div className="flex flex-wrap items-center gap-1.5 border-b border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-900/60">
+          <button
+            type="button"
+            data-testid="mobile-add-blank-page-btn"
+            onClick={() => void insertBlankPageInDocument()}
+            className="inline-flex min-h-[44px] items-center gap-1.5 rounded-lg border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300"
+          >
+            <FilePlus className="h-4 w-4" />
+            + Boş Sayfa
+          </button>
           <button
             type="button"
             onClick={() => mergeInputRef.current?.click()}

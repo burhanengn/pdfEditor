@@ -1068,4 +1068,103 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
       md.destroy();
     }
   });
+
+  test('starts directly with a blank A4 PDF document, edits text/shapes, inserts blank pages, and exports cleanly', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('/');
+
+    // 1. One-click start directly with a blank A4 PDF from the welcome screen
+    const blankBtn = page.getByTestId('welcome-blank-btn');
+    await expect(blankBtn).toBeVisible();
+    await blankBtn.click();
+
+    const page1 = page.getByTestId('pdf-page-1');
+    await expect(page1).toBeVisible();
+    await expect(page1.locator('canvas')).toBeVisible();
+    await expect
+      .poll(async () => page1.locator('canvas').evaluate((c: HTMLCanvasElement) => c.width))
+      .toBeGreaterThan(200);
+    await page.getByRole('button', { name: 'Fit Page' }).click();
+
+    // Right inspector shows A4 Portrait (595 pt × 842 pt)
+    await expect(page.getByText('595 pt')).toBeVisible();
+    await expect(page.getByText('842 pt')).toBeVisible();
+
+    const pBox = (await page1.boundingBox())!;
+
+    // 2. Right-click directly on blank page -> add Turkish text inline
+    await page.mouse.click(pBox.x + pBox.width * 0.25, pBox.y + pBox.height * 0.22, {
+      button: 'right',
+    });
+    await page.getByTestId('ctx-add-text-here').click();
+    const inlineEditor = page.getByTestId('inline-text-editor');
+    await expect(inlineEditor).toBeVisible();
+    await inlineEditor.fill('Boş Sayfa Belgesi: ğüşiöç');
+    await inlineEditor.press('Escape');
+    await expect(inlineEditor).toBeHidden();
+    await expect(page1.locator('[data-testid^="canvas-element-txt_"]')).toHaveCount(1);
+
+    // 3. Draw a rounded rectangle shape directly onto the blank page
+    await page.getByTestId('tool-shape').click();
+    await expect(page.getByTestId('shape-subtoolbar')).toBeVisible();
+    await page.getByTestId('shape-preset-rect').click();
+    const drawBox = (await page1.boundingBox())!;
+    await page.mouse.move(drawBox.x + drawBox.width * 0.25, drawBox.y + drawBox.height * 0.45);
+    await page.mouse.down();
+    await page.mouse.move(drawBox.x + drawBox.width * 0.55, drawBox.y + drawBox.height * 0.6, {
+      steps: 6,
+    });
+    await page.mouse.up();
+    await expect(page1.locator('[data-testid^="canvas-element-shp_"]')).toHaveCount(1);
+
+    // 4. Insert a second blank page using sidebar button -> verify 2 pages in document
+    await page.getByTestId('sidebar-add-blank-page-btn').click();
+    const page2 = page.getByTestId('pdf-page-2');
+    await expect(page2).toBeVisible();
+
+    // 5. Export PDF and verify via MuPDF: 2 A4 pages, blank text content & vector shape present
+    const [pdfDownload] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByTestId('export-pdf-btn').click(),
+    ]);
+    const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
+    const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
+    try {
+      expect(md.countPages()).toBe(2);
+      const mp0 = md.loadPage(0);
+      try {
+        const bounds0 = mp0.getBounds();
+        expect(Math.round(bounds0[2] - bounds0[0])).toBe(595);
+        expect(Math.round(bounds0[3] - bounds0[1])).toBe(842);
+
+        const st = mp0.toStructuredText('preserve-whitespace');
+        try {
+          expect(st.asText()).toContain('Boş Sayfa Belgesi');
+        } finally {
+          st.destroy();
+        }
+      } finally {
+        mp0.destroy();
+      }
+
+      const mp1 = md.loadPage(1);
+      try {
+        const bounds1 = mp1.getBounds();
+        expect(Math.round(bounds1[2] - bounds1[0])).toBe(595);
+        expect(Math.round(bounds1[3] - bounds1[1])).toBe(842);
+      } finally {
+        mp1.destroy();
+      }
+    } finally {
+      md.destroy();
+    }
+
+    // 6. Toolbar "Yeni Boş PDF Oluştur" button resets cleanly to a fresh 1-page blank document
+    await page.getByTestId('toolbar-new-blank-btn').click();
+    await expect(page.getByTestId('pdf-page-1')).toBeVisible();
+    await expect(page.getByTestId('pdf-page-2')).toHaveCount(0);
+    await expect(page.locator('[data-testid^="canvas-element-"]')).toHaveCount(0);
+  });
 });

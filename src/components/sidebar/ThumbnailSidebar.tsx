@@ -1,7 +1,7 @@
 import { useRef, useState, type DragEvent } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import { FilePlus2, Layers } from 'lucide-react';
-import { mergePdfFile } from '@/engine/documentController';
+import { FilePlus, FilePlus2, Layers } from 'lucide-react';
+import { createBlankDocument, insertBlankPageInDocument, mergePdfFile } from '@/engine/documentController';
 import { useEditorStore } from '@/store/useEditorStore';
 import { ThumbnailItem } from './ThumbnailItem';
 
@@ -70,15 +70,27 @@ export function ThumbnailSidebar({ onScrollToPage }: ThumbnailSidebarProps) {
             Pages ({pages.length})
           </span>
         </div>
-        <button
-          type="button"
-          title="Merge PDF into document"
-          onClick={() => mergeInputRef.current?.click()}
-          className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950/50"
-        >
-          <FilePlus2 className="h-3.5 w-3.5" />
-          Merge
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            title="Aktif sayfanın ardından boş sayfa ekle"
+            data-testid="sidebar-add-blank-page-btn"
+            onClick={() => void insertBlankPageInDocument()}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[11px] font-medium text-emerald-600 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/50"
+          >
+            <FilePlus className="h-3.5 w-3.5" />
+            + Boş
+          </button>
+          <button
+            type="button"
+            title="Merge PDF into document"
+            onClick={() => mergeInputRef.current?.click()}
+            className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950/50"
+          >
+            <FilePlus2 className="h-3.5 w-3.5" />
+            Merge
+          </button>
+        </div>
         <input
           ref={mergeInputRef}
           type="file"
@@ -93,8 +105,17 @@ export function ThumbnailSidebar({ onScrollToPage }: ThumbnailSidebarProps) {
       </div>
 
       {pages.length === 0 ? (
-        <div className="flex flex-1 items-center justify-center p-4 text-center text-xs text-slate-400">
-          Open a PDF to view page thumbnails
+        <div className="flex flex-1 flex-col items-center justify-center gap-2.5 p-4 text-center text-xs text-slate-400">
+          <span>Open a PDF or start with a blank page</span>
+          <button
+            type="button"
+            data-testid="sidebar-blank-start-btn"
+            onClick={() => void createBlankDocument()}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-700/50 dark:bg-emerald-950/50 dark:text-emerald-300 dark:hover:bg-emerald-900/60"
+          >
+            <FilePlus className="h-3.5 w-3.5" />
+            Boş Sayfa ile Başla
+          </button>
         </div>
       ) : (
         <div ref={scrollRef} className="flex-1 overflow-y-auto px-2.5 py-3">

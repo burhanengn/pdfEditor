@@ -1,5 +1,7 @@
 import type { ImageAddElement } from '@/types/elements';
-import type { PageMeta, SourceDocument } from '@/types/pdf';
+import type { PageMeta, SourceDocument, ToolMode } from '@/types/pdf';
+import { generateBlankPdfBytes, type BlankPagePreset } from './blankPdf';
+import { getDisplayDimensions } from './coordinates';
 import { useEditorStore } from '@/store/useEditorStore';
 import { blobRegistry } from '@/utils/blobRegistry';
 import {
@@ -167,6 +169,69 @@ export async function submitPasswordUnlock(password: string): Promise<void> {
   } else {
     await openPdfBytes(prompt.fileName, prompt.bytes, password);
   }
+}
+
+export async function createBlankDocument(options?: {
+  preset?: BlankPagePreset;
+  width?: number;
+  height?: number;
+  fileName?: string;
+  initialToolMode?: ToolMode;
+}): Promise<void> {
+  const bytes = await generateBlankPdfBytes({
+    preset: options?.preset ?? 'a4-portrait',
+    width: options?.width,
+    height: options?.height,
+    pageCount: 1,
+  });
+  await openPdfBytes(options?.fileName ?? 'Bos-Belge.pdf', bytes);
+  if (options?.initialToolMode) {
+    useEditorStore.getState().setToolMode(options.initialToolMode);
+  }
+}
+
+export async function insertBlankPageInDocument(options?: {
+  preset?: BlankPagePreset;
+  width?: number;
+  height?: number;
+  insertAfterPageId?: string;
+}): Promise<void> {
+  const state = useEditorStore.getState();
+  if (state.pages.length === 0) {
+    await createBlankDocument({
+      preset: options?.preset,
+      width: options?.width,
+      height: options?.height,
+    });
+    return;
+  }
+
+  const targetId = options?.insertAfterPageId ?? state.activePageId;
+  const targetIdx = targetId ? state.pages.findIndex((p) => p.id === targetId) : -1;
+  const refPage =
+    targetIdx >= 0 ? state.pages[targetIdx] : state.pages[state.pages.length - 1];
+  const insertAt = targetIdx >= 0 ? targetIdx + 1 : state.pages.length;
+
+  let width = options?.width;
+  let height = options?.height;
+  if ((!width || !height) && !options?.preset && refPage) {
+    const dims = getDisplayDimensions(
+      refPage.baseWidth,
+      refPage.baseHeight,
+      refPage.userRotation,
+      1,
+    );
+    width = dims.width;
+    height = dims.height;
+  }
+
+  const bytes = await generateBlankPdfBytes({
+    preset: options?.preset ?? 'a4-portrait',
+    width,
+    height,
+    pageCount: 1,
+  });
+  await mergePdfBytes('Bos-Sayfa.pdf', bytes, insertAt);
 }
 
 function collectCustomExportFontPayloads(

@@ -3,6 +3,7 @@ import {
   ArrowRight,
   Circle,
   Diamond,
+  FilePlus,
   FilePlus2,
   FileSignature,
   FolderOpen,
@@ -34,6 +35,7 @@ import {
   ZoomOut,
 } from 'lucide-react';
 import {
+  createBlankDocument,
   exportCurrentPdf,
   insertImageFileOnPage,
   mergePdfFile,
@@ -173,6 +175,16 @@ export function TopToolbar() {
 
           <div className="h-5 w-px shrink-0 bg-slate-200 dark:bg-slate-800" />
 
+          <button
+            type="button"
+            onClick={() => void createBlankDocument()}
+            data-testid="toolbar-new-blank-btn"
+            title="Yeni Boş PDF Oluştur"
+            className="inline-flex min-h-[36px] shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50 dark:text-emerald-300 dark:hover:bg-emerald-950/50"
+          >
+            <FilePlus className="h-4 w-4 md:h-3.5 md:w-3.5" />
+            <span className="hidden xl:inline">Boş PDF</span>
+          </button>
           <button
             type="button"
             onClick={() => openInputRef.current?.click()}

@@ -17,7 +17,12 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react';
-import { insertImageFileOnPage } from '@/engine/documentController';
+import { FilePlus } from 'lucide-react';
+import {
+  createBlankDocument,
+  insertBlankPageInDocument,
+  insertImageFileOnPage,
+} from '@/engine/documentController';
 import { useEditorStore } from '@/store/useEditorStore';
 import type { ToolMode } from '@/types/pdf';
 
@@ -80,6 +85,50 @@ export function MobileToolsSheet() {
         </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto p-4 text-xs">
+          {/* Blank Document / Blank Page */}
+          <div className="space-y-2">
+            {!hasPages ? (
+              <button
+                type="button"
+                data-testid="mobile-new-blank-btn"
+                onClick={() => {
+                  setMobileSheet('none');
+                  void createBlankDocument();
+                }}
+                className="flex min-h-[44px] w-full items-center justify-center gap-2 rounded-xl bg-emerald-600 px-3 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-500"
+              >
+                <FilePlus className="h-4 w-4" />
+                Boş PDF ile Başla
+              </button>
+            ) : (
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  data-testid="mobile-tools-new-blank-btn"
+                  onClick={() => {
+                    setMobileSheet('none');
+                    void createBlankDocument();
+                  }}
+                  className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 font-medium text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                >
+                  <FilePlus className="h-4 w-4 text-emerald-500" />
+                  Yeni Boş PDF
+                </button>
+                <button
+                  type="button"
+                  data-testid="mobile-tools-add-blank-page-btn"
+                  onClick={() => {
+                    setMobileSheet('none');
+                    void insertBlankPageInDocument();
+                  }}
+                  className="inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-xl border border-emerald-300 bg-emerald-50 px-3 py-2 font-medium text-emerald-700 dark:border-emerald-800 dark:bg-emerald-950/50 dark:text-emerald-300"
+                >
+                  <FilePlus className="h-4 w-4" />
+                  + Boş Sayfa
+                </button>
+              </div>
+            )}
+          </div>
           {/* Edit & Add */}
           <div className="space-y-2">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
