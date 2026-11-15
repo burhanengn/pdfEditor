@@ -123,14 +123,24 @@ function splitParagraphRunsToAtomicUnits(
  * across `maxWidth`, keeping atomic word+superscript/subscript clusters (e.g. "m²", "4¹") unbroken
  * and flagging soft-wrapped lines (`endsParagraph: false`) for clean two-side justification.
  */
+export interface BuildWrappedRichLinesOptions {
+  disableSoftWrap?: boolean;
+  widthToleranceRatio?: number;
+  widthTolerancePt?: number;
+}
+
 export function buildWrappedRichLines(
   runs: TextRun[],
   maxWidth: number,
   measurePiece: (text: string, bold: boolean, italic: boolean, script: TextScriptMode) => number,
   baseBold: boolean,
   baseItalic: boolean,
+  options?: BuildWrappedRichLinesOptions,
 ): WrappedRichLine[] {
-  const safeMaxWidth = Math.max(maxWidth, 12);
+  const disableSoftWrap = options?.disableSoftWrap === true;
+  const toleranceRatio = options?.widthToleranceRatio ?? 0.025;
+  const tolerancePt = options?.widthTolerancePt ?? 2.0;
+  const safeMaxWidth = Math.max(12, maxWidth * (1 + toleranceRatio) + tolerancePt);
   const norm = normalizeTextRuns(runs, baseBold, baseItalic);
 
   // Split runs at explicit '\n' newlines into paragraphs
@@ -204,8 +214,25 @@ export function buildWrappedRichLines(
       if (lineUnits.length === 0 && unit.isSpace) {
         continue;
       }
+      if (disableSoftWrap) {
+        lineUnits.push(unit);
+        continue;
+      }
       const uw = unitWidth(unit);
-      if (lineUnits.length === 0 || lineWidth + uw <= safeMaxWidth + 0.01) {
+      // Trailing spaces at the right edge collapse rather than forcing premature wrap.
+      if (unit.isSpace) {
+        lineUnits.push(unit);
+        lineWidth += uw;
+        continue;
+      }
+      // Compute current width trimmed of any trailing spaces if no space separates, or full width with preceding space.
+      let trimmedWidth = lineWidth;
+      if (lineUnits.length > 0 && lineUnits[lineUnits.length - 1].isSpace) {
+        // Preceding space is rendered before the incoming word, so keep full lineWidth unless the line had only spaces.
+        const hasNonSpace = lineUnits.some((u) => !u.isSpace);
+        if (!hasNonSpace) trimmedWidth = 0;
+      }
+      if (lineUnits.length === 0 || trimmedWidth + uw <= safeMaxWidth + 0.01) {
         lineUnits.push(unit);
         lineWidth += uw;
       } else {

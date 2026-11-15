@@ -91,4 +91,39 @@ describe('richText engine', () => {
       script: 'normal',
     });
   });
+
+  it('prevents premature soft wrap via disableSoftWrap and width tolerance with Turkish glyphs', () => {
+    const runs: TextRun[] = [
+      {
+        text: 'Öğrenci İşleri Başkanlığı İzin Belgesi ',
+        bold: false,
+        italic: false,
+        script: 'normal',
+      },
+    ];
+    // ~6pt/char -> total 39 chars non-space = 234pt (plus 1 trailing space = 240pt)
+    const measure = (text: string) => text.length * 6;
+
+    // 1. With width 230pt, 2.5% + 2pt tolerance = 237.75pt; trailing space shouldn't force extra wrapped line.
+    const locked = buildWrappedRichLines(runs, 160, measure, false, false, {
+      disableSoftWrap: true,
+    });
+    expect(locked).toHaveLength(1);
+    expect(locked[0].endsParagraph).toBe(true);
+    expect(locked[0].pieces.map((p) => p.text).join('')).toBe(
+      'Öğrenci İşleri Başkanlığı İzin Belgesi',
+    );
+
+    // 2. Trailing space at end of paragraph with 1.8% overshoot word stays on 1 line with tolerance.
+    const slightOvershootRuns: TextRun[] = [
+      { text: 'Başvuru formu ', bold: false, italic: false, script: 'normal' },
+    ];
+    // "Başvuru formu" = 13 * 6 = 78pt; box = 76pt -> safeMaxWidth = 76 * 1.025 + 2 = 79.9pt >= 78pt
+    const tolerated = buildWrappedRichLines(slightOvershootRuns, 76, measure, false, false, {
+      widthToleranceRatio: 0.025,
+      widthTolerancePt: 2.0,
+    });
+    expect(tolerated).toHaveLength(1);
+    expect(tolerated[0].endsParagraph).toBe(true);
+  });
 });

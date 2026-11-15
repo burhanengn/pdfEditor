@@ -2,7 +2,15 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
 import * as mupdf from 'mupdf';
-import { PDFDocument, StandardFonts, rgb, degrees } from 'pdf-lib';
+import {
+  decodePDFRawStream,
+  PDFArray,
+  PDFDocument,
+  PDFRawStream,
+  StandardFonts,
+  rgb,
+  degrees,
+} from 'pdf-lib';
 import {
   compilePdfDocument,
   inspectPdfDocument,
@@ -10,6 +18,7 @@ import {
   splitPdfToZip,
 } from '../pdfCompiler';
 import { extractTextBlocksFromMuPdfPage } from '../textExtractor';
+import { normalizeUnicodeForPdf } from '../fonts';
 import type { PageMeta } from '@/types/pdf';
 import type { ImageReplacementElement, TextAddElement, TextEditElement } from '@/types/elements';
 import type { FontAssetPayload } from '@/types/worker';
@@ -915,5 +924,156 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
     } finally {
       md.destroy();
     }
+  });
+
+  it('keeps single-line Turkish text on 1 line and emits PDF Tz scaling when slightly wider than box', async () => {
+    const bytes = await createSamplePdf();
+    const info = await inspectPdfDocument(mupdf, bytes);
+    const pages: PageMeta[] = [info.pages[0]].map((p) => ({
+      id: 'page_0',
+      sourceDocId: 'src_1',
+      sourcePageIndex: p.sourcePageIndex,
+      baseWidth: p.baseWidth,
+      baseHeight: p.baseHeight,
+      intrinsicRotation: p.intrinsicRotation,
+      userRotation: 0,
+      mediaBox: p.mediaBox,
+      cropBox: p.cropBox,
+    }));
+
+    // Box width is intentionally ~4% narrower than natural glyph width at 12pt DejaVu Sans,
+    // forcing `disableSoftWrap` + PDF `Tz` scaling to keep the text on 1 single line inside `width`.
+    const boxX = 54;
+    const boxWidth = 164;
+    const singleLineEl: TextAddElement = {
+      id: 'single_tz_1',
+      pageId: 'page_0',
+      kind: 'text-add',
+      x: boxX,
+      y: 260,
+      width: boxWidth,
+      height: 16,
+      rotation: 0,
+      opacity: 1,
+      zIndex: 1,
+      text: 'ĞÜŞİÖÇ ğüşiöç ıİ Tek Satır Test',
+      fontFamily: 'Helvetica',
+      fontSize: 12,
+      color: '#111827',
+      bold: false,
+      italic: false,
+      align: 'left',
+      lineHeight: 1.2,
+      renderedLineCount: 1,
+      widthResizedByUser: false,
+    };
+
+    const compiled = await compilePdfDocument(mupdf, {
+      sourceDocs: [{ id: 'src_1', bytes }],
+      pages,
+      elements: [singleLineEl],
+      fonts: loadNodeUnicodeFontPack(),
+      optimizeWithMupdf: false,
+    });
+
+    const loadedPdf = await PDFDocument.load(compiled);
+    const contents = loadedPdf.getPage(0).node.Contents();
+    const contentRefs =
+      contents instanceof PDFArray
+        ? Array.from({ length: contents.size() }, (_, idx) => loadedPdf.context.lookup(contents.get(idx)))
+        : [loadedPdf.context.lookup(contents)];
+    const streamText = contentRefs
+      .filter((s): s is PDFRawStream => s instanceof PDFRawStream)
+      .map((s) => Buffer.from(decodePDFRawStream(s).decode()).toString('latin1'))
+      .join('\n');
+    expect(streamText).toMatch(/\d+(?:\.\d+)?\s+Tz\b/);
+
+    const md = mupdf.Document.openDocument(compiled, 'application/pdf');
+    try {
+      const mp = md.loadPage(0);
+      try {
+        const st = mp.toStructuredText('preserve-whitespace');
+        try {
+          const rows: Array<{ y: number; x0: number; x1: number; text: string }> = [];
+          st.walk({
+            onChar(c, origin, _font, _size, quad) {
+              if (!c.trim()) return;
+              if (origin[1] < 255 || origin[1] > 310) return;
+              const charX0 = Math.min(quad[0], quad[4]);
+              const charX1 = Math.max(quad[2], quad[6]);
+              const existing = rows.find((r) => Math.abs(r.y - origin[1]) <= 2.5);
+              if (existing) {
+                existing.x0 = Math.min(existing.x0, charX0);
+                existing.x1 = Math.max(existing.x1, charX1);
+                existing.text += c;
+              } else {
+                rows.push({ y: origin[1], x0: charX0, x1: charX1, text: c });
+              }
+            },
+          });
+          expect(rows).toHaveLength(1);
+          expect(rows[0].text).toContain('TekSatırTest');
+          expect(rows[0].x1).toBeLessThanOrEqual(boxX + boxWidth + 2);
+        } finally {
+          st.destroy();
+        }
+      } finally {
+        mp.destroy();
+      }
+    } finally {
+      md.destroy();
+    }
+  });
+
+  it('composes decomposed Turkish combining dot (I\\u0307 -> İ) cleanly during normalization & PDF export', async () => {
+    expect(normalizeUnicodeForPdf('I\u0307stanbul i\u0307lk')).toBe('\u0130stanbul ilk');
+
+    const bytes = await createSamplePdf();
+    const info = await inspectPdfDocument(mupdf, bytes);
+    const pages: PageMeta[] = [info.pages[0]].map((p) => ({
+      id: 'page_0',
+      sourceDocId: 'src_1',
+      sourcePageIndex: p.sourcePageIndex,
+      baseWidth: p.baseWidth,
+      baseHeight: p.baseHeight,
+      intrinsicRotation: p.intrinsicRotation,
+      userRotation: 0,
+      mediaBox: p.mediaBox,
+      cropBox: p.cropBox,
+    }));
+
+    const decomposedEl: TextAddElement = {
+      id: 'tr_nfc_1',
+      pageId: 'page_0',
+      kind: 'text-add',
+      x: 54,
+      y: 260,
+      width: 300,
+      height: 24,
+      rotation: 0,
+      opacity: 1,
+      zIndex: 1,
+      text: 'I\u0307STANBUL i\u0307zmir ğüşöç',
+      fontFamily: 'Helvetica',
+      fontSize: 12,
+      color: '#111827',
+      bold: false,
+      italic: false,
+      align: 'left',
+      lineHeight: 1.2,
+      renderedLineCount: 1,
+    };
+
+    const compiled = await compilePdfDocument(mupdf, {
+      sourceDocs: [{ id: 'src_1', bytes }],
+      pages,
+      elements: [decomposedEl],
+      fonts: loadNodeUnicodeFontPack(),
+      optimizeWithMupdf: true,
+    });
+
+    const outText = extractPagePlainText(compiled, 0);
+    expect(outText).toContain('İSTANBUL');
+    expect(outText).toContain('izmir ğüşöç');
   });
 });

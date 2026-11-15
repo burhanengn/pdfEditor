@@ -1,5 +1,5 @@
 import { useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { RotateCw } from 'lucide-react';
+import { Lock, RotateCw, Unlock } from 'lucide-react';
 import type { CanvasElement } from '@/types/elements';
 import type { RectBox, RotationAngle, SnapGuide } from '@/types/pdf';
 import {
@@ -34,6 +34,13 @@ interface SelectionOverlayProps {
   baseHeight: number;
   userRotation: RotationAngle;
   zoom: number;
+  selectBackgroundMode?: boolean;
+  onSmartForegroundFallback?: (
+    clientX: number,
+    clientY: number,
+    isCoarsePointer: boolean,
+  ) => boolean;
+  onUnlockElement?: () => void;
   onStartTextEdit?: () => void;
   onAltClickCycle?: (clientX: number, clientY: number) => void;
 }
@@ -45,11 +52,15 @@ export function SelectionOverlay({
   baseHeight,
   userRotation,
   zoom,
+  selectBackgroundMode = false,
+  onSmartForegroundFallback,
+  onUnlockElement,
   onStartTextEdit,
   onAltClickCycle,
 }: SelectionOverlayProps) {
   const beginTransaction = useEditorStore((s) => s.beginTransaction);
   const commitTransaction = useEditorStore((s) => s.commitTransaction);
+  const abortTransaction = useEditorStore((s) => s.abortTransaction);
   const updateElements = useEditorStore((s) => s.updateElements);
   const snapEnabled = useEditorStore((s) => s.snapEnabled);
 
@@ -75,7 +86,21 @@ export function SelectionOverlay({
       onAltClickCycle(e.clientX, e.clientY);
       return;
     }
-    if (element.locked) return;
+    if (element.isBackgroundLayer && !selectBackgroundMode && onSmartForegroundFallback) {
+      const isCoarse =
+        e.pointerType === 'touch' ||
+        (typeof window !== 'undefined' &&
+          typeof window.matchMedia === 'function' &&
+          window.matchMedia('(pointer: coarse)').matches);
+      if (onSmartForegroundFallback(e.clientX, e.clientY, isCoarse)) {
+        e.stopPropagation();
+        return;
+      }
+    }
+    if (element.locked) {
+      e.stopPropagation();
+      return;
+    }
     e.stopPropagation();
     const target = e.currentTarget;
     target.setPointerCapture(e.pointerId);
@@ -91,8 +116,36 @@ export function SelectionOverlay({
 
     beginTransaction();
 
+    let aborted = false;
+
+    const cleanup = () => {
+      target.removeEventListener('pointermove', onMove);
+      target.removeEventListener('pointerup', onUp);
+      target.removeEventListener('pointercancel', abortGesture);
+      window.removeEventListener('gullac:multitouch-start', abortGesture);
+      try {
+        if (target.hasPointerCapture(e.pointerId)) {
+          target.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        // ignore if pointer capture already released
+      }
+    };
+
+    const abortGesture = () => {
+      if (aborted) return;
+      aborted = true;
+      cleanup();
+      setGuides([]);
+      abortTransaction();
+    };
+
     const onMove = (moveEvent: PointerEvent) => {
-      if (useEditorStore.getState().isPinching) return;
+      const store = useEditorStore.getState();
+      if (aborted || store.isPinching || store.activeTouchCount >= 2) {
+        abortGesture();
+        return;
+      }
       const dxPx = moveEvent.clientX - startClientX;
       const dyPx = moveEvent.clientY - startClientY;
       const baseDelta = deltaDisplayToBase(dxPx, dyPx, userRotation, zoom);
@@ -116,16 +169,16 @@ export function SelectionOverlay({
     };
 
     const onUp = () => {
-      target.removeEventListener('pointermove', onMove);
-      target.removeEventListener('pointerup', onUp);
-      target.removeEventListener('pointercancel', onUp);
+      if (aborted) return;
+      cleanup();
       setGuides([]);
       commitTransaction();
     };
 
     target.addEventListener('pointermove', onMove);
     target.addEventListener('pointerup', onUp);
-    target.addEventListener('pointercancel', onUp);
+    target.addEventListener('pointercancel', abortGesture);
+    window.addEventListener('gullac:multitouch-start', abortGesture);
   };
 
   const handleResizePointerDown = (
@@ -154,8 +207,35 @@ export function SelectionOverlay({
 
     beginTransaction();
 
+    let aborted = false;
+
+    const cleanup = () => {
+      target.removeEventListener('pointermove', onMove);
+      target.removeEventListener('pointerup', onUp);
+      target.removeEventListener('pointercancel', abortGesture);
+      window.removeEventListener('gullac:multitouch-start', abortGesture);
+      try {
+        if (target.hasPointerCapture(e.pointerId)) {
+          target.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        // ignore if pointer capture already released
+      }
+    };
+
+    const abortGesture = () => {
+      if (aborted) return;
+      aborted = true;
+      cleanup();
+      abortTransaction();
+    };
+
     const onMove = (moveEvent: PointerEvent) => {
-      if (useEditorStore.getState().isPinching) return;
+      const store = useEditorStore.getState();
+      if (aborted || store.isPinching || store.activeTouchCount >= 2) {
+        abortGesture();
+        return;
+      }
       const dxPx = moveEvent.clientX - startClientX;
       const dyPx = moveEvent.clientY - startClientY;
       const nextRect = computeRotatedResizeRect({
@@ -171,11 +251,16 @@ export function SelectionOverlay({
         minSize: 12,
       });
 
+      const isHorizontalResize = handle.includes('e') || handle.includes('w');
+      const isTextEl = element.kind === 'text-edit' || element.kind === 'text-add';
       updateElements(
         [
           {
             id: element.id,
-            patch: nextRect,
+            patch:
+              isTextEl && isHorizontalResize
+                ? { ...nextRect, widthResizedByUser: true }
+                : nextRect,
           },
         ],
         false,
@@ -183,15 +268,15 @@ export function SelectionOverlay({
     };
 
     const onUp = () => {
-      target.removeEventListener('pointermove', onMove);
-      target.removeEventListener('pointerup', onUp);
-      target.removeEventListener('pointercancel', onUp);
+      if (aborted) return;
+      cleanup();
       commitTransaction();
     };
 
     target.addEventListener('pointermove', onMove);
     target.addEventListener('pointerup', onUp);
-    target.addEventListener('pointercancel', onUp);
+    target.addEventListener('pointercancel', abortGesture);
+    window.addEventListener('gullac:multitouch-start', abortGesture);
   };
 
   const handleRotatePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -214,8 +299,36 @@ export function SelectionOverlay({
 
     beginTransaction();
 
+    let aborted = false;
+
+    const cleanup = () => {
+      target.removeEventListener('pointermove', onMove);
+      target.removeEventListener('pointerup', onUp);
+      target.removeEventListener('pointercancel', abortGesture);
+      window.removeEventListener('gullac:multitouch-start', abortGesture);
+      try {
+        if (target.hasPointerCapture(e.pointerId)) {
+          target.releasePointerCapture(e.pointerId);
+        }
+      } catch {
+        // ignore if pointer capture already released
+      }
+    };
+
+    const abortGesture = () => {
+      if (aborted) return;
+      aborted = true;
+      cleanup();
+      setLiveAngle(null);
+      abortTransaction();
+    };
+
     const onMove = (moveEvent: PointerEvent) => {
-      if (useEditorStore.getState().isPinching) return;
+      const store = useEditorStore.getState();
+      if (aborted || store.isPinching || store.activeTouchCount >= 2) {
+        abortGesture();
+        return;
+      }
       const curAngle =
         (Math.atan2(moveEvent.clientY - centerClientY, moveEvent.clientX - centerClientX) * 180) /
         Math.PI;
@@ -231,16 +344,16 @@ export function SelectionOverlay({
     };
 
     const onUp = () => {
-      target.removeEventListener('pointermove', onMove);
-      target.removeEventListener('pointerup', onUp);
-      target.removeEventListener('pointercancel', onUp);
+      if (aborted) return;
+      cleanup();
       setLiveAngle(null);
       commitTransaction();
     };
 
     target.addEventListener('pointermove', onMove);
     target.addEventListener('pointerup', onUp);
-    target.addEventListener('pointercancel', onUp);
+    target.addEventListener('pointercancel', abortGesture);
+    window.addEventListener('gullac:multitouch-start', abortGesture);
   };
 
   return (
@@ -293,11 +406,40 @@ export function SelectionOverlay({
           height: `${frame.height}px`,
           transform: `rotate(${frame.rotation}deg)`,
           transformOrigin: 'center center',
-          zIndex: 500,
+          zIndex: element.isBackgroundLayer && !selectBackgroundMode ? 290 : 500,
           touchAction: element.locked ? 'pan-x pan-y' : 'none',
         }}
-        className="cursor-move border-2 border-blue-500 shadow-[0_0_0_1px_rgba(255,255,255,0.6)]"
+        className={
+          element.locked
+            ? 'cursor-not-allowed border-2 border-dashed border-amber-500 shadow-[0_0_0_1px_rgba(255,255,255,0.45)]'
+            : 'cursor-move border-2 border-blue-500 shadow-[0_0_0_1px_rgba(255,255,255,0.6)]'
+        }
       >
+        {element.locked && (
+          <div
+            data-testid={`locked-badge-${element.id}`}
+            onPointerDown={(e) => e.stopPropagation()}
+            style={{ zIndex: 515 }}
+            className="absolute -top-7 left-0 flex items-center gap-1.5 rounded-md bg-amber-500 px-2 py-0.5 text-[10px] font-semibold text-slate-950 shadow"
+          >
+            <Lock className="h-3 w-3 shrink-0" />
+            <span>Kilitli</span>
+            {onUnlockElement && (
+              <button
+                type="button"
+                data-testid={`unlock-element-btn-${element.id}`}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onUnlockElement();
+                }}
+                className="inline-flex items-center gap-0.5 rounded bg-slate-900/90 px-1.5 py-0.5 text-[9px] font-semibold text-amber-200 hover:bg-slate-900"
+              >
+                <Unlock className="h-2.5 w-2.5" />
+                Kilidi Aç
+              </button>
+            )}
+          </div>
+        )}
         {/* Top Rotation Stem & Handle */}
         {!element.locked && (
           <div

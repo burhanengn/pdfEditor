@@ -547,7 +547,7 @@ export function buildDetectedTextBlocksFromMuLines(
       y: minY,
       width: Math.max(10, maxR - minX),
       height: Math.max(first.fontSize * 1.15, maxB - minY),
-      fontSize: Number(first.fontSize.toFixed(1)),
+      fontSize: Number(first.fontSize.toFixed(3)),
       fontFamily: first.fontFamily,
       fallbackFontFamily: isBuiltinFontFamily(first.fontFamily)
         ? first.fontFamily
@@ -1262,8 +1262,7 @@ export function extractTextBlocksFromMuPdfPage(
     const baselinePool = bodyChars.length > 0 ? bodyChars : nonSpace;
     const rawBodySize =
       baselinePool.reduce((s, ch) => s + ch.size, 0) / baselinePool.length;
-    const snappedHalf = Math.round(rawBodySize * 2) / 2;
-    const bodySize = Math.abs(rawBodySize - snappedHalf) <= 0.16 ? snappedHalf : rawBodySize;
+    const bodySize = Number(rawBodySize.toFixed(3));
     const bodyBaselineY =
       baselinePool.reduce((s, ch) => s + ch.baselineY, 0) / baselinePool.length;
 

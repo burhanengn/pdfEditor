@@ -11,7 +11,8 @@ import type {
 import type { HorizontalRule, VectorGeometry, VerticalRule } from '@/types/worker';
 import { blobRegistry } from '@/utils/blobRegistry';
 import { createId } from '@/utils/id';
-import { decomposeImageCtm } from './coordinates';
+import { computeCappedCanvasDpr, decomposeImageCtm, MAX_PDF_CANVAS_PIXELS } from './coordinates';
+export { computeCappedCanvasDpr, MAX_PDF_CANVAS_PIXELS };
 import { inferFontFromPdfName } from './fonts';
 
 pdfjsLib.GlobalWorkerOptions.workerSrc = pdfjsWorkerUrl;
@@ -105,14 +106,17 @@ class PdfJsService {
       const dpr = params.dpr ?? (typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1);
       const totalRotation = ((page.rotate + params.userRotation) % 360 + 360) % 360;
       const cssViewport = page.getViewport({ scale: params.zoom, rotation: totalRotation });
+      const safeDpr = computeCappedCanvasDpr(cssViewport.width, cssViewport.height, dpr);
       const pixelViewport = page.getViewport({
-        scale: params.zoom * dpr,
+        scale: params.zoom * safeDpr,
         rotation: totalRotation,
       });
 
       const { canvas } = params;
-      const targetWidth = Math.max(1, Math.ceil(pixelViewport.width));
-      const targetHeight = Math.max(1, Math.ceil(pixelViewport.height));
+      const targetWidth = Math.max(1, Math.round(pixelViewport.width));
+      const targetHeight = Math.max(1, Math.round(pixelViewport.height));
+      const cssWidthPx = Math.max(1, Math.round(cssViewport.width));
+      const cssHeightPx = Math.max(1, Math.round(cssViewport.height));
 
       // Always acquire alpha:true on visible canvas and render via an alpha:true offscreen buffer
       // so switching to transparent paper ('rgba(0, 0, 0, 0)') never renders solid black or flickers.
@@ -148,8 +152,8 @@ class PdfJsService {
           canvas.width = targetWidth;
           canvas.height = targetHeight;
         }
-        canvas.style.width = `${cssViewport.width}px`;
-        canvas.style.height = `${cssViewport.height}px`;
+        canvas.style.width = `${cssWidthPx}px`;
+        canvas.style.height = `${cssHeightPx}px`;
         dstCtx.clearRect(0, 0, targetWidth, targetHeight);
         dstCtx.drawImage(offscreen, 0, 0);
         return;
@@ -157,8 +161,8 @@ class PdfJsService {
 
       canvas.width = targetWidth;
       canvas.height = targetHeight;
-      canvas.style.width = `${cssViewport.width}px`;
-      canvas.style.height = `${cssViewport.height}px`;
+      canvas.style.width = `${cssWidthPx}px`;
+      canvas.style.height = `${cssHeightPx}px`;
 
       activeRenderTask = page.render({
         ...(dstCtx ? { canvasContext: dstCtx } : {}),
@@ -455,7 +459,7 @@ function clusterTextContent(
         y: minY,
         width: Math.max(8, maxR - minX),
         height: Math.max(first.fontSize * 1.15, maxB - minY),
-        fontSize: Number(first.fontSize.toFixed(1)),
+        fontSize: Number(first.fontSize.toFixed(3)),
         fontFamily,
         rawFontName: first.rawFontName,
         bold,
@@ -608,6 +612,7 @@ async function extractImagesAndRulesFromOperatorList(
   let textMatrix = [1, 0, 0, 1, 0, 0];
   let textLineMatrix = [1, 0, 0, 1, 0, 0];
   let textLeading = 0;
+  let currentFontSize = 12;
 
   const images: DetectedImageObject[] = [];
   const horizontalRules: HorizontalRule[] = [];
@@ -641,6 +646,9 @@ async function extractImagesAndRulesFromOperatorList(
           fillAlpha = Math.max(0.05, Math.min(1, entry[1]));
         }
       }
+    } else if (fn === OPS.setFont && Array.isArray(args) && args.length >= 2) {
+      const fs = Math.abs(Number(args[1]) || 0);
+      if (fs > 0.5) currentFontSize = fs;
     } else if (fn === OPS.beginText) {
       textMatrix = [1, 0, 0, 1, 0, 0];
       textLineMatrix = [1, 0, 0, 1, 0, 0];
@@ -671,7 +679,46 @@ async function extractImagesAndRulesFromOperatorList(
       const ty = textMatrix[5];
       const vx = a * tx + c * ty + e;
       const vy = b * tx + d * ty + f;
-      drawnRegions.push({ opIndex: i, x0: vx - 2, y0: vy - 10, x1: vx + 16, y1: vy + 4 });
+      const tmScaleX = Math.hypot(
+        a * textMatrix[0] + c * textMatrix[1],
+        b * textMatrix[0] + d * textMatrix[1],
+      );
+      const tmScaleY = Math.hypot(
+        a * textMatrix[2] + c * textMatrix[3],
+        b * textMatrix[2] + d * textMatrix[3],
+      );
+      const rawScale = Math.max(tmScaleX, tmScaleY, 1);
+      const estFontSize = Math.max(6, rawScale >= 4 ? rawScale : rawScale * currentFontSize);
+      let glyphCount = 0;
+      let glyphWidthSum = 0;
+      const glyphsArg = Array.isArray(args?.[0])
+        ? args[0]
+        : Array.isArray(args?.[2])
+          ? args[2]
+          : null;
+      if (glyphsArg) {
+        for (const item of glyphsArg) {
+          if (item && typeof item === 'object') {
+            glyphCount += 1;
+            if ('width' in item && typeof (item as { width?: number }).width === 'number') {
+              glyphWidthSum += Math.max(0, (item as { width: number }).width);
+            }
+          } else if (typeof item === 'string') {
+            glyphCount += item.length;
+          }
+        }
+      }
+      const estWidthPt =
+        glyphWidthSum > 0
+          ? Math.max(18, (glyphWidthSum / 1000) * estFontSize)
+          : Math.max(18, glyphCount * estFontSize * 0.55);
+      drawnRegions.push({
+        opIndex: i,
+        x0: vx - 2,
+        y0: vy - Math.max(10, estFontSize * 0.9),
+        x1: vx + estWidthPt,
+        y1: vy + Math.max(6, estFontSize * 0.35),
+      });
     } else if (fn === OPS.constructPath && Array.isArray(args) && args.length >= 3) {
       const paintOp = args[0] as number;
       const drawData = args[1] as unknown;
@@ -920,14 +967,20 @@ async function extractImagesAndRulesFromOperatorList(
         r.y1 >= iy0 &&
         r.y0 <= iy1,
     );
-    const isHeaderStrip = img.width >= pageWidth * 0.45 && img.y <= pageHeight * 0.22 && img.height <= pageHeight * 0.25;
-    const isFullBg = img.width * img.height >= pageWidth * pageHeight * 0.35;
+    const areaRatio = (img.width * img.height) / Math.max(1, pageWidth * pageHeight);
+    const isHeaderStrip =
+      (img.width >= pageWidth * 0.45 &&
+        img.y <= pageHeight * 0.22 &&
+        img.height <= pageHeight * 0.25) ||
+      (img.width >= pageWidth * 0.85 && img.height >= pageHeight * 0.12);
+    const isFullBg = areaRatio >= 0.65;
     if (hasLaterOverlap || isFullBg) {
       img.behindContent = true;
     }
     if (hasLaterOverlap || isHeaderStrip || isFullBg) {
       img.isHeaderOrBackground = true;
     }
+    img.isBackgroundLayer = Boolean(img.isHeaderOrBackground || areaRatio >= 0.65);
   }
 
   // Promote fill-only boxes into cellRects only when side-by-side in the same row band

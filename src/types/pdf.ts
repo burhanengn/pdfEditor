@@ -152,6 +152,7 @@ export interface DetectedImageObject {
   pngBytes: Uint8Array;
   behindContent?: boolean;
   isHeaderOrBackground?: boolean;
+  isBackgroundLayer?: boolean;
   opacity?: number;
 }
 

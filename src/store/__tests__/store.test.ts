@@ -220,6 +220,8 @@ describe('useEditorStore undo/redo and operations', () => {
       baselineOffset: 10,
     });
 
+    expect(imgEl).not.toBeNull();
+    if (!imgEl) throw new Error('expected promoted image');
     expect(getElementLayerTier(imgEl)).toBe(1);
     expect(getElementLayerTier(textEl)).toBe(3);
 
@@ -267,5 +269,133 @@ describe('useEditorStore undo/redo and operations', () => {
       .getState()
       .elements.find((e) => e.id === repeatedP2!.id);
     expect(updatedP2?.x).toBe(88);
+  });
+
+  it('classifies Stage 2 background images via text-block overlap and guards background promotion', () => {
+    const { doc, pages } = makeDoc();
+    useEditorStore.getState().loadInitialDocument(doc, pages);
+
+    useEditorStore.getState().setPageExtraction('p1', {
+      textBlocks: [
+        {
+          id: 'tb_heading',
+          pageId: 'p1',
+          text: 'CONFIDENTIAL BRIEF',
+          x: 60,
+          y: 120,
+          width: 240,
+          height: 24,
+          fontSize: 16,
+          fontFamily: 'Helvetica',
+          rawFontName: 'Helvetica',
+          bold: true,
+          italic: false,
+          color: '#000000',
+          lineHeight: 1.2,
+          baselineOffset: 14,
+        },
+      ],
+      images: [
+        {
+          id: 'bg_mid_overlap',
+          pageId: 'p1',
+          resourceName: '/ImBg',
+          operatorIndex: 1,
+          x: 40,
+          y: 80,
+          width: 500, // 500*200 = 100000 / 484704 = 20.6% (>= 15% and overlaps tb_heading)
+          height: 200,
+          rotation: 0,
+          pixelWidth: 500,
+          pixelHeight: 200,
+          previewUrl: 'blob:bg',
+          pngBytes: new Uint8Array([1, 2, 3]),
+        },
+        {
+          id: 'fg_badge',
+          pageId: 'p1',
+          resourceName: '/ImFg',
+          operatorIndex: 2,
+          x: 50,
+          y: 420,
+          width: 180,
+          height: 120,
+          rotation: 0,
+          pixelWidth: 180,
+          pixelHeight: 120,
+          previewUrl: 'blob:fg',
+          pngBytes: new Uint8Array([4, 5, 6]),
+        },
+      ],
+      horizontalRules: [],
+      verticalRules: [],
+      cellRects: [],
+    });
+
+    const ext = useEditorStore.getState().pageExtractions.p1;
+    const bgImg = ext.images.find((i) => i.id === 'bg_mid_overlap')!;
+    const fgImg = ext.images.find((i) => i.id === 'fg_badge')!;
+    expect(bgImg.isBackgroundLayer).toBe(true);
+    expect(fgImg.isBackgroundLayer).toBe(false);
+
+    // Blocked when selectBackgroundMode=false and !forcePromote
+    expect(useEditorStore.getState().promoteDetectedImage(bgImg)).toBeNull();
+    // Foreground image still promotes cleanly
+    expect(useEditorStore.getState().promoteDetectedImage(fgImg)).not.toBeNull();
+
+    // Explicit selectBackgroundMode or forcePromote unlocks background promotion
+    useEditorStore.getState().setSelectBackgroundMode(true);
+    const promotedBg = useEditorStore.getState().promoteDetectedImage(bgImg);
+    expect(promotedBg).not.toBeNull();
+    expect(promotedBg!.isBackgroundLayer).toBe(true);
+    expect(getElementLayerTier(promotedBg!)).toBe(1);
+  });
+
+  it('flushes active transactionBaseline before undo/redo during inline text editing', () => {
+    const { doc, pages } = makeDoc();
+    useEditorStore.getState().loadInitialDocument(doc, pages);
+
+    const el = useEditorStore.getState().startEditDetectedText({
+      id: 'det_tx_1',
+      pageId: 'p1',
+      text: 'Initial Text',
+      x: 50,
+      y: 100,
+      width: 140,
+      height: 18,
+      fontSize: 12,
+      fontFamily: 'Helvetica',
+      rawFontName: 'Helvetica',
+      bold: false,
+      italic: false,
+      color: '#000000',
+      lineHeight: 1.2,
+      baselineOffset: 10,
+    });
+
+    useEditorStore.getState().beginTransaction();
+    useEditorStore.getState().updateElements(
+      [{ id: el.id, patch: { text: 'Live Edited Text' } }],
+      false,
+    );
+    expect(useEditorStore.getState().editingTextElementId).toBe(el.id);
+
+    // Undo triggered mid-edit must restore 'Initial Text', clear editingTextElementId, and push 'Live Edited Text' to future
+    useEditorStore.getState().undo();
+    const afterUndo = useEditorStore.getState();
+    expect(afterUndo.editingTextElementId).toBeNull();
+    expect(afterUndo.transactionBaseline).toBeNull();
+    expect((afterUndo.elements.find((e) => e.id === el.id) as { text: string }).text).toBe(
+      'Initial Text',
+    );
+    expect(afterUndo.canRedo).toBe(true);
+
+    // Redo brings back 'Live Edited Text' cleanly
+    useEditorStore.getState().redo();
+    const afterRedo = useEditorStore.getState();
+    expect(afterRedo.editingTextElementId).toBeNull();
+    expect((afterRedo.elements.find((e) => e.id === el.id) as { text: string }).text).toBe(
+      'Live Edited Text',
+    );
   });
 });

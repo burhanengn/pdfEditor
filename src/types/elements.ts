@@ -31,6 +31,7 @@ export interface BaseElement {
   zIndex: number;
   layerOverride?: LayerTier;
   locked?: boolean;
+  isBackgroundLayer?: boolean;
 }
 
 export interface TextEditElement extends BaseElement {
@@ -52,8 +53,11 @@ export interface TextEditElement extends BaseElement {
   italic: boolean;
   align: TextAlignOption;
   lineHeight: number;
+  baselineOffset?: number;
   horizontalScale?: number;
   letterSpacing?: number;
+  renderedLineCount?: number;
+  widthResizedByUser?: boolean;
   maskColor?: string;
   deleted?: boolean;
 }
@@ -74,8 +78,11 @@ export interface TextAddElement extends BaseElement {
   italic: boolean;
   align: TextAlignOption;
   lineHeight: number;
+  baselineOffset?: number;
   horizontalScale?: number;
   letterSpacing?: number;
+  renderedLineCount?: number;
+  widthResizedByUser?: boolean;
   backgroundColor?: string;
 }
 
@@ -200,9 +207,11 @@ export interface SavedSignature {
  * Tier 3: Text Blocks
  * Tier 4: Annotations & Signatures
  */
-export function getElementDefaultLayerTier(el: Pick<CanvasElement, 'kind'> & { behindContent?: boolean }): LayerTier {
+export function getElementDefaultLayerTier(
+  el: Pick<CanvasElement, 'kind'> & { behindContent?: boolean; isBackgroundLayer?: boolean },
+): LayerTier {
   if (el.kind === 'image' || el.kind === 'image-replacement') {
-    return el.behindContent ? 1 : 2;
+    return el.behindContent || el.isBackgroundLayer ? 1 : 2;
   }
   if (el.kind === 'text-edit' || el.kind === 'text-add') {
     return 3;

@@ -324,7 +324,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                     <button
                       key={img.id}
                       type="button"
-                      onClick={() => promoteDetectedImage(img)}
+                      onClick={() => promoteDetectedImage(img, true)}
                       className="flex w-full items-center gap-2 rounded-md border border-slate-200 px-2 py-1.5 text-left hover:border-emerald-400 hover:bg-emerald-50/40 dark:border-slate-800 dark:hover:bg-slate-900"
                     >
                       <ImageIcon className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
@@ -1169,7 +1169,12 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                 value={Math.round(selectedEl.width)}
                 data-testid="inspector-w-input"
                 onChange={(e) =>
-                  patchSelected({ width: Math.max(8, Number(e.target.value) || 8) })
+                  patchSelected({
+                    width: Math.max(8, Number(e.target.value) || 8),
+                    ...(selectedEl.kind === 'text-edit' || selectedEl.kind === 'text-add'
+                      ? { widthResizedByUser: true }
+                      : {}),
+                  })
                 }
                 className="w-full rounded-md border border-slate-200 bg-white px-2 py-1 text-xs text-slate-900 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
               />
@@ -1261,22 +1266,66 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
               Bottom
             </button>
           </div>
-          {(selectedEl.kind === 'image' || selectedEl.kind === 'image-replacement') && (
+          <div className="space-y-1.5">
             <button
               type="button"
-              data-testid="inspector-behind-content-toggle"
-              aria-pressed={!!selectedEl.behindContent}
-              onClick={() => patchSelected({ behindContent: !selectedEl.behindContent })}
+              data-testid="inspector-lock-layer-toggle"
+              aria-pressed={!!selectedEl.locked}
+              onClick={() => patchSelected({ locked: !selectedEl.locked })}
               className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium transition ${
-                selectedEl.behindContent
-                  ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                selectedEl.locked
+                  ? 'border-amber-500 bg-amber-500/15 text-amber-600 dark:text-amber-300'
                   : 'border-slate-200 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-900'
               }`}
             >
-              <Layers className="h-3.5 w-3.5" />
-              {selectedEl.behindContent ? 'Behind PDF Content (Watermark)' : 'Place Behind PDF Content'}
+              {selectedEl.locked ? (
+                <>
+                  <Unlock className="h-3.5 w-3.5" />
+                  Kilidi Aç (Katman Kilitli)
+                </>
+              ) : (
+                <>
+                  <Lock className="h-3.5 w-3.5" />
+                  Katmanı Kilitle
+                </>
+              )}
             </button>
-          )}
+
+            {(selectedEl.kind === 'image' || selectedEl.kind === 'image-replacement') && (
+              <>
+                <button
+                  type="button"
+                  data-testid="inspector-background-layer-toggle"
+                  aria-pressed={!!selectedEl.isBackgroundLayer}
+                  onClick={() => patchSelected({ isBackgroundLayer: !selectedEl.isBackgroundLayer })}
+                  className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium transition ${
+                    selectedEl.isBackgroundLayer
+                      ? 'border-amber-500 bg-amber-500/15 text-amber-600 dark:text-amber-300'
+                      : 'border-slate-200 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-900'
+                  }`}
+                >
+                  <Layers className="h-3.5 w-3.5" />
+                  Arka Plan Katmanı {selectedEl.isBackgroundLayer ? '(Aktif)' : ''}
+                </button>
+                <button
+                  type="button"
+                  data-testid="inspector-behind-content-toggle"
+                  aria-pressed={!!selectedEl.behindContent}
+                  onClick={() => patchSelected({ behindContent: !selectedEl.behindContent })}
+                  className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium transition ${
+                    selectedEl.behindContent
+                      ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                      : 'border-slate-200 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-900'
+                  }`}
+                >
+                  <Layers className="h-3.5 w-3.5" />
+                  {selectedEl.behindContent
+                    ? 'Behind PDF Content (Watermark)'
+                    : 'Place Behind PDF Content'}
+                </button>
+              </>
+            )}
+          </div>
         </div>
       </div>
     </SelectedWrapper>

@@ -9,7 +9,7 @@ import {
   extractTextBlocksFromMuPdfPage,
   type RawMuLine,
 } from '../textExtractor';
-import { inferFontFromPdfName } from '../fonts';
+import { calibrateDomTextMetrics, inferFontFromPdfName } from '../fonts';
 
 function loadDejaVuFont(fileName: string): Uint8Array {
   return new Uint8Array(
@@ -619,5 +619,55 @@ describe('textExtractor paragraph grouping & soft-wrap reflow', () => {
     } finally {
       md.destroy();
     }
+  });
+
+  it('preserves 3-decimal fractional fontSize without 0.5pt quantization', async () => {
+    const doc = await PDFDocument.create();
+    doc.registerFontkit(fontkit);
+    const sans = await doc.embedFont(loadDejaVuFont('DejaVuSans.ttf'), { subset: false });
+    const p = doc.addPage([595, 842]);
+    p.drawText('Alt piksel font testi 10.62pt', {
+      x: 50,
+      y: 700,
+      size: 10.62,
+      font: sans,
+      color: rgb(0, 0, 0),
+    });
+    const bytes = await doc.save();
+    const md = mupdf.Document.openDocument(bytes, 'application/pdf');
+    try {
+      const mp = md.loadPage(0);
+      try {
+        const blocks = extractTextBlocksFromMuPdfPage(mp, 'p_frac');
+        expect(blocks).toHaveLength(1);
+        expect(blocks[0].fontSize).toBeCloseTo(10.62, 2);
+        expect(blocks[0].fontSize).not.toBe(10.5);
+      } finally {
+        mp.destroy();
+      }
+    } finally {
+      md.destroy();
+    }
+  });
+
+  it('computes finite DOM calibration baseline and scale metrics', () => {
+    const cal = calibrateDomTextMetrics({
+      sampleText: 'Örnek Başlık Metni',
+      targetPdfWidthPt: 112,
+      fontSizePt: 10.62,
+      lineHeight: 1.24,
+      baselineOffsetPt: 9.8,
+      fontFamily: 'Helvetica',
+      fontWeight: 400,
+      fontStyle: 'normal',
+      initialHorizontalScale: 0.96,
+    });
+    expect(Number.isFinite(cal.topOffsetPt)).toBe(true);
+    expect(Number.isFinite(cal.cssBaselineFromTopPt)).toBe(true);
+    expect(cal.topOffsetPt).toBeCloseTo(9.8 - cal.cssBaselineFromTopPt, 4);
+    expect(cal.horizontalScale).toBeGreaterThanOrEqual(0.7);
+    expect(cal.horizontalScale).toBeLessThanOrEqual(1.35);
+    expect(cal.letterSpacingPt).toBeGreaterThanOrEqual(-0.45);
+    expect(cal.letterSpacingPt).toBeLessThanOrEqual(1.2);
   });
 });

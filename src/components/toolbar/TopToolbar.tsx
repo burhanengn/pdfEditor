@@ -6,6 +6,7 @@ import {
   Hash,
   Highlighter,
   ImagePlus,
+  Layers,
   LayoutGrid,
   Magnet,
   Maximize2,
@@ -74,6 +75,8 @@ export function TopToolbar() {
   );
   const undo = useEditorStore((s) => s.undo);
   const redo = useEditorStore((s) => s.redo);
+  const selectBackgroundMode = useEditorStore((s) => s.selectBackgroundMode);
+  const setSelectBackgroundMode = useEditorStore((s) => s.setSelectBackgroundMode);
 
   const openInputRef = useRef<HTMLInputElement | null>(null);
   const mergeInputRef = useRef<HTMLInputElement | null>(null);
@@ -276,6 +279,22 @@ export function TopToolbar() {
               </button>
             );
           })}
+          <button
+            type="button"
+            disabled={!hasPages}
+            aria-pressed={selectBackgroundMode}
+            title="Arka Planı Seç (Arka Plan Görsellerini Düzenle)"
+            data-testid="toggle-select-background"
+            onClick={() => setSelectBackgroundMode(!selectBackgroundMode)}
+            className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition disabled:opacity-40 ${
+              selectBackgroundMode
+                ? 'bg-amber-500/20 text-amber-600 ring-1 ring-amber-400/50 dark:text-amber-300'
+                : 'text-slate-600 hover:bg-white hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white'
+            }`}
+          >
+            <Layers className="h-3.5 w-3.5" />
+            <span className="hidden xl:inline">Arka Planı Seç</span>
+          </button>
         </div>
 
         {/* Right: Undo/Redo, Zoom, Snap, Theme, Export */}
@@ -336,6 +355,9 @@ export function TopToolbar() {
               <option value="1.25">125%</option>
               <option value="1.5">150%</option>
               <option value="2">200%</option>
+              <option value="3">300%</option>
+              <option value="4">400%</option>
+              <option value="5">500%</option>
             </select>
             <button
               type="button"

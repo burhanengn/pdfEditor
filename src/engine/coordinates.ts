@@ -1,4 +1,14 @@
-import type { PageMeta, RectBox, RotationAngle } from '@/types/pdf';
+import {
+  getElementLayerTier,
+  type CanvasElement,
+} from '@/types/elements';
+import type {
+  DetectedImageObject,
+  DetectedTextBlock,
+  PageMeta,
+  RectBox,
+  RotationAngle,
+} from '@/types/pdf';
 
 export interface Point2D {
   x: number;
@@ -548,4 +558,294 @@ export function decomposeImageCtm(ctm: number[]): {
     return { x, y, width, height, rotation: rotFlipX, flipX: true, flipY: false };
   }
   return { x, y, width, height, rotation: rotFlipY, flipX: false, flipY: true };
+}
+
+export const VIEWPORT_MIN_ZOOM = 0.25;
+export const VIEWPORT_MAX_ZOOM = 5.0;
+export const VIEWPORT_PAGE_GAP = 44;
+
+export interface ViewportPageGeom {
+  baseWidth: number;
+  baseHeight: number;
+  userRotation: RotationAngle;
+}
+
+export interface ViewportSurfaceMetrics {
+  maxPageScaledWidth: number;
+  viewportMarginX: number;
+  viewportMarginY: number;
+  surfaceWidth: number;
+}
+
+export function computeViewportSurfaceMetrics(
+  pages: ViewportPageGeom[],
+  containerWidth: number,
+  containerHeight: number,
+  zoom: number,
+  isMobile: boolean,
+): ViewportSurfaceMetrics {
+  let maxPageScaledWidth = 0;
+  for (const p of pages) {
+    const dims = getDisplayDimensions(p.baseWidth, p.baseHeight, p.userRotation, zoom);
+    if (dims.width > maxPageScaledWidth) {
+      maxPageScaledWidth = dims.width;
+    }
+  }
+  const safeW = Math.max(1, containerWidth);
+  const safeH = Math.max(1, containerHeight);
+  const isZoomedHorizontally = maxPageScaledWidth + 32 > safeW || zoom > 1.05;
+  const viewportMarginX = isZoomedHorizontally
+    ? Math.max(48, Math.round(safeW * 0.35))
+    : Math.max(16, Math.floor((safeW - maxPageScaledWidth) / 2));
+  const viewportMarginY = Math.max(64, Math.round(safeH * 0.35), isMobile ? 140 : 64);
+  const surfaceWidth = Math.max(
+    safeW,
+    Math.ceil(maxPageScaledWidth + viewportMarginX * 2),
+  );
+  return { maxPageScaledWidth, viewportMarginX, viewportMarginY, surfaceWidth };
+}
+
+export function getPageOffsetInSurface(
+  pages: ViewportPageGeom[],
+  pageIndex: number,
+  zoom: number,
+  metrics: ViewportSurfaceMetrics,
+  pageGap = VIEWPORT_PAGE_GAP,
+): { left: number; top: number; rowTop: number; width: number; height: number } {
+  const clampedIdx = Math.max(0, Math.min(pages.length - 1, pageIndex));
+  let yVirt = 0;
+  for (let i = 0; i < clampedIdx; i++) {
+    const p = pages[i];
+    const dims = getDisplayDimensions(p.baseWidth, p.baseHeight, p.userRotation, zoom);
+    yVirt += dims.height + pageGap;
+  }
+  const target = pages[clampedIdx];
+  const targetDims = target
+    ? getDisplayDimensions(target.baseWidth, target.baseHeight, target.userRotation, zoom)
+    : { width: 0, height: 0 };
+  const left = Math.max(
+    metrics.viewportMarginX,
+    Math.round((metrics.surfaceWidth - targetDims.width) / 2),
+  );
+  const rowTop = metrics.viewportMarginY + yVirt;
+  const top = rowTop + pageGap / 2;
+  return { left, top, rowTop, width: targetDims.width, height: targetDims.height };
+}
+
+export function findAnchorPageIndex(
+  pages: ViewportPageGeom[],
+  scrollTop: number,
+  relY: number,
+  zoom: number,
+  metrics: ViewportSurfaceMetrics,
+  fallbackIndex = 0,
+  pageGap = VIEWPORT_PAGE_GAP,
+): number {
+  if (pages.length === 0) return 0;
+  const contentY = scrollTop + relY;
+  let yVirt = 0;
+  let bestIdx = Math.max(0, Math.min(pages.length - 1, fallbackIndex));
+  let bestDist = Infinity;
+
+  for (let i = 0; i < pages.length; i++) {
+    const dims = getDisplayDimensions(pages[i].baseWidth, pages[i].baseHeight, pages[i].userRotation, zoom);
+    const top = metrics.viewportMarginY + yVirt + pageGap / 2;
+    const bottom = top + dims.height;
+    if (contentY >= top - pageGap / 2 && contentY <= bottom + pageGap / 2) {
+      return i;
+    }
+    const dist = contentY < top ? top - contentY : contentY - bottom;
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestIdx = i;
+    }
+    yVirt += dims.height + pageGap;
+  }
+  return bestIdx;
+}
+
+export interface SmartHitOptions {
+  point: Point2D; // Page-local base PDF coordinates (points)
+  zoom: number;
+  isCoarsePointer: boolean;
+  selectBackgroundMode: boolean;
+  altKey?: boolean;
+  elements: CanvasElement[];
+  detectedTextBlocks: DetectedTextBlock[];
+  detectedImages: DetectedImageObject[];
+  replacedBlockIds: Set<string>;
+  replacedImageIds: Set<string>;
+}
+
+export type SmartHitResult =
+  | { tier: 2; kind: 'element'; element: CanvasElement }
+  | { tier: 3; kind: 'detected-text'; block: DetectedTextBlock }
+  | { tier: 4; kind: 'detected-image'; image: DetectedImageObject }
+  | { tier: 5; kind: 'background-element'; element: CanvasElement }
+  | { tier: 5; kind: 'background-detected-image'; image: DetectedImageObject }
+  | null;
+
+function distToBoxCenterSq(point: Point2D, box: RectBox): number {
+  const cx = box.x + box.width / 2;
+  const cy = box.y + box.height / 2;
+  const dx = point.x - cx;
+  const dy = point.y - cy;
+  return dx * dx + dy * dy;
+}
+
+function isTextElementKind(el: CanvasElement): boolean {
+  return el.kind === 'text-edit' || el.kind === 'text-add';
+}
+
+function isElementDeleted(el: CanvasElement): boolean {
+  return (el.kind === 'text-edit' || el.kind === 'image-replacement') && Boolean(el.deleted);
+}
+
+/**
+ * Multi-tier priority hit-testing with coarse-pointer text expansion and
+ * background isolation guard so clicks over full-page scans/background graphics
+ * select foreground text reliably unless explicitly targeting background layers.
+ */
+export function resolveSmartHitAtPoint(opts: SmartHitOptions): SmartHitResult {
+  const safeZoom = Math.max(0.25, opts.zoom);
+  const textPadPt = (opts.isCoarsePointer ? 6 : 2) / safeZoom;
+  const bgGuardPt = (opts.isCoarsePointer ? 8 : 4) / safeZoom;
+  const fgNonTextPadPt = 2 / safeZoom;
+
+  const findForegroundElementHit = (padOverride?: number): CanvasElement | null => {
+    const fgMatches: Array<{ el: CanvasElement; tier: number; insideExact: boolean; distSq: number }> = [];
+    for (const el of opts.elements) {
+      if (isElementDeleted(el) || el.locked || el.isBackgroundLayer) continue;
+      const isText = isTextElementKind(el);
+      const pad = padOverride !== undefined ? padOverride : isText ? textPadPt : fgNonTextPadPt;
+      if (!pointInRotatedRect(opts.point.x, opts.point.y, el, el.rotation, pad)) continue;
+      fgMatches.push({
+        el,
+        tier: getElementLayerTier(el),
+        insideExact: pointInRotatedRect(opts.point.x, opts.point.y, el, el.rotation, 0),
+        distSq: distToBoxCenterSq(opts.point, el),
+      });
+    }
+    if (fgMatches.length === 0) return null;
+
+    // Non-text annotations directly clicked above text (signatures/highlights/strokes at Tier 4)
+    // keep z-order priority; multiple text candidates resolve by closest center distance.
+    fgMatches.sort((a, b) => {
+      if (isTextElementKind(a.el) && isTextElementKind(b.el)) {
+        if (a.insideExact !== b.insideExact) return a.insideExact ? -1 : 1;
+        return a.distSq - b.distSq || b.el.zIndex - a.el.zIndex;
+      }
+      return b.tier - a.tier || b.el.zIndex - a.el.zIndex || a.distSq - b.distSq;
+    });
+    return fgMatches[0].el;
+  };
+
+  const findDetectedTextHit = (pad: number): DetectedTextBlock | null => {
+    const matches: Array<{ block: DetectedTextBlock; insideExact: boolean; distSq: number }> = [];
+    for (const block of opts.detectedTextBlocks) {
+      if (opts.replacedBlockIds.has(block.id)) continue;
+      if (!pointInRotatedRect(opts.point.x, opts.point.y, block, 0, pad)) continue;
+      matches.push({
+        block,
+        insideExact: pointInRotatedRect(opts.point.x, opts.point.y, block, 0, 0),
+        distSq: distToBoxCenterSq(opts.point, block),
+      });
+    }
+    if (matches.length === 0) return null;
+    matches.sort((a, b) => {
+      if (a.insideExact !== b.insideExact) return a.insideExact ? -1 : 1;
+      return a.distSq - b.distSq;
+    });
+    return matches[0].block;
+  };
+
+  const findForegroundDetectedImageHit = (): DetectedImageObject | null => {
+    const matches: DetectedImageObject[] = [];
+    for (const img of opts.detectedImages) {
+      if (opts.replacedImageIds.has(img.id) || img.isBackgroundLayer) continue;
+      if (pointInRotatedRect(opts.point.x, opts.point.y, img, img.rotation ?? 0, fgNonTextPadPt)) {
+        matches.push(img);
+      }
+    }
+    if (matches.length === 0) return null;
+    matches.sort((a, b) => b.operatorIndex - a.operatorIndex || a.width * a.height - b.width * b.height);
+    return matches[0];
+  };
+
+  const findBackgroundElementHit = (allowLocked: boolean): CanvasElement | null => {
+    const matches: CanvasElement[] = [];
+    for (const el of opts.elements) {
+      if (isElementDeleted(el) || !el.isBackgroundLayer) continue;
+      if (!allowLocked && el.locked) continue;
+      if (pointInRotatedRect(opts.point.x, opts.point.y, el, el.rotation, fgNonTextPadPt)) {
+        matches.push(el);
+      }
+    }
+    if (matches.length === 0) return null;
+    matches.sort((a, b) => b.zIndex - a.zIndex);
+    return matches[0];
+  };
+
+  const findBackgroundDetectedImageHit = (): DetectedImageObject | null => {
+    const matches: DetectedImageObject[] = [];
+    for (const img of opts.detectedImages) {
+      if (opts.replacedImageIds.has(img.id) || !img.isBackgroundLayer) continue;
+      if (pointInRotatedRect(opts.point.x, opts.point.y, img, img.rotation ?? 0, fgNonTextPadPt)) {
+        matches.push(img);
+      }
+    }
+    if (matches.length === 0) return null;
+    matches.sort((a, b) => b.operatorIndex - a.operatorIndex || a.width * a.height - b.width * b.height);
+    return matches[0];
+  };
+
+  // Explicit background-selection mode or Alt+Click: evaluate background layers first
+  if (opts.selectBackgroundMode || opts.altKey) {
+    const bgEl = findBackgroundElementHit(opts.selectBackgroundMode);
+    if (bgEl) return { tier: 5, kind: 'background-element', element: bgEl };
+    const bgImg = findBackgroundDetectedImageHit();
+    if (bgImg) return { tier: 5, kind: 'background-detected-image', image: bgImg };
+  }
+
+  // Tier 2: Unlocked foreground elements & promoted text
+  const fgEl = findForegroundElementHit();
+  if (fgEl) return { tier: 2, kind: 'element', element: fgEl };
+
+  // Tier 3: Unpromoted detected PDF text blocks
+  const textBlock = findDetectedTextHit(textPadPt);
+  if (textBlock) return { tier: 3, kind: 'detected-text', block: textBlock };
+
+  // Tier 4: Foreground detected images
+  const fgImg = findForegroundDetectedImageHit();
+  if (fgImg) return { tier: 4, kind: 'detected-image', image: fgImg };
+
+  // Tier 5: Guarded background fallback — check proximity guard before ever touching background
+  const nearFgEl = findForegroundElementHit(bgGuardPt);
+  if (nearFgEl) return { tier: 2, kind: 'element', element: nearFgEl };
+  const nearText = findDetectedTextHit(bgGuardPt);
+  if (nearText) return { tier: 3, kind: 'detected-text', block: nearText };
+
+  const bgEl = findBackgroundElementHit(false);
+  if (bgEl) return { tier: 5, kind: 'background-element', element: bgEl };
+  const bgImg = findBackgroundDetectedImageHit();
+  if (bgImg) return { tier: 5, kind: 'background-detected-image', image: bgImg };
+
+  return null;
+}
+
+/**
+ * Safely below iOS WebKit's ~16.7M (16,777,216) canvas backing-store limit to prevent blank renders
+ * at 300%-500% zoom on high-DPR displays.
+ */
+export const MAX_PDF_CANVAS_PIXELS = 12_582_912;
+
+export function computeCappedCanvasDpr(
+  cssWidth: number,
+  cssHeight: number,
+  dpr: number,
+): number {
+  const safeCssArea = Math.max(1, cssWidth * cssHeight);
+  const rawPixelArea = safeCssArea * dpr * dpr;
+  if (rawPixelArea <= MAX_PDF_CANVAS_PIXELS) return dpr;
+  return Math.max(1, Math.sqrt(MAX_PDF_CANVAS_PIXELS / safeCssArea));
 }

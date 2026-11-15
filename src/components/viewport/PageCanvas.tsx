@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { Layers } from 'lucide-react';
 import {
   getElementLayerTier,
   type CanvasElement,
@@ -13,8 +14,10 @@ import {
   pointDisplayToBase,
   pointInRotatedRect,
   rectBaseToDisplayFrame,
+  resolveSmartHitAtPoint,
+  type SmartHitResult,
 } from '@/engine/coordinates';
-import { resolveFontDisplayStatus } from '@/engine/fonts';
+import { calibrateDomTextMetrics, resolveFontDisplayStatus } from '@/engine/fonts';
 import { computePageNumberLayout } from '@/engine/pageNumbers';
 import { pointsToSmoothSvgPath } from '@/engine/pdfCompiler';
 import { pdfjsService } from '@/engine/pdfjsService';
@@ -75,6 +78,8 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   const setToolMode = useEditorStore((s) => s.setToolMode);
   const startEditDetectedText = useEditorStore((s) => s.startEditDetectedText);
   const promoteDetectedImage = useEditorStore((s) => s.promoteDetectedImage);
+  const updateElements = useEditorStore((s) => s.updateElements);
+  const selectBackgroundMode = useEditorStore((s) => s.selectBackgroundMode);
   const pendingSignaturePlacement = useEditorStore((s) => s.pendingSignaturePlacement);
   const placeSignatureAt = useEditorStore((s) => s.placeSignatureAt);
   const pageNumbering = useEditorStore((s) => s.pageNumbering);
@@ -83,7 +88,21 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   const [hoveredTextId, setHoveredTextId] = useState<string | null>(null);
   const [hoveredImageId, setHoveredImageId] = useState<string | null>(null);
   const [hoverBasePoint, setHoverBasePoint] = useState<{ x: number; y: number } | null>(null);
+  const [bgLongPressPrompt, setBgLongPressPrompt] = useState<{
+    x: number;
+    y: number;
+    image: DetectedImageObject;
+  } | null>(null);
   const suppressNextDetectedTextClickRef = useRef(false);
+  const longPressTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (longPressTimerRef.current !== null) {
+        window.clearTimeout(longPressTimerRef.current);
+      }
+    };
+  }, []);
 
   // Live MuPDF stream-stripped page preview so deleted/moved images & edited text
   // reveal authentic underlying table lines, shading, and graphics without white mask patches.
@@ -499,7 +518,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       selectElements([chosen.element.id]);
     } else if (chosen.kind === 'detected-image') {
       setEditingTextElementId(null);
-      promoteDetectedImage(chosen.img);
+      promoteDetectedImage(chosen.img, true);
     } else {
       const disp = axisAlignedRectBaseToDisplay(
         {
@@ -517,12 +536,98 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
     }
   };
 
+  const isCoarsePointerEvent = (pointerType?: string): boolean =>
+    pointerType === 'touch' ||
+    (typeof window !== 'undefined' &&
+      typeof window.matchMedia === 'function' &&
+      window.matchMedia('(pointer: coarse)').matches);
+
+  const dispatchSmartHit = (
+    hit: Exclude<SmartHitResult, null>,
+    forceBg: boolean,
+  ): boolean => {
+    setActivePage(page.id);
+    if (hit.kind === 'element') {
+      setEditingTextElementId(null);
+      selectElements([hit.element.id]);
+      return true;
+    }
+    if (hit.kind === 'detected-text') {
+      const disp = axisAlignedRectBaseToDisplay(
+        {
+          x: hit.block.x,
+          y: hit.block.y,
+          width: hit.block.width,
+          height: hit.block.height,
+        },
+        page.baseWidth,
+        page.baseHeight,
+        page.userRotation,
+        zoom,
+      );
+      startEditDetectedText(hit.block, sampleCanvasBackgroundColor(disp));
+      return true;
+    }
+    if (hit.kind === 'detected-image') {
+      setEditingTextElementId(null);
+      return Boolean(promoteDetectedImage(hit.image, false));
+    }
+    if (hit.kind === 'background-element') {
+      if (!forceBg && !selectBackgroundMode && hit.element.locked) {
+        return false;
+      }
+      setEditingTextElementId(null);
+      selectElements([hit.element.id]);
+      return true;
+    }
+    if (hit.kind === 'background-detected-image') {
+      if (!forceBg && !selectBackgroundMode) {
+        return false;
+      }
+      setEditingTextElementId(null);
+      return Boolean(promoteDetectedImage(hit.image, true));
+    }
+    return false;
+  };
+
+  const resolveForegroundHitAtClientPoint = (
+    clientX: number,
+    clientY: number,
+    isCoarse: boolean,
+  ): boolean => {
+    const pt = getBasePointFromEvent(clientX, clientY);
+    const hit = resolveSmartHitAtPoint({
+      point: pt,
+      zoom,
+      isCoarsePointer: isCoarse,
+      selectBackgroundMode: false,
+      altKey: false,
+      elements: visibleElements,
+      detectedTextBlocks: extraction?.textBlocks ?? [],
+      detectedImages: extraction?.images ?? [],
+      replacedBlockIds: editedBlockIds,
+      replacedImageIds: promotedImageIds,
+    });
+    if (
+      hit &&
+      (hit.kind === 'element' || hit.kind === 'detected-text' || hit.kind === 'detected-image')
+    ) {
+      return dispatchSmartHit(hit, false);
+    }
+    return false;
+  };
+
   const handleLayerPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     const storeState = useEditorStore.getState();
     if (e.button !== 0 || !e.isPrimary || storeState.activeTouchCount >= 2 || storeState.isPinching) {
       return;
     }
     setActivePage(page.id);
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    setBgLongPressPrompt(null);
 
     if (pendingSignaturePlacement) {
       e.stopPropagation();
@@ -534,8 +639,92 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
     }
 
     if (toolMode === 'select') {
+      const pt = getBasePointFromEvent(e.clientX, e.clientY);
+      const hit = resolveSmartHitAtPoint({
+        point: pt,
+        zoom,
+        isCoarsePointer: isCoarsePointerEvent(e.pointerType),
+        selectBackgroundMode,
+        altKey: e.altKey,
+        elements: visibleElements,
+        detectedTextBlocks: extraction?.textBlocks ?? [],
+        detectedImages: extraction?.images ?? [],
+        replacedBlockIds: editedBlockIds,
+        replacedImageIds: promotedImageIds,
+      });
+
+      if (!hit) {
+        selectElements([]);
+        setEditingTextElementId(null);
+        return;
+      }
+
+      if (
+        hit.kind === 'element' ||
+        hit.kind === 'detected-text' ||
+        hit.kind === 'detected-image'
+      ) {
+        dispatchSmartHit(hit, e.altKey);
+        return;
+      }
+
+      if (hit.kind === 'background-element') {
+        if (!dispatchSmartHit(hit, e.altKey || !hit.element.locked)) {
+          selectElements([]);
+          setEditingTextElementId(null);
+        }
+        return;
+      }
+
+      // hit.kind === 'background-detected-image'
+      const bgAreaRatio =
+        (hit.image.width * hit.image.height) / Math.max(1, page.baseWidth * page.baseHeight);
+      if (
+        selectBackgroundMode ||
+        e.altKey ||
+        (bgAreaRatio < 0.65 && !isCoarsePointerEvent(e.pointerType))
+      ) {
+        dispatchSmartHit(hit, true);
+        return;
+      }
+
+      // Open empty area over an unpromoted background image: deselect immediately and allow 500ms hold to reveal "Arka Planı Seç"
       selectElements([]);
       setEditingTextElementId(null);
+      const startX = e.clientX;
+      const startY = e.clientY;
+      const rect = layerRef.current?.getBoundingClientRect();
+      const dispX = rect ? e.clientX - rect.left : 40;
+      const dispY = rect ? e.clientY - rect.top : 40;
+      const bgImg = hit.image;
+
+      const cancelHold = () => {
+        if (longPressTimerRef.current !== null) {
+          window.clearTimeout(longPressTimerRef.current);
+          longPressTimerRef.current = null;
+        }
+        window.removeEventListener('pointermove', onHoldMove);
+        window.removeEventListener('pointerup', cancelHold);
+        window.removeEventListener('pointercancel', cancelHold);
+        window.removeEventListener('gullac:multitouch-start', cancelHold);
+      };
+
+      const onHoldMove = (me: PointerEvent) => {
+        if (Math.hypot(me.clientX - startX, me.clientY - startY) > 8) {
+          cancelHold();
+        }
+      };
+
+      window.addEventListener('pointermove', onHoldMove);
+      window.addEventListener('pointerup', cancelHold);
+      window.addEventListener('pointercancel', cancelHold);
+      window.addEventListener('gullac:multitouch-start', cancelHold);
+      longPressTimerRef.current = window.setTimeout(() => {
+        cancelHold();
+        const s = useEditorStore.getState();
+        if (s.isPinching || s.activeTouchCount >= 2) return;
+        setBgLongPressPrompt({ x: dispX, y: dispY, image: bgImg });
+      }, 500);
       return;
     }
 
@@ -544,21 +733,49 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
     }
 
     if (toolMode === 'draw') {
-      e.currentTarget.setPointerCapture(e.pointerId);
+      const targetEl = e.currentTarget;
+      targetEl.setPointerCapture(e.pointerId);
       const startPt = getBasePointFromEvent(e.clientX, e.clientY);
       const pts = [startPt];
       setDraftStrokePoints(pts);
 
+      let aborted = false;
+
+      const cleanup = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', abortGesture);
+        window.removeEventListener('gullac:multitouch-start', abortGesture);
+        try {
+          if (targetEl.hasPointerCapture(e.pointerId)) {
+            targetEl.releasePointerCapture(e.pointerId);
+          }
+        } catch {
+          // ignore if capture already released
+        }
+      };
+
+      const abortGesture = () => {
+        if (aborted) return;
+        aborted = true;
+        cleanup();
+        pts.length = 0;
+        setDraftStrokePoints(null);
+      };
+
       const onMove = (me: PointerEvent) => {
-        if (useEditorStore.getState().isPinching) return;
+        const store = useEditorStore.getState();
+        if (aborted || store.isPinching || store.activeTouchCount >= 2) {
+          abortGesture();
+          return;
+        }
         pts.push(getBasePointFromEvent(me.clientX, me.clientY));
         setDraftStrokePoints([...pts]);
       };
 
       const onUp = () => {
-        window.removeEventListener('pointermove', onMove);
-        window.removeEventListener('pointerup', onUp);
-        window.removeEventListener('pointercancel', onUp);
+        if (aborted) return;
+        cleanup();
 
         if (pts.length >= 2) {
           const minX = Math.min(...pts.map((p) => p.x));
@@ -593,19 +810,47 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
 
       window.addEventListener('pointermove', onMove);
       window.addEventListener('pointerup', onUp);
-      window.addEventListener('pointercancel', onUp);
+      window.addEventListener('pointercancel', abortGesture);
+      window.addEventListener('gullac:multitouch-start', abortGesture);
       return;
     }
 
     if (toolMode === 'highlight') {
-      e.currentTarget.setPointerCapture(e.pointerId);
+      const targetEl = e.currentTarget;
+      targetEl.setPointerCapture(e.pointerId);
       const startPt = getBasePointFromEvent(e.clientX, e.clientY);
       setDraftRect({ x: startPt.x, y: startPt.y, width: 1, height: 1 });
 
       let latestRect: RectBox = { x: startPt.x, y: startPt.y, width: 1, height: 1 };
+      let aborted = false;
+
+      const cleanup = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', abortGesture);
+        window.removeEventListener('gullac:multitouch-start', abortGesture);
+        try {
+          if (targetEl.hasPointerCapture(e.pointerId)) {
+            targetEl.releasePointerCapture(e.pointerId);
+          }
+        } catch {
+          // ignore if capture already released
+        }
+      };
+
+      const abortGesture = () => {
+        if (aborted) return;
+        aborted = true;
+        cleanup();
+        setDraftRect(null);
+      };
 
       const onMove = (me: PointerEvent) => {
-        if (useEditorStore.getState().isPinching) return;
+        const store = useEditorStore.getState();
+        if (aborted || store.isPinching || store.activeTouchCount >= 2) {
+          abortGesture();
+          return;
+        }
         const curPt = getBasePointFromEvent(me.clientX, me.clientY);
         latestRect = {
           x: Math.min(startPt.x, curPt.x),
@@ -617,9 +862,8 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       };
 
       const onUp = () => {
-        window.removeEventListener('pointermove', onMove);
-        window.removeEventListener('pointerup', onUp);
-        window.removeEventListener('pointercancel', onUp);
+        if (aborted) return;
+        cleanup();
         if (latestRect.width >= 6 && latestRect.height >= 6) {
           const el: HighlightElement = {
             id: createId('ann'),
@@ -645,7 +889,8 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
 
       window.addEventListener('pointermove', onMove);
       window.addEventListener('pointerup', onUp);
-      window.addEventListener('pointercancel', onUp);
+      window.addEventListener('pointercancel', abortGesture);
+      window.addEventListener('gullac:multitouch-start', abortGesture);
     }
   };
 
@@ -686,6 +931,16 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
         handleAltCycleAtClientPoint(e.clientX, e.clientY);
         return;
       }
+      const isBehindEl =
+        (el.kind === 'image' || el.kind === 'image-replacement') && Boolean(el.behindContent);
+      if ((el.isBackgroundLayer || isBehindEl) && !selectBackgroundMode) {
+        const claimed = resolveForegroundHitAtClientPoint(
+          e.clientX,
+          e.clientY,
+          isCoarsePointerEvent(e.pointerType),
+        );
+        if (claimed) return;
+      }
       selectElements([el.id]);
     };
 
@@ -699,11 +954,27 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
         userFonts,
         extractedFonts,
       });
-      const hScale = el.horizontalScale && el.horizontalScale !== 1 ? el.horizontalScale : 1;
+      const hScale =
+        el.horizontalScale && Math.abs(el.horizontalScale - 1) > 0.005 ? el.horizontalScale : 1;
+      const hasHScale = Math.abs(hScale - 1) > 0.005;
       const letterSpacingPx =
         el.letterSpacing && el.letterSpacing !== 0
-          ? `${(el.letterSpacing * zoom).toFixed(2)}px`
+          ? `${(el.letterSpacing * zoom).toFixed(3)}px`
           : undefined;
+      const calibration = calibrateDomTextMetrics({
+        sampleText: el.text,
+        targetPdfWidthPt: 0,
+        fontSizePt: el.fontSize,
+        lineHeight: el.lineHeight,
+        baselineOffsetPt: el.baselineOffset,
+        fontFamily: el.fontFamily,
+        cssFontFamily: fontStatus.cssFamily,
+        fontWeight: el.bold ? 700 : 400,
+        fontStyle: el.italic ? 'italic' : 'normal',
+        initialHorizontalScale: hScale,
+      });
+      const topOffsetPx = calibration.topOffsetPt * zoom;
+
       return (
         <div
           key={el.id}
@@ -727,75 +998,93 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
             opacity: el.opacity,
             zIndex: getCssZIndexForElement(el),
             boxSizing: 'border-box',
+            padding: 0,
+            border: 0,
+            margin: 0,
             fontFamily: fontStatus.cssFamily,
             fontSize: `${el.fontSize * zoom}px`,
             fontWeight: el.bold ? 700 : 400,
             fontStyle: el.italic ? 'italic' : 'normal',
-            fontStretch: hScale < 0.92 ? 'condensed' : hScale > 1.08 ? 'expanded' : 'normal',
             letterSpacing: letterSpacingPx,
             color: el.color,
             lineHeight: el.lineHeight,
             textAlign: el.align,
+            fontKerning: 'normal',
             backgroundColor: el.kind === 'text-add' ? el.backgroundColor : undefined,
-            whiteSpace: 'pre-wrap',
-            overflowWrap: 'break-word',
-            wordBreak: 'normal',
           }}
           className={`select-none ${
             toolMode === 'select' && !isSelected ? 'hover:ring-1 hover:ring-blue-400/70' : ''
           }`}
         >
-          {el.runs && el.runs.length > 0
-            ? el.runs.map((run, idx) => {
-                const rBold = run.bold ?? el.bold;
-                const rItalic = run.italic ?? el.italic;
-                const style = {
-                  fontWeight: rBold ? 700 : 400,
-                  fontStyle: rItalic ? ('italic' as const) : ('normal' as const),
-                };
-                if (run.script === 'super') {
+          <div
+            style={{
+              position: 'relative',
+              top: `${topOffsetPx}px`,
+              width: hasHScale ? `${100 / hScale}%` : '100%',
+              transform: hasHScale ? `scaleX(${hScale})` : undefined,
+              transformOrigin: 'left top',
+              padding: 0,
+              border: 0,
+              margin: 0,
+              boxSizing: 'border-box',
+              fontKerning: 'normal',
+              whiteSpace: 'pre-wrap',
+              overflowWrap: 'break-word',
+              wordBreak: 'normal',
+            }}
+          >
+            {el.runs && el.runs.length > 0
+              ? el.runs.map((run, idx) => {
+                  const rBold = run.bold ?? el.bold;
+                  const rItalic = run.italic ?? el.italic;
+                  const style = {
+                    fontWeight: rBold ? 700 : 400,
+                    fontStyle: rItalic ? ('italic' as const) : ('normal' as const),
+                  };
+                  if (run.script === 'super') {
+                    return (
+                      <sup
+                        key={idx}
+                        style={{
+                          ...style,
+                          fontSize: '0.60em',
+                          position: 'static',
+                          top: 0,
+                          bottom: 'auto',
+                          verticalAlign: '0.48em',
+                          lineHeight: 0,
+                        }}
+                      >
+                        {run.text}
+                      </sup>
+                    );
+                  }
+                  if (run.script === 'sub') {
+                    return (
+                      <sub
+                        key={idx}
+                        style={{
+                          ...style,
+                          fontSize: '0.60em',
+                          position: 'static',
+                          top: 'auto',
+                          bottom: 0,
+                          verticalAlign: '-0.22em',
+                          lineHeight: 0,
+                        }}
+                      >
+                        {run.text}
+                      </sub>
+                    );
+                  }
                   return (
-                    <sup
-                      key={idx}
-                      style={{
-                        ...style,
-                        fontSize: '0.60em',
-                        position: 'static',
-                        top: 0,
-                        bottom: 'auto',
-                        verticalAlign: '0.48em',
-                        lineHeight: 0,
-                      }}
-                    >
+                    <span key={idx} style={style}>
                       {run.text}
-                    </sup>
+                    </span>
                   );
-                }
-                if (run.script === 'sub') {
-                  return (
-                    <sub
-                      key={idx}
-                      style={{
-                        ...style,
-                        fontSize: '0.60em',
-                        position: 'static',
-                        top: 'auto',
-                        bottom: 0,
-                        verticalAlign: '-0.22em',
-                        lineHeight: 0,
-                      }}
-                    >
-                      {run.text}
-                    </sub>
-                  );
-                }
-                return (
-                  <span key={idx} style={style}>
-                    {run.text}
-                  </span>
-                );
-              })
-            : el.text}
+                })
+              : el.text}
+          </div>
         </div>
       );
     }
@@ -806,11 +1095,15 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       const keepOriginalBehindInCanvas =
         el.kind === 'image-replacement' && isUnmodifiedBehindImage(el, extraction?.images);
       const tierZIndex = getCssZIndexForElement(el);
-      const imageZIndex = isBehindImage
+      const rawImageZIndex = isBehindImage
         ? keepOriginalBehindInCanvas || canvasPaperTransparent
           ? 5
           : 12
         : tierZIndex;
+      const imageZIndex =
+        el.isBackgroundLayer && !selectBackgroundMode
+          ? Math.min(rawImageZIndex, 50)
+          : rawImageZIndex;
       const flipScaleX = (el.kind === 'image' || el.kind === 'image-replacement') && el.flipX ? -1 : 1;
       const flipScaleY = (el.kind === 'image' || el.kind === 'image-replacement') && el.flipY ? -1 : 1;
       const innerFlipTransform =
@@ -958,23 +1251,32 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
             zoom,
           );
           const hovered = hoveredImageId === img.id;
-          const isBg = Boolean(img.isHeaderOrBackground || img.behindContent);
+          const isBg = Boolean(
+            img.isBackgroundLayer || img.isHeaderOrBackground || img.behindContent,
+          );
+          const isolateBg = isBg && !selectBackgroundMode;
           return (
             <div
               key={img.id}
               data-testid={`detected-image-${img.id}`}
               data-detected-image="true"
               data-layer-tier={isBg ? 1 : 2}
-              onMouseEnter={() => setHoveredImageId(img.id)}
-              onMouseLeave={() => setHoveredImageId(null)}
+              data-background-layer={isBg ? 'true' : 'false'}
+              onMouseEnter={() => {
+                if (!isolateBg) setHoveredImageId(img.id);
+              }}
+              onMouseLeave={() => {
+                if (!isolateBg) setHoveredImageId(null);
+              }}
               onPointerDown={(e) => {
+                if (isolateBg) return;
                 if (e.button !== 0) return;
                 e.stopPropagation();
                 if (e.altKey) {
                   handleAltCycleAtClientPoint(e.clientX, e.clientY);
                   return;
                 }
-                promoteDetectedImage(img);
+                promoteDetectedImage(img, selectBackgroundMode);
               }}
               style={{
                 position: 'absolute',
@@ -982,14 +1284,23 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
                 top: `${disp.y}px`,
                 width: `${disp.width}px`,
                 height: `${disp.height}px`,
-                zIndex: isBg ? 105 : 205,
+                zIndex: isolateBg ? 10 : isBg ? 105 : 205,
+                pointerEvents: isolateBg ? 'none' : 'auto',
               }}
-              title="Click to select, move, resize, rotate, or delete embedded image"
-              className={`cursor-pointer transition ${
-                hovered
-                  ? 'border-2 border-dashed border-emerald-500 bg-emerald-500/10'
-                  : 'border border-transparent hover:border-emerald-400/50'
-              }`}
+              title={
+                isolateBg
+                  ? undefined
+                  : 'Click to select, move, resize, rotate, or delete embedded image'
+              }
+              className={
+                isolateBg
+                  ? 'border border-transparent'
+                  : `cursor-pointer transition ${
+                      hovered
+                        ? 'border-2 border-dashed border-emerald-500 bg-emerald-500/10'
+                        : 'border border-transparent hover:border-emerald-400/50'
+                    }`
+              }
             />
           );
         })}
@@ -1312,6 +1623,11 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
                 baseHeight={page.baseHeight}
                 userRotation={page.userRotation}
                 zoom={zoom}
+                selectBackgroundMode={selectBackgroundMode}
+                onSmartForegroundFallback={resolveForegroundHitAtClientPoint}
+                onUnlockElement={() =>
+                  updateElements([{ id: sel.id, patch: { locked: false } }], true)
+                }
                 onAltClickCycle={(cx, cy) => handleAltCycleAtClientPoint(cx, cy)}
                 onStartTextEdit={
                   sel.kind === 'text-add' || sel.kind === 'text-edit'
@@ -1320,6 +1636,29 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
                 }
               />
             ))}
+
+        {bgLongPressPrompt && (
+          <button
+            type="button"
+            data-testid="bg-longpress-select-pill"
+            onPointerDown={(e) => e.stopPropagation()}
+            onClick={(e) => {
+              e.stopPropagation();
+              promoteDetectedImage(bgLongPressPrompt.image, true);
+              setBgLongPressPrompt(null);
+            }}
+            style={{
+              position: 'absolute',
+              left: `${Math.max(12, Math.min(displayDims.width - 150, bgLongPressPrompt.x - 65))}px`,
+              top: `${Math.max(12, bgLongPressPrompt.y - 42)}px`,
+              zIndex: 540,
+            }}
+            className="inline-flex items-center gap-1.5 rounded-full border border-amber-400/60 bg-slate-900/95 px-3 py-1.5 text-xs font-semibold text-amber-200 shadow-xl backdrop-blur hover:bg-slate-800"
+          >
+            <Layers className="h-3.5 w-3.5 text-amber-400" />
+            <span>Arka Planı Seç</span>
+          </button>
+        )}
       </div>
 
       <div className="mt-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">

@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'react';
 import type { TextAddElement, TextEditElement } from '@/types/elements';
 import type { RotationAngle, TextRun } from '@/types/pdf';
 import { rectBaseToDisplayFrame } from '@/engine/coordinates';
-import { resolveFontDisplayStatus } from '@/engine/fonts';
+import { calibrateDomTextMetrics, resolveFontDisplayStatus } from '@/engine/fonts';
 import {
   applyStyleToRunRange,
   ensureRunsFromElement,
@@ -95,16 +95,21 @@ export function InlineTextEditor({
     const ed = editorRef.current;
     const el = elementRef.current;
     let nextHeight = el.height;
+    let renderedLineCount = Math.max(1, parsedText.split('\n').length);
     if (ed) {
       const prevHeight = ed.style.height;
       const prevMinH = ed.style.minHeight;
       ed.style.minHeight = '0px';
       ed.style.height = 'auto';
-      const scrollH = Math.ceil(ed.scrollHeight / zoom + 1);
+      const rawScrollHeightPx = ed.scrollHeight;
+      const scrollH = Math.ceil(rawScrollHeightPx / zoom + 1);
       ed.style.height = prevHeight;
       ed.style.minHeight = prevMinH;
       const minSingleLineH = Math.ceil(el.fontSize * el.lineHeight + 2);
       nextHeight = Math.max(minSingleLineH, scrollH);
+      const lineStepPx = Math.max(1, el.fontSize * zoom * el.lineHeight);
+      const contentHeightPx = Math.max(lineStepPx, rawScrollHeightPx);
+      renderedLineCount = Math.max(1, Math.round(contentHeightPx / lineStepPx));
     }
 
     lastSignatureRef.current = computeRunsSignature(parsedRuns, el.bold, el.italic);
@@ -116,6 +121,7 @@ export function InlineTextEditor({
             text: parsedText,
             runs: parsedRuns,
             height: nextHeight,
+            renderedLineCount,
           },
         },
       ],
@@ -231,11 +237,24 @@ export function InlineTextEditor({
   const finishEditing = () => {
     const ed = editorRef.current;
     const el = elementRef.current;
+    if (useEditorStore.getState().editingTextElementId !== el.id) {
+      onFinish();
+      return;
+    }
     if (ed) {
+      const prevHeight = ed.style.height;
+      const prevMinH = ed.style.minHeight;
+      ed.style.minHeight = '0px';
+      ed.style.height = 'auto';
+      const lineStepPx = Math.max(1, el.fontSize * zoom * el.lineHeight);
+      const contentHeightPx = Math.max(lineStepPx, ed.scrollHeight);
+      ed.style.height = prevHeight;
+      ed.style.minHeight = prevMinH;
+      const renderedLineCount = Math.max(1, Math.round(contentHeightPx / lineStepPx));
       const parsed = parseContainerRuns(ed, el.bold, el.italic);
-      if (parsed.text !== el.text) {
+      if (parsed.text !== el.text || el.renderedLineCount !== renderedLineCount) {
         updateElements(
-          [{ id: el.id, patch: { text: parsed.text, runs: parsed.runs } }],
+          [{ id: el.id, patch: { text: parsed.text, runs: parsed.runs, renderedLineCount } }],
           false,
         );
       }
@@ -251,11 +270,28 @@ export function InlineTextEditor({
         : (element.maskColor ?? '#ffffff')
       : element.backgroundColor || 'rgba(255, 255, 255, 0.94)';
 
-  const hScale = element.horizontalScale && element.horizontalScale !== 1 ? element.horizontalScale : 1;
+  const hScale =
+    element.horizontalScale && Math.abs(element.horizontalScale - 1) > 0.005
+      ? element.horizontalScale
+      : 1;
+  const hasHScale = Math.abs(hScale - 1) > 0.005;
   const letterSpacingPx =
     element.letterSpacing && element.letterSpacing !== 0
-      ? `${(element.letterSpacing * zoom).toFixed(2)}px`
+      ? `${(element.letterSpacing * zoom).toFixed(3)}px`
       : undefined;
+  const calibration = calibrateDomTextMetrics({
+    sampleText: element.text,
+    targetPdfWidthPt: 0,
+    fontSizePt: element.fontSize,
+    lineHeight: element.lineHeight,
+    baselineOffsetPt: element.baselineOffset,
+    fontFamily: element.fontFamily,
+    cssFontFamily: fontStatus.cssFamily,
+    fontWeight: element.bold ? 700 : 400,
+    fontStyle: element.italic ? 'italic' : 'normal',
+    initialHorizontalScale: hScale,
+  });
+  const topOffsetPx = calibration.topOffsetPt * zoom;
 
   const bannerText =
     fontStatus.status === 'embedded-complete'
@@ -278,7 +314,7 @@ export function InlineTextEditor({
         position: 'absolute',
         left: `${frame.left}px`,
         top: `${frame.top}px`,
-        width: `${Math.max(40, frame.width)}px`,
+        width: `${Math.max(16, frame.width)}px`,
         minHeight: `${Math.max(20, frame.height)}px`,
         transform: `rotate(${frame.rotation}deg)`,
         transformOrigin: 'center center',
@@ -365,21 +401,26 @@ export function InlineTextEditor({
         }}
         spellCheck={false}
         style={{
+          position: 'relative',
+          top: `${topOffsetPx}px`,
           boxSizing: 'border-box',
-          width: '100%',
+          width: hasHScale ? `${100 / hScale}%` : '100%',
+          transform: hasHScale ? `scaleX(${hScale})` : undefined,
+          transformOrigin: 'left top',
           minHeight: `${Math.max(20, frame.height)}px`,
           fontFamily: fontStatus.cssFamily,
           fontSize: `${element.fontSize * zoom}px`,
           fontWeight: element.bold ? 700 : 400,
           fontStyle: element.italic ? 'italic' : 'normal',
-          fontStretch: hScale < 0.92 ? 'condensed' : hScale > 1.08 ? 'expanded' : 'normal',
           letterSpacing: letterSpacingPx,
           color: element.color,
           lineHeight: element.lineHeight,
           textAlign: element.align,
+          fontKerning: 'normal',
           backgroundColor: editorBg,
           opacity: element.opacity,
           padding: 0,
+          border: 0,
           margin: 0,
           outline: '1.5px solid #2563eb',
           outlineOffset: '1px',

@@ -28,10 +28,12 @@ import type {
 } from '@/types/pdf';
 import { normalizeRotation } from '@/engine/coordinates';
 import {
+  calibrateDomTextMetrics,
   findMatchingFontByKey,
   isBuiltinFontFamily,
   parsePdfFontMetadata,
   resolveBlockFontAssignment,
+  resolveFontDisplayStatus,
 } from '@/engine/fonts';
 import { parsePageRangeExpression } from '@/engine/pageRange';
 import { blobRegistry } from '@/utils/blobRegistry';
@@ -109,6 +111,7 @@ interface EditorState {
   mobileInspectorSnap: MobileInspectorSnap;
   isPinching: boolean;
   activeTouchCount: number;
+  selectBackgroundMode: boolean;
 
   savedSignatures: SavedSignature[];
 
@@ -140,6 +143,7 @@ interface EditorState {
   setMobileSheet: (sheet: MobileSheetTab) => void;
   setMobileInspectorSnap: (snap: MobileInspectorSnap) => void;
   setPinchState: (isPinching: boolean, activeTouchCount?: number) => void;
+  setSelectBackgroundMode: (enabled: boolean) => void;
   setPageNumbering: (config: PageNumberingConfig | null) => void;
 
   loadInitialDocument: (doc: SourceDocument, pages: PageMeta[]) => void;
@@ -187,7 +191,10 @@ interface EditorState {
 
   // Helpers for starting inline edit of detected PDF text or moving detected PDF image
   startEditDetectedText: (block: DetectedTextBlock, maskColor?: string) => TextEditElement;
-  promoteDetectedImage: (img: DetectedImageObject) => ImageReplacementElement;
+  promoteDetectedImage: (
+    img: DetectedImageObject,
+    forcePromote?: boolean,
+  ) => ImageReplacementElement | null;
 
   // Repeating images / watermarks / headers / footers
   applyImageToPages: (
@@ -440,6 +447,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   mobileInspectorSnap: 'collapsed',
   isPinching: false,
   activeTouchCount: 0,
+  selectBackgroundMode: false,
 
   savedSignatures: [],
 
@@ -460,7 +468,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }),
   setZoom: (zoom, mode = 'custom') =>
     set({
-      zoom: Math.min(4, Math.max(0.25, Number(zoom.toFixed(3)))),
+      zoom: Math.min(5, Math.max(0.25, Number(zoom.toFixed(3)))),
       zoomMode: mode,
     }),
   setZoomMode: (zoomMode) => set({ zoomMode }),
@@ -490,6 +498,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       isPinching,
       activeTouchCount: activeTouchCount !== undefined ? activeTouchCount : s.activeTouchCount,
     })),
+  setSelectBackgroundMode: (selectBackgroundMode) => set({ selectBackgroundMode }),
   setPageNumbering: (pageNumbering) => {
     const state = get();
     const snapshot = cloneSnapshot(state.pages, state.elements, state.pageNumbering);
@@ -582,7 +591,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   setPageExtraction: (pageId, result) =>
     set((s) => {
-      const sourceDocId = s.pages.find((p) => p.id === pageId)?.sourceDocId;
+      const page = s.pages.find((p) => p.id === pageId);
+      const sourceDocId = page?.sourceDocId;
       const mappedBlocks = result.textBlocks.map((b) => {
         const res = resolveBlockFontAssignment({
           rawFontName: b.rawFontName,
@@ -602,10 +612,45 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           isCustomFont: res.isCustomFont,
         };
       });
+
+      const pageArea = Math.max(
+        1,
+        (page?.baseWidth ?? 612) * (page?.baseHeight ?? 792),
+      );
+      const classifiedImages = result.images.map((img) => {
+        const imgArea = Math.max(0, img.width * img.height);
+        const areaRatio = imgArea / pageArea;
+        const ix0 = img.x;
+        const iy0 = img.y;
+        const ix1 = img.x + img.width;
+        const iy1 = img.y + img.height;
+        const hasOverlappingTextBlock = mappedBlocks.some((tb) => {
+          const tbArea = Math.max(1, tb.width * tb.height);
+          const ox = Math.max(0, Math.min(ix1, tb.x + tb.width) - Math.max(ix0, tb.x));
+          const oy = Math.max(0, Math.min(iy1, tb.y + tb.height) - Math.max(iy0, tb.y));
+          return ox * oy >= 0.2 * tbArea;
+        });
+        const isBackgroundLayer = Boolean(
+          img.isBackgroundLayer ||
+            areaRatio >= 0.65 ||
+            img.isHeaderOrBackground ||
+            (hasOverlappingTextBlock && areaRatio >= 0.15),
+        );
+        return {
+          ...img,
+          isBackgroundLayer,
+          behindContent: img.behindContent || isBackgroundLayer,
+        };
+      });
+
       return {
         pageExtractions: {
           ...s.pageExtractions,
-          [pageId]: { ...result, textBlocks: mappedBlocks },
+          [pageId]: {
+            ...result,
+            textBlocks: mappedBlocks,
+            images: classifiedImages,
+          },
         },
         extractingPages: { ...s.extractingPages, [pageId]: false },
       };
@@ -1291,6 +1336,39 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return existing;
     }
 
+    const lines = block.text.split('\n');
+    const longestLine = lines.reduce(
+      (best, cur) => (cur.length > best.length ? cur : best),
+      '',
+    );
+    const fontStatus = resolveFontDisplayStatus({
+      fontFamily: block.fontFamily,
+      fallbackFontFamily: block.fallbackFontFamily,
+      originalFontName: block.originalFontName ?? block.rawFontName,
+      isCustomFont: block.isCustomFont,
+      text: block.text,
+      userFonts: state.userFonts,
+      extractedFonts: state.extractedFonts,
+    });
+    const isMultiVisualLine =
+      lines.length > 1 ||
+      block.height >= block.fontSize * Math.max(1.05, block.lineHeight || 1.2) * 1.65;
+    const calibration = calibrateDomTextMetrics({
+      sampleText: longestLine,
+      targetPdfWidthPt: isMultiVisualLine ? 0 : block.width,
+      fontSizePt: block.fontSize,
+      lineHeight: block.lineHeight,
+      baselineOffsetPt: block.baselineOffset,
+      fontFamily: block.fontFamily,
+      cssFontFamily: fontStatus.cssFamily,
+      fontWeight: block.bold ? 700 : 400,
+      fontStyle: block.italic ? 'italic' : 'normal',
+      initialHorizontalScale: block.horizontalScale ?? 1,
+    });
+    const initialWidth =
+      Math.max(block.paragraphWidth ?? block.width, block.width) +
+      (isMultiVisualLine ? 0 : Math.max(4, block.fontSize * 0.25));
+
     const created: TextEditElement = {
       id: createId('txtedit'),
       pageId: block.pageId,
@@ -1305,7 +1383,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       originalText: block.text,
       x: block.x,
       y: block.y,
-      width: Math.max((block.paragraphWidth ?? block.width) + 2, 40),
+      width: initialWidth,
       height: Math.max(block.height, block.fontSize * 1.25),
       rotation: 0,
       opacity: 1,
@@ -1324,8 +1402,19 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       italic: block.italic,
       align: block.align ?? 'left',
       lineHeight: block.lineHeight,
-      horizontalScale: block.horizontalScale,
-      letterSpacing: block.letterSpacing,
+      baselineOffset: block.baselineOffset,
+      horizontalScale: calibration.horizontalScale,
+      letterSpacing:
+        calibration.letterSpacingPt !== 0
+          ? calibration.letterSpacingPt
+          : (block.letterSpacing ?? 0),
+      renderedLineCount: isMultiVisualLine
+        ? Math.max(
+            lines.length,
+            Math.round(block.height / (block.fontSize * Math.max(1.05, block.lineHeight || 1.2))),
+          )
+        : lines.length,
+      widthResizedByUser: false,
       maskColor: maskColor ?? '#ffffff',
     };
 
@@ -1345,8 +1434,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     return created;
   },
 
-  promoteDetectedImage: (img) => {
+  promoteDetectedImage: (img, forcePromote = false) => {
     const state = get();
+    const isBgLayer = Boolean(img.isBackgroundLayer || img.isHeaderOrBackground);
     const existing = state.elements.find(
       (el): el is ImageReplacementElement =>
         el.kind === 'image-replacement' &&
@@ -1355,6 +1445,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         !el.deleted,
     );
     if (existing) {
+      if (!forcePromote && (existing.isBackgroundLayer || isBgLayer) && !state.selectBackgroundMode) {
+        return null;
+      }
       set({
         selectedElementIds: [existing.id],
         activePageId: img.pageId,
@@ -1362,8 +1455,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       return existing;
     }
 
+    if (!forcePromote && img.isBackgroundLayer && !state.selectBackgroundMode) {
+      return null;
+    }
+
     const previewUrl = blobRegistry.createUrlFromBytes(img.pngBytes, 'image/png', 'doc');
-    const isBehind = Boolean(img.behindContent || img.isHeaderOrBackground);
+    const isBehind = Boolean(img.behindContent || isBgLayer);
     const tier: LayerTier = isBehind ? 1 : 2;
     const created: ImageReplacementElement = {
       id: createId('imgedit'),
@@ -1394,6 +1491,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       naturalHeight: img.pixelHeight,
       aspectLocked: true,
       behindContent: isBehind,
+      isBackgroundLayer: isBgLayer,
     };
 
     const snapshot = cloneSnapshot(state.pages, state.elements, state.pageNumbering);
@@ -1681,10 +1779,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   undo: () => {
     const state = get();
-    if (state.past.length === 0) return;
-    const previous = state.past[state.past.length - 1];
+    let effectivePast = state.past;
+    if (state.editingTextElementId !== null && state.transactionBaseline) {
+      effectivePast = pushSnapshot(effectivePast, state.transactionBaseline);
+    }
+    if (effectivePast.length === 0) return;
+    const previous = effectivePast[effectivePast.length - 1];
     const currentSnapshot = cloneSnapshot(state.pages, state.elements, state.pageNumbering);
-    const nextPast = state.past.slice(0, -1);
+    const nextPast = effectivePast.slice(0, -1);
     const nextFuture = [currentSnapshot, ...state.future].slice(0, MAX_HISTORY_DEPTH);
     const sanitized = sanitizeSelectionAfterSnapshot(
       previous.pages,
@@ -1717,10 +1819,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   redo: () => {
     const state = get();
     if (state.future.length === 0) return;
+    let effectivePast = state.past;
+    if (state.editingTextElementId !== null && state.transactionBaseline) {
+      effectivePast = pushSnapshot(effectivePast, state.transactionBaseline);
+    }
     const next = state.future[0];
     const currentSnapshot = cloneSnapshot(state.pages, state.elements, state.pageNumbering);
     const nextFuture = state.future.slice(1);
-    const nextPast = pushSnapshot(state.past, currentSnapshot);
+    const nextPast = pushSnapshot(effectivePast, currentSnapshot);
     const sanitized = sanitizeSelectionAfterSnapshot(
       next.pages,
       next.elements,

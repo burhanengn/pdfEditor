@@ -2,6 +2,7 @@ import {
   useCallback,
   useEffect,
   useImperativeHandle,
+  useLayoutEffect,
   useRef,
   useState,
   forwardRef,
@@ -9,7 +10,15 @@ import {
 } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import { FileUp, Sparkles } from 'lucide-react';
-import { getDisplayDimensions } from '@/engine/coordinates';
+import {
+  computeViewportSurfaceMetrics,
+  findAnchorPageIndex,
+  getDisplayDimensions,
+  getPageOffsetInSurface,
+  VIEWPORT_MAX_ZOOM,
+  VIEWPORT_MIN_ZOOM,
+  VIEWPORT_PAGE_GAP,
+} from '@/engine/coordinates';
 import {
   insertImageFileOnPage,
   mergePdfFile,
@@ -17,12 +26,21 @@ import {
   openPdfFile,
 } from '@/engine/documentController';
 import { generateSamplePdfBytes } from '@/engine/samplePdf';
+import { useMediaQuery } from '@/hooks/useMediaQuery';
 import { useEditorStore } from '@/store/useEditorStore';
 import { BrandLogo } from '../BrandLogo';
 import { PageCanvas } from './PageCanvas';
 
 export interface DocumentViewportHandle {
   scrollToPage: (pageIndex: number) => void;
+}
+
+interface PinchSession {
+  startZoom: number;
+  startDist: number;
+  anchorPageIndex: number;
+  pdfLocalX: number;
+  pdfLocalY: number;
 }
 
 export const DocumentViewport = forwardRef<DocumentViewportHandle>(function DocumentViewport(
@@ -42,39 +60,118 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const touchPointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
-  const pinchSessionRef = useRef<{
-    lastDist: number;
-    lastMidX: number;
-    lastMidY: number;
+  const pinchSessionRef = useRef<PinchSession | null>(null);
+  const pendingScrollRef = useRef<{
+    left: number;
+    top: number;
+    targetZoom?: number;
+    targetSurfaceWidth?: number;
   } | null>(null);
+  const lastAutoPositionedFirstPageRef = useRef<string | null>(null);
   const [dropActive, setDropActive] = useState(false);
+
+  const isMobile = useMediaQuery('(max-width: 767px)');
+  const isMobileRef = useRef(isMobile);
+  isMobileRef.current = isMobile;
+
+  const [viewportSize, setViewportSize] = useState<{ width: number; height: number }>(() => ({
+    width: typeof window !== 'undefined' ? window.innerWidth : 1024,
+    height: typeof window !== 'undefined' ? window.innerHeight : 768,
+  }));
+
+  const surfaceMetrics = computeViewportSurfaceMetrics(
+    pages,
+    viewportSize.width,
+    viewportSize.height,
+    zoom,
+    isMobile,
+  );
+
+  const totalDocHeight = pages.reduce((acc, p) => {
+    const dims = getDisplayDimensions(p.baseWidth, p.baseHeight, p.userRotation, zoom);
+    return acc + dims.height + VIEWPORT_PAGE_GAP;
+  }, 0);
+  const surfaceHeight = totalDocHeight + surfaceMetrics.viewportMarginY * 2;
 
   const recalculateAutoZoom = useCallback(() => {
     const el = containerRef.current;
-    if (!el || pages.length === 0 || zoomMode === 'custom') return;
-    const refPage = pages.find((p) => p.id === activePageId) ?? pages[0];
+    if (pages.length === 0) {
+      lastAutoPositionedFirstPageRef.current = null;
+      return;
+    }
+    if (!el || zoomMode === 'custom') return;
+    const isInitialDocOpen = lastAutoPositionedFirstPageRef.current !== pages[0].id;
+    const currentActiveId = useEditorStore.getState().activePageId;
+    const refIdx = Math.max(
+      0,
+      pages.findIndex((p) => p.id === currentActiveId),
+    );
+    const refPage = pages[refIdx] ?? pages[0];
     if (!refPage) return;
     const dims = getDisplayDimensions(refPage.baseWidth, refPage.baseHeight, refPage.userRotation, 1);
     const availW = Math.max(240, el.clientWidth - 72);
     const availH = Math.max(240, el.clientHeight - 72);
 
+    const prevZoom = useEditorStore.getState().zoom;
+    let nextZoom = prevZoom;
     if (zoomMode === 'fit-width') {
-      const nextZoom = Math.min(2.5, Math.max(0.3, availW / dims.width));
+      nextZoom = Math.min(2.5, Math.max(0.3, availW / dims.width));
       setZoom(nextZoom, 'fit-width');
     } else if (zoomMode === 'fit-page') {
-      const nextZoom = Math.min(2.5, Math.max(0.25, Math.min(availW / dims.width, availH / dims.height)));
+      nextZoom = Math.min(2.5, Math.max(0.25, Math.min(availW / dims.width, availH / dims.height)));
       setZoom(nextZoom, 'fit-page');
     }
-  }, [pages, activePageId, zoomMode, setZoom]);
+
+    if (isInitialDocOpen || Math.abs(nextZoom - prevZoom) >= 0.0005) {
+      const containerW = el.clientWidth || window.innerWidth;
+      const containerH = el.clientHeight || window.innerHeight;
+      const nextMetrics = computeViewportSurfaceMetrics(
+        pages,
+        containerW,
+        containerH,
+        nextZoom,
+        isMobileRef.current,
+      );
+      const offset = getPageOffsetInSurface(pages, refIdx, nextZoom, nextMetrics);
+      const centeredLeft = Math.max(0, Math.round(offset.left + offset.width / 2 - containerW / 2));
+      const targetTop = isInitialDocOpen ? nextMetrics.viewportMarginY : el.scrollTop;
+      if (isInitialDocOpen) {
+        lastAutoPositionedFirstPageRef.current = pages[0].id;
+      }
+      const committedTargetZoom = Math.min(5, Math.max(0.25, Number(nextZoom.toFixed(3))));
+      if (
+        Math.abs(committedTargetZoom - prevZoom) >= 0.0005 ||
+        el.scrollWidth < centeredLeft + el.clientWidth
+      ) {
+        pendingScrollRef.current = {
+          left: centeredLeft,
+          top: targetTop,
+          targetZoom: committedTargetZoom,
+          targetSurfaceWidth: nextMetrics.surfaceWidth,
+        };
+      } else {
+        el.scrollLeft = centeredLeft;
+        el.scrollTop = targetTop;
+        pendingScrollRef.current = null;
+      }
+    }
+  }, [pages, zoomMode, setZoom]);
 
   useEffect(() => {
     recalculateAutoZoom();
   }, [recalculateAutoZoom]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const el = containerRef.current;
     if (!el) return;
-    const ro = new ResizeObserver(() => recalculateAutoZoom());
+    const updateSize = () => {
+      const w = el.clientWidth || window.innerWidth;
+      const h = el.clientHeight || window.innerHeight;
+      setViewportSize((prev) => (prev.width === w && prev.height === h ? prev : { width: w, height: h }));
+      recalculateAutoZoom();
+    };
+    updateSize();
+    const ro = new ResizeObserver(updateSize);
     ro.observe(el);
     return () => ro.disconnect();
   }, [recalculateAutoZoom]);
@@ -86,26 +183,50 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
       const p = pages[idx];
       if (!p) return 800;
       const dims = getDisplayDimensions(p.baseWidth, p.baseHeight, p.userRotation, zoom);
-      return dims.height + 44;
+      return dims.height + VIEWPORT_PAGE_GAP;
     },
     overscan: 2,
   });
 
-  // Re-measure virtualized rows whenever zoom or page geometry changes
-  useEffect(() => {
+  // Re-measure virtualized rows synchronously whenever zoom or page geometry changes
+  useLayoutEffect(() => {
     virtualizer.measure();
   }, [virtualizer, zoom, pages]);
+
+  // Apply pinch or initial-document scroll compensation synchronously in the same paint frame
+  useLayoutEffect(() => {
+    const el = containerRef.current;
+    const pending = pendingScrollRef.current;
+    if (!el || !pending) return;
+    if (pending.targetZoom !== undefined && Math.abs(zoom - pending.targetZoom) >= 0.001) {
+      return;
+    }
+    if (
+      pending.targetSurfaceWidth !== undefined &&
+      surfaceMetrics.surfaceWidth + 1 < pending.targetSurfaceWidth
+    ) {
+      return;
+    }
+    el.scrollLeft = pending.left;
+    el.scrollTop = pending.top;
+    pendingScrollRef.current = null;
+  }, [pages, zoom, surfaceMetrics.surfaceWidth]);
 
   useImperativeHandle(
     ref,
     () => ({
       scrollToPage: (pageIndex: number) => {
-        if (pageIndex >= 0 && pageIndex < pages.length) {
-          virtualizer.scrollToIndex(pageIndex, { align: 'start' });
-        }
+        const el = containerRef.current;
+        if (!el || pageIndex < 0 || pageIndex >= pages.length) return;
+        const offset = getPageOffsetInSurface(pages, pageIndex, zoom, surfaceMetrics);
+        const centeredLeft = Math.max(
+          0,
+          Math.round(offset.left + offset.width / 2 - (el.clientWidth || window.innerWidth) / 2),
+        );
+        el.scrollTo({ top: Math.max(0, offset.rowTop), left: centeredLeft });
       },
     }),
-    [virtualizer, pages.length],
+    [pages, zoom, surfaceMetrics],
   );
 
   // Ctrl/Cmd + Wheel smooth zoom
@@ -128,39 +249,110 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
     const el = containerRef.current;
     if (!el) return;
 
+    const startPinchSession = (
+      p1: { x: number; y: number },
+      p2: { x: number; y: number },
+    ): PinchSession | null => {
+      const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+      if (dist < 8) return null;
+      const state = useEditorStore.getState();
+      if (state.pages.length === 0) return null;
+      const currentZoom = state.zoom;
+      const rect = el.getBoundingClientRect();
+      const midX = (p1.x + p2.x) / 2;
+      const midY = (p1.y + p2.y) / 2;
+      const relX = midX - rect.left;
+      const relY = midY - rect.top;
+      const containerW = el.clientWidth || window.innerWidth;
+      const containerH = el.clientHeight || window.innerHeight;
+      const metrics = computeViewportSurfaceMetrics(
+        state.pages,
+        containerW,
+        containerH,
+        currentZoom,
+        isMobileRef.current,
+      );
+      const activeIdx = Math.max(
+        0,
+        state.pages.findIndex((p) => p.id === state.activePageId),
+      );
+      const anchorPageIndex = findAnchorPageIndex(
+        state.pages,
+        el.scrollTop,
+        relY,
+        currentZoom,
+        metrics,
+        activeIdx,
+      );
+      const offset = getPageOffsetInSurface(state.pages, anchorPageIndex, currentZoom, metrics);
+      return {
+        startZoom: currentZoom,
+        startDist: dist,
+        anchorPageIndex,
+        pdfLocalX: (el.scrollLeft + relX - offset.left) / currentZoom,
+        pdfLocalY: (el.scrollTop + relY - offset.top) / currentZoom,
+      };
+    };
+
     const applyPinchGeometry = (
       p1: { x: number; y: number },
       p2: { x: number; y: number },
     ) => {
       const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-      const midX = (p1.x + p2.x) / 2;
-      const midY = (p1.y + p2.y) / 2;
-      const session = pinchSessionRef.current;
-      if (!session || session.lastDist < 8 || dist < 8) {
-        pinchSessionRef.current = { lastDist: dist, lastMidX: midX, lastMidY: midY };
+      let session = pinchSessionRef.current;
+      if (!session) {
+        session = startPinchSession(p1, p2);
+        pinchSessionRef.current = session;
         return;
       }
+      if (dist < 8) return;
 
-      const ratio = dist / session.lastDist;
-      const prevZoom = useEditorStore.getState().zoom;
-      const nextZoom = Math.min(4, Math.max(0.25, Number((prevZoom * ratio).toFixed(3))));
-      const scaleChange = nextZoom / prevZoom;
+      const state = useEditorStore.getState();
+      if (state.pages.length === 0) return;
 
       const rect = el.getBoundingClientRect();
+      const midX = (p1.x + p2.x) / 2;
+      const midY = (p1.y + p2.y) / 2;
       const relX = midX - rect.left;
       const relY = midY - rect.top;
-      const contentX = el.scrollLeft + relX;
-      const contentY = el.scrollTop + relY;
-      const panDx = midX - session.lastMidX;
-      const panDy = midY - session.lastMidY;
 
-      setZoom(nextZoom, 'custom');
-      requestAnimationFrame(() => {
-        el.scrollLeft = Math.max(0, contentX * scaleChange - relX - panDx);
-        el.scrollTop = Math.max(0, contentY * scaleChange - relY - panDy);
-      });
+      const rawNextZoom = session.startZoom * (dist / session.startDist);
+      const nextZoom = Math.min(
+        VIEWPORT_MAX_ZOOM,
+        Math.max(VIEWPORT_MIN_ZOOM, Number(rawNextZoom.toFixed(3))),
+      );
 
-      pinchSessionRef.current = { lastDist: dist, lastMidX: midX, lastMidY: midY };
+      const containerW = el.clientWidth || window.innerWidth;
+      const containerH = el.clientHeight || window.innerHeight;
+      const nextMetrics = computeViewportSurfaceMetrics(
+        state.pages,
+        containerW,
+        containerH,
+        nextZoom,
+        isMobileRef.current,
+      );
+      const nextOffset = getPageOffsetInSurface(
+        state.pages,
+        session.anchorPageIndex,
+        nextZoom,
+        nextMetrics,
+      );
+
+      const nextScrollLeft = Math.max(0, nextOffset.left + session.pdfLocalX * nextZoom - relX);
+      const nextScrollTop = Math.max(0, nextOffset.top + session.pdfLocalY * nextZoom - relY);
+      pendingScrollRef.current = {
+        left: nextScrollLeft,
+        top: nextScrollTop,
+        targetZoom: Math.min(5, Math.max(0.25, Number(nextZoom.toFixed(3)))),
+      };
+
+      if (Math.abs(nextZoom - state.zoom) < 0.0005) {
+        el.scrollLeft = nextScrollLeft;
+        el.scrollTop = nextScrollTop;
+        pendingScrollRef.current = null;
+      } else {
+        setZoom(nextZoom, 'custom');
+      }
     };
 
     const endTouchPointer = (pointerId: number) => {
@@ -171,8 +363,14 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
         el.style.touchAction = 'pan-x pan-y';
         setPinchState(false, remaining);
       } else {
+        const pts = Array.from(touchPointersRef.current.values());
+        pinchSessionRef.current = startPinchSession(pts[0], pts[1]);
         setPinchState(true, remaining);
       }
+    };
+
+    const notifyMultitouchStart = () => {
+      window.dispatchEvent(new CustomEvent('gullac:multitouch-start'));
     };
 
     const onPointerDown = (e: PointerEvent) => {
@@ -182,12 +380,9 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
       if (count >= 2) {
         el.style.touchAction = 'none';
         setPinchState(true, count);
+        notifyMultitouchStart();
         const pts = Array.from(touchPointersRef.current.values());
-        pinchSessionRef.current = {
-          lastDist: Math.hypot(pts[1].x - pts[0].x, pts[1].y - pts[0].y),
-          lastMidX: (pts[0].x + pts[1].x) / 2,
-          lastMidY: (pts[0].y + pts[1].y) / 2,
-        };
+        pinchSessionRef.current = startPinchSession(pts[0], pts[1]);
       } else {
         setPinchState(false, count);
       }
@@ -209,15 +404,16 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
 
     // Fallback native TouchEvent pinch guard (prevents iOS/browser page-level pinch & handles synthetic TouchEvents)
     const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length >= 2 && touchPointersRef.current.size < 2) {
-        setPinchState(true, e.touches.length);
-        const t0 = e.touches[0];
-        const t1 = e.touches[1];
-        pinchSessionRef.current = {
-          lastDist: Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY),
-          lastMidX: (t0.clientX + t1.clientX) / 2,
-          lastMidY: (t0.clientY + t1.clientY) / 2,
-        };
+      if (e.touches.length >= 2) {
+        notifyMultitouchStart();
+        if (touchPointersRef.current.size < 2) {
+          el.style.touchAction = 'none';
+          setPinchState(true, e.touches.length);
+          pinchSessionRef.current = startPinchSession(
+            { x: e.touches[0].clientX, y: e.touches[0].clientY },
+            { x: e.touches[1].clientX, y: e.touches[1].clientY },
+          );
+        }
       }
     };
 
@@ -236,6 +432,7 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
     const onTouchEnd = (e: TouchEvent) => {
       if (e.touches.length < 2 && touchPointersRef.current.size < 2) {
         pinchSessionRef.current = null;
+        el.style.touchAction = 'pan-x pan-y';
         setPinchState(false, e.touches.length);
       }
     };
@@ -265,10 +462,13 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
   const handleScroll = () => {
     const el = containerRef.current;
     if (!el || pages.length === 0) return;
-    const centerOffset = el.scrollTop + el.clientHeight * 0.35;
+    const centerOffset = el.scrollTop - surfaceMetrics.viewportMarginY + el.clientHeight * 0.35;
     const items = virtualizer.getVirtualItems();
     for (const item of items) {
-      if (centerOffset >= item.start && centerOffset <= item.end) {
+      const rowOffset = getPageOffsetInSurface(pages, item.index, zoom, surfaceMetrics);
+      const itemStart = rowOffset.rowTop - surfaceMetrics.viewportMarginY;
+      const itemEnd = itemStart + rowOffset.height + VIEWPORT_PAGE_GAP;
+      if (centerOffset >= itemStart && centerOffset <= itemEnd) {
         const p = pages[item.index];
         if (p && p.id !== activePageId) {
           setActivePage(p.id);
@@ -392,26 +592,30 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
       ) : (
         <div
           style={{
-            height: `${virtualizer.getTotalSize()}px`,
-            width: '100%',
+            height: `${surfaceHeight}px`,
+            width: `${surfaceMetrics.surfaceWidth}px`,
             position: 'relative',
           }}
         >
           {virtualizer.getVirtualItems().map((vItem) => {
             const page = pages[vItem.index];
+            const rowOffset = getPageOffsetInSurface(pages, vItem.index, zoom, surfaceMetrics);
             return (
               <div
                 key={page.id}
                 data-index={vItem.index}
-                ref={virtualizer.measureElement}
                 style={{
                   position: 'absolute',
                   top: 0,
                   left: 0,
-                  width: '100%',
-                  transform: `translateY(${vItem.start}px)`,
+                  width: `${surfaceMetrics.surfaceWidth}px`,
+                  height: `${rowOffset.height + VIEWPORT_PAGE_GAP}px`,
+                  paddingTop: `${VIEWPORT_PAGE_GAP / 2}px`,
+                  paddingLeft: `${rowOffset.left}px`,
+                  boxSizing: 'border-box',
+                  transform: `translateY(${rowOffset.rowTop}px)`,
                 }}
-                className="flex justify-center py-5"
+                className="flex justify-start"
               >
                 <PageCanvas page={page} pageIndex={vItem.index} zoom={zoom} />
               </div>

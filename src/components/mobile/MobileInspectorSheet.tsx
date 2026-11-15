@@ -1,16 +1,33 @@
-import { ArrowUpToLine, ChevronDown, ChevronUp, Minus, Plus, SlidersHorizontal, Trash2, X } from 'lucide-react';
+import {
+  ArrowUpToLine,
+  ChevronDown,
+  ChevronUp,
+  Layers,
+  Lock,
+  Minus,
+  Plus,
+  SlidersHorizontal,
+  Trash2,
+  Unlock,
+  X,
+} from 'lucide-react';
 import { useEditorStore } from '@/store/useEditorStore';
 import { RightInspector } from '../inspector/RightInspector';
 
 export function MobileInspectorSheet() {
   const elements = useEditorStore((s) => s.elements);
   const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
+  const editingTextElementId = useEditorStore((s) => s.editingTextElementId);
   const mobileInspectorSnap = useEditorStore((s) => s.mobileInspectorSnap);
   const setMobileSheet = useEditorStore((s) => s.setMobileSheet);
   const setMobileInspectorSnap = useEditorStore((s) => s.setMobileInspectorSnap);
   const updateElements = useEditorStore((s) => s.updateElements);
   const deleteElements = useEditorStore((s) => s.deleteElements);
   const bringToFront = useEditorStore((s) => s.bringToFront);
+
+  if (editingTextElementId !== null && mobileInspectorSnap === 'collapsed') {
+    return null;
+  }
 
   const selectedEl =
     selectedElementIds.length > 0
@@ -82,6 +99,53 @@ export function MobileInspectorSheet() {
                 <Plus className="h-3.5 w-3.5" />
               </button>
             </>
+          )}
+
+          <button
+            type="button"
+            aria-label={selectedEl.locked ? 'Kilidi Aç' : 'Katmanı Kilitle'}
+            data-testid="mobile-inspector-lock-btn"
+            aria-pressed={!!selectedEl.locked}
+            onClick={() =>
+              updateElements(
+                [{ id: selectedEl.id, patch: { locked: !selectedEl.locked } }],
+                true,
+              )
+            }
+            className={`flex min-h-[40px] min-w-[40px] items-center justify-center rounded-lg border ${
+              selectedEl.locked
+                ? 'border-amber-500 bg-amber-500/15 text-amber-600 dark:text-amber-300'
+                : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'
+            }`}
+          >
+            {selectedEl.locked ? <Unlock className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
+          </button>
+
+          {(selectedEl.kind === 'image' || selectedEl.kind === 'image-replacement') && (
+            <button
+              type="button"
+              aria-label="Arka Plan Katmanı"
+              data-testid="mobile-inspector-bg-btn"
+              aria-pressed={!!selectedEl.isBackgroundLayer}
+              onClick={() =>
+                updateElements(
+                  [
+                    {
+                      id: selectedEl.id,
+                      patch: { isBackgroundLayer: !selectedEl.isBackgroundLayer },
+                    },
+                  ],
+                  true,
+                )
+              }
+              className={`flex min-h-[40px] min-w-[40px] items-center justify-center rounded-lg border ${
+                selectedEl.isBackgroundLayer
+                  ? 'border-amber-500 bg-amber-500/15 text-amber-600 dark:text-amber-300'
+                  : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'
+              }`}
+            >
+              <Layers className="h-4 w-4" />
+            </button>
           )}
 
           <button

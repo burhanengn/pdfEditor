@@ -4,6 +4,7 @@ import {
   Hash,
   Highlighter,
   ImagePlus,
+  Layers,
   LayoutGrid,
   Maximize2,
   MousePointer2,
@@ -29,6 +30,8 @@ export function MobileToolsSheet() {
   const setSignatureModalOpen = useEditorStore((s) => s.setSignatureModalOpen);
   const setPageNumberingModalOpen = useEditorStore((s) => s.setPageNumberingModalOpen);
   const setOrganizeModalOpen = useEditorStore((s) => s.setOrganizeModalOpen);
+  const selectBackgroundMode = useEditorStore((s) => s.selectBackgroundMode);
+  const setSelectBackgroundMode = useEditorStore((s) => s.setSelectBackgroundMode);
 
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const hasPages = pages.length > 0;
@@ -161,6 +164,30 @@ export function MobileToolsSheet() {
               >
                 <Highlighter className="h-4 w-4 shrink-0" />
                 <span>Vurgula / Kutu / Kalıcı Sansür</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!hasPages}
+                data-testid="mobile-toggle-select-background"
+                aria-pressed={selectBackgroundMode}
+                onClick={() => {
+                  setSelectBackgroundMode(!selectBackgroundMode);
+                  setMobileSheet('none');
+                }}
+                className={`col-span-2 flex min-h-[48px] items-center justify-between gap-2.5 rounded-xl border px-3 py-2 text-left font-medium transition disabled:opacity-40 ${
+                  selectBackgroundMode
+                    ? 'border-amber-500 bg-amber-500/20 text-amber-600 dark:text-amber-300'
+                    : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200'
+                }`}
+              >
+                <span className="flex items-center gap-2.5">
+                  <Layers className="h-4 w-4 shrink-0" />
+                  <span>Arka Plan Görsellerini Seç</span>
+                </span>
+                <span className="rounded-full bg-black/10 px-2 py-0.5 text-[10px] font-semibold dark:bg-white/10">
+                  {selectBackgroundMode ? 'Açık' : 'Kapalı'}
+                </span>
               </button>
             </div>
           </div>

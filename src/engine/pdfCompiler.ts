@@ -6,6 +6,9 @@ import {
   PDFArray,
   PDFDocument,
   PDFName,
+  PDFNumber,
+  PDFOperator,
+  PDFOperatorNames,
   PDFRef,
   popGraphicsState,
   pushGraphicsState,
@@ -600,7 +603,19 @@ async function drawTextElementOnPage(
     return baseW * hScale + Math.max(0, text.length - 1) * charSpacing;
   };
 
-  const wrappedLines = buildWrappedRichLines(runs, el.width, measurePiece, el.bold, el.italic);
+  const explicitLineCount = el.text.split('\n').length;
+  const isSingleLine =
+    explicitLineCount === 1 &&
+    (el.renderedLineCount === 1 ||
+      (el.renderedLineCount === undefined &&
+        !el.widthResizedByUser &&
+        el.height < el.fontSize * el.lineHeight * 1.65));
+
+  const wrappedLines = buildWrappedRichLines(runs, el.width, measurePiece, el.bold, el.italic, {
+    disableSoftWrap: isSingleLine,
+    widthToleranceRatio: el.align === 'justify' && !isSingleLine ? 0 : 0.025,
+    widthTolerancePt: el.align === 'justify' && !isSingleLine ? 0.5 : 2.0,
+  });
 
   const lineBoxHeight = el.fontSize * el.lineHeight;
   const baselineFromLineTop =
@@ -629,21 +644,29 @@ async function drawTextElementOnPage(
     const line = wrappedLines[i];
     if (line.pieces.length === 0) continue;
 
+    // `line.naturalWidth` already includes `hScale` (from `measurePiece`).
+    const scaledLineWidth = line.naturalWidth;
+    const fitScale =
+      scaledLineWidth > el.width + 0.5 ? Math.max(0.88, el.width / scaledLineWidth) : 1;
+    const effectiveHScale = hScale * fitScale;
+    const effectiveLineWidth = scaledLineWidth * fitScale;
+    const useTz = Math.abs(effectiveHScale - 1) > 0.005;
+
     let localStartX = 0;
     if (el.align === 'center') {
-      localStartX = Math.max(0, (el.width - line.naturalWidth) / 2);
+      localStartX = Math.max(0, (el.width - effectiveLineWidth) / 2);
     } else if (el.align === 'right') {
-      localStartX = Math.max(0, el.width - line.naturalWidth);
+      localStartX = Math.max(0, el.width - effectiveLineWidth);
     }
 
     const shouldJustify =
       el.align === 'justify' &&
       !line.endsParagraph &&
       line.spaceCount > 0 &&
-      el.width - line.naturalWidth > 0.5 &&
-      line.naturalWidth > el.width * 0.38;
+      el.width - effectiveLineWidth > 0.5 &&
+      effectiveLineWidth > el.width * 0.38;
     const extraPerSpace = shouldJustify
-      ? (el.width - line.naturalWidth) / line.spaceCount
+      ? (el.width - effectiveLineWidth) / line.spaceCount
       : 0;
 
     let cursorX = localStartX;
@@ -659,7 +682,7 @@ async function drawTextElementOnPage(
 
       if (piece.isSpace) {
         cursorX +=
-          measureWithFontPair(piece.text, piecePair, pieceSize) * hScale +
+          measureWithFontPair(piece.text, piecePair, pieceSize) * effectiveHScale +
           extraPerSpace * piece.text.length;
         continue;
       }
@@ -680,8 +703,19 @@ async function drawTextElementOnPage(
           pageMeta.intrinsicRotation,
         );
 
+        const pushOps: PDFOperator[] = [];
         if (charSpacing !== 0) {
-          page.pushOperators(pushGraphicsState(), setCharacterSpacing(charSpacing));
+          pushOps.push(setCharacterSpacing(charSpacing));
+        }
+        if (useTz) {
+          pushOps.push(
+            PDFOperator.of(PDFOperatorNames.SetTextHorizontalScaling, [
+              PDFNumber.of(Number((effectiveHScale * 100).toFixed(2))),
+            ]),
+          );
+        }
+        if (pushOps.length > 0) {
+          page.pushOperators(pushGraphicsState(), ...pushOps);
         }
         page.drawText(seg.text, {
           x: pdfPt.x,
@@ -692,16 +726,19 @@ async function drawTextElementOnPage(
           opacity: el.opacity,
           rotate: degrees(drawAngleCCW),
         });
-        if (charSpacing !== 0) {
+        if (pushOps.length > 0) {
           page.pushOperators(popGraphicsState());
         }
 
+        const advanceScale = useTz ? effectiveHScale : 1;
         try {
           cursorX +=
-            seg.entry.font.widthOfTextAtSize(seg.text, pieceSize) * hScale +
-            seg.text.length * charSpacing;
+            seg.entry.font.widthOfTextAtSize(seg.text, pieceSize) * effectiveHScale +
+            seg.text.length * charSpacing * advanceScale;
         } catch {
-          cursorX += seg.text.length * pieceSize * 0.5 + seg.text.length * charSpacing;
+          cursorX +=
+            seg.text.length * pieceSize * 0.5 * effectiveHScale +
+            seg.text.length * charSpacing * advanceScale;
         }
       }
     }

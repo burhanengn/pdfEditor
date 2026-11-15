@@ -521,7 +521,12 @@ export function inferFontFromPdfName(rawFontName: string): {
 }
 
 export function normalizeUnicodeForPdf(text: string): string {
-  return typeof text.normalize === 'function' ? text.normalize('NFC') : text;
+  const turkishComposed = text
+    .replace(/I\u0307/g, '\u0130')
+    .replace(/i\u0307/g, 'i');
+  return typeof turkishComposed.normalize === 'function'
+    ? turkishComposed.normalize('NFC')
+    : turkishComposed;
 }
 
 const WINANSI_SAFE_REPLACEMENTS: Record<string, string> = {
@@ -764,5 +769,130 @@ export function resolveFontDisplayStatus(params: {
     fallbackFamily,
     status: 'fallback',
     missingChars: [],
+  };
+}
+
+export interface DomTextCalibration {
+  ascentRatio: number;
+  cssBaselineFromTopPt: number;
+  topOffsetPt: number;
+  letterSpacingPt: number;
+  horizontalScale: number;
+}
+
+let cachedCalibrationCtx: CanvasRenderingContext2D | null | undefined;
+
+function getCalibrationContext(): CanvasRenderingContext2D | null {
+  if (cachedCalibrationCtx !== undefined) {
+    return cachedCalibrationCtx;
+  }
+  if (typeof document === 'undefined') {
+    cachedCalibrationCtx = null;
+    return null;
+  }
+  try {
+    const canvas = document.createElement('canvas');
+    cachedCalibrationCtx = canvas.getContext('2d');
+  } catch {
+    cachedCalibrationCtx = null;
+  }
+  return cachedCalibrationCtx;
+}
+
+function getFallbackAscentRatio(fontFamily: string): number {
+  const familyKey = fontFamily;
+  const reg = isBuiltinFontFamily(familyKey) ? FONT_REGISTRY[familyKey] : undefined;
+  const haystack = `${reg?.cssFamily ?? ''} ${familyKey}`.toLowerCase();
+  if (/courier|mono/.test(haystack)) return 0.8;
+  if (/times|serif|georgia|caladea|cambria/.test(haystack)) return 0.825;
+  return 0.815;
+}
+
+function resolveCssStackForCalibration(fontFamily: string, explicitCssFamily?: string): string {
+  if (explicitCssFamily) return explicitCssFamily;
+  if (isBuiltinFontFamily(fontFamily)) {
+    return FONT_REGISTRY[fontFamily].cssFamily;
+  }
+  const fallback = getFallbackAscentRatio(fontFamily);
+  if (fallback === 0.8) return FONT_REGISTRY.Courier.cssFamily;
+  if (fallback === 0.825) return FONT_REGISTRY.TimesRoman.cssFamily;
+  return FONT_REGISTRY.Helvetica.cssFamily;
+}
+
+/**
+ * Calibrates DOM baseline alignment and sub-pixel advance width against extracted PDF glyph bounds.
+ */
+export function calibrateDomTextMetrics(params: {
+  sampleText: string;
+  targetPdfWidthPt: number;
+  fontSizePt: number;
+  lineHeight: number;
+  baselineOffsetPt?: number;
+  fontFamily: string;
+  fontWeight: number;
+  fontStyle: 'normal' | 'italic';
+  initialHorizontalScale?: number;
+  cssFontFamily?: string;
+}): DomTextCalibration {
+  const safeFontSize = Math.max(1, params.fontSizePt);
+  const safeLineHeight = Math.max(0.8, params.lineHeight || 1.2);
+  let ascentRatio = getFallbackAscentRatio(params.fontFamily);
+  const cssFamily = resolveCssStackForCalibration(params.fontFamily, params.cssFontFamily);
+  const ctx = getCalibrationContext();
+
+  if (ctx) {
+    ctx.font = `${params.fontStyle} ${params.fontWeight} 100px ${cssFamily}`;
+    try {
+      const m = ctx.measureText('HgÁğŞİp');
+      if (
+        typeof m.fontBoundingBoxAscent === 'number' &&
+        typeof m.fontBoundingBoxDescent === 'number' &&
+        m.fontBoundingBoxAscent + Math.abs(m.fontBoundingBoxDescent) > 0
+      ) {
+        const ratio =
+          m.fontBoundingBoxAscent /
+          (m.fontBoundingBoxAscent + Math.abs(m.fontBoundingBoxDescent));
+        ascentRatio = Math.min(0.88, Math.max(0.74, Number(ratio.toFixed(4))));
+      }
+    } catch {
+      // ignore if canvas text metrics partially supported
+    }
+  }
+
+  const cssBaselineFromTopPt = safeFontSize * ((safeLineHeight - 1) * 0.5 + ascentRatio);
+  const topOffsetPt =
+    params.baselineOffsetPt !== undefined
+      ? params.baselineOffsetPt - cssBaselineFromTopPt
+      : -Math.max(0, (safeLineHeight - 1) * 0.35) * safeFontSize;
+
+  let letterSpacingPt = 0;
+  let horizontalScale = params.initialHorizontalScale ?? 1;
+
+  if (ctx && params.sampleText.length > 1 && params.targetPdfWidthPt > 1) {
+    try {
+      const measuredPx = ctx.measureText(params.sampleText).width;
+      const domWidthPt = (measuredPx / 100) * safeFontSize;
+      if (domWidthPt > 1) {
+        const ratio = params.targetPdfWidthPt / domWidthPt;
+        if (Math.abs(ratio - 1) <= 0.06) {
+          const rawSpacing = (params.targetPdfWidthPt - domWidthPt) / (params.sampleText.length - 1);
+          letterSpacingPt = Math.min(1.2, Math.max(-0.45, Number(rawSpacing.toFixed(3))));
+          horizontalScale = params.initialHorizontalScale ?? 1;
+        } else {
+          letterSpacingPt = 0;
+          horizontalScale = Math.min(1.35, Math.max(0.7, Number(ratio.toFixed(4))));
+        }
+      }
+    } catch {
+      // ignore fallback
+    }
+  }
+
+  return {
+    ascentRatio,
+    cssBaselineFromTopPt,
+    topOffsetPt,
+    letterSpacingPt,
+    horizontalScale,
   };
 }
