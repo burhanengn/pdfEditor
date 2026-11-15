@@ -7,7 +7,13 @@ import {
   type StrokeElement,
   type TextAddElement,
 } from '@/types/elements';
-import type { DetectedImageObject, DetectedTextBlock, PageMeta, RectBox } from '@/types/pdf';
+import type {
+  DetectedImageObject,
+  DetectedTextBlock,
+  DetectedVectorShape,
+  PageMeta,
+  RectBox,
+} from '@/types/pdf';
 import {
   axisAlignedRectBaseToDisplay,
   getDisplayDimensions,
@@ -51,6 +57,26 @@ function isUnmodifiedBehindImage(
   );
 }
 
+function isUnmodifiedBehindShape(
+  el: CanvasElement,
+  extractedShapes?: DetectedVectorShape[],
+): boolean {
+  if (el.kind !== 'shape-replacement' || !el.behindContent || el.deleted) return false;
+  const orig = extractedShapes?.find((s) => s.id === el.originalShapeId);
+  if (!orig) return false;
+  return (
+    Math.abs(el.x - el.originalRect.x) < 0.25 &&
+    Math.abs(el.y - el.originalRect.y) < 0.25 &&
+    Math.abs(el.width - el.originalRect.width) < 0.25 &&
+    Math.abs(el.height - el.originalRect.height) < 0.25 &&
+    Math.abs(el.rotation) < 0.25 &&
+    Math.abs(el.opacity - orig.opacity) < 0.02 &&
+    (el.fillColor ?? 'transparent') === (orig.fillColor ?? 'transparent') &&
+    (el.strokeColor ?? undefined) === (orig.strokeColor ?? undefined) &&
+    Math.abs(el.strokeWidth - orig.strokeWidth) < 0.1
+  );
+}
+
 export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const layerRef = useRef<HTMLDivElement | null>(null);
@@ -78,8 +104,10 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   const setToolMode = useEditorStore((s) => s.setToolMode);
   const startEditDetectedText = useEditorStore((s) => s.startEditDetectedText);
   const promoteDetectedImage = useEditorStore((s) => s.promoteDetectedImage);
+  const promoteDetectedShape = useEditorStore((s) => s.promoteDetectedShape);
   const updateElements = useEditorStore((s) => s.updateElements);
   const selectBackgroundMode = useEditorStore((s) => s.selectBackgroundMode);
+  const isPinching = useEditorStore((s) => s.isPinching);
   const pendingSignaturePlacement = useEditorStore((s) => s.pendingSignaturePlacement);
   const placeSignatureAt = useEditorStore((s) => s.placeSignatureAt);
   const pageNumbering = useEditorStore((s) => s.pageNumbering);
@@ -87,14 +115,18 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
 
   const [hoveredTextId, setHoveredTextId] = useState<string | null>(null);
   const [hoveredImageId, setHoveredImageId] = useState<string | null>(null);
+  const [hoveredShapeId, setHoveredShapeId] = useState<string | null>(null);
   const [hoverBasePoint, setHoverBasePoint] = useState<{ x: number; y: number } | null>(null);
   const [bgLongPressPrompt, setBgLongPressPrompt] = useState<{
     x: number;
     y: number;
-    image: DetectedImageObject;
+    image?: DetectedImageObject;
+    shape?: DetectedVectorShape;
   } | null>(null);
   const suppressNextDetectedTextClickRef = useRef(false);
   const longPressTimerRef = useRef<number | null>(null);
+  const lastRasterContextKeyRef = useRef<string>('');
+  const wasPinchingRef = useRef<boolean>(false);
 
   useEffect(() => {
     return () => {
@@ -146,6 +178,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   const stripRequest = useMemo(() => {
     const textRects: RectBox[] = [];
     const imageRects: RectBox[] = [];
+    const shapeRects: RectBox[] = [];
     for (const el of pageElements) {
       if (el.kind === 'text-edit') {
         textRects.push(el.originalRect);
@@ -154,35 +187,55 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
         // keeps it rendered cleanly in the PDF base canvas behind text and table borders.
         if (isUnmodifiedBehindImage(el, extraction?.images)) continue;
         imageRects.push(el.originalRect);
+      } else if (el.kind === 'shape-replacement') {
+        if (isUnmodifiedBehindShape(el, extraction?.shapes)) continue;
+        const pad = Math.max(0.5, (el.originalStrokeWidth ?? 0) / 2 + 0.5);
+        shapeRects.push({
+          x: Math.max(0, el.originalRect.x - pad),
+          y: Math.max(0, el.originalRect.y - pad),
+          width: el.originalRect.width + pad * 2,
+          height: el.originalRect.height + pad * 2,
+        });
       }
     }
     const serialize = (r: RectBox) =>
       `${Math.round(r.x * 10)}:${Math.round(r.y * 10)}:${Math.round(r.width * 10)}:${Math.round(r.height * 10)}`;
     const tKey = textRects.map(serialize).sort().join('|');
     const iKey = imageRects.map(serialize).sort().join('|');
-    const key = tKey || iKey ? `t[${tKey}]i[${iKey}]` : '';
-    return { textRects, imageRects, key };
-  }, [pageElements, extraction?.images]);
+    const sKey = shapeRects.map(serialize).sort().join('|');
+    const key = tKey || iKey || sKey ? `t[${tKey}]i[${iKey}]s[${sKey}]` : '';
+    return { textRects, imageRects, shapeRects, key };
+  }, [pageElements, extraction?.images, extraction?.shapes]);
 
   const hasVisibleBehindImages = useMemo(
     () =>
       pageElements.some(
         (el) =>
-          (el.kind === 'image' || el.kind === 'image-replacement') &&
-          el.behindContent === true &&
-          !(el.kind === 'image-replacement' && el.deleted) &&
-          !isUnmodifiedBehindImage(el, extraction?.images),
+          (((el.kind === 'image' || el.kind === 'image-replacement') &&
+            el.behindContent === true &&
+            !(el.kind === 'image-replacement' && el.deleted) &&
+            !isUnmodifiedBehindImage(el, extraction?.images)) ||
+            (el.kind === 'shape-replacement' &&
+              el.behindContent === true &&
+              !el.deleted &&
+              !isUnmodifiedBehindShape(el, extraction?.shapes))),
       ),
-    [pageElements, extraction?.images],
+    [pageElements, extraction?.images, extraction?.shapes],
   );
 
-  const latestStripRectsRef = useRef<{ textRects: RectBox[]; imageRects: RectBox[] }>({
+  const latestStripRectsRef = useRef<{
+    textRects: RectBox[];
+    imageRects: RectBox[];
+    shapeRects: RectBox[];
+  }>({
     textRects: stripRequest.textRects,
     imageRects: stripRequest.imageRects,
+    shapeRects: stripRequest.shapeRects,
   });
   latestStripRectsRef.current = {
     textRects: stripRequest.textRects,
     imageRects: stripRequest.imageRects,
+    shapeRects: stripRequest.shapeRects,
   };
 
   // Prepare clean stripped 1-page PDF in MuPDF Worker whenever original text or images are edited/deleted
@@ -199,7 +252,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
     }
 
     let cancelled = false;
-    const { textRects, imageRects } = latestStripRectsRef.current;
+    const { textRects, imageRects, shapeRects } = latestStripRectsRef.current;
     wasmWorkerClient
       .call('prepareCleanPage', {
         sourceDocId: page.sourceDocId,
@@ -207,6 +260,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
         sourcePageIndex: page.sourcePageIndex,
         textRects,
         imageRects,
+        shapeRects,
       })
       .then(({ bytes }) => {
         if (cancelled) return;
@@ -247,48 +301,73 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas || !renderBytes) return;
+    if (isPinching) {
+      wasPinchingRef.current = true;
+      return;
+    }
+
+    const rasterContextKey = `${renderDocId}:${renderPageIndex}:${page.userRotation}:${targetStripKeyForRender}:${hasVisibleBehindImages ? 1 : 0}`;
+    const isZoomOnlyChange =
+      !wasPinchingRef.current && lastRasterContextKeyRef.current === rasterContextKey;
+    wasPinchingRef.current = false;
+    lastRasterContextKeyRef.current = rasterContextKey;
+    const delayMs = isZoomOnlyChange ? 75 : 0;
 
     let cancelled = false;
-    const handle = pdfjsService.renderPageToCanvas({
-      sourceDocId: renderDocId,
-      bytes: renderBytes,
-      sourcePageIndex: renderPageIndex,
-      canvas,
-      zoom,
-      userRotation: page.userRotation,
-      dpr: Math.min(window.devicePixelRatio || 1, 2),
-      background: hasVisibleBehindImages ? 'rgba(0, 0, 0, 0)' : undefined,
-    });
+    let activeHandle: { cancel: () => void } | null = null;
+    let timerId: number | null = null;
 
-    handle.promise
-      .then(() => {
-        if (!cancelled) {
-          if (hasVisibleBehindImages && canvas.width > 4 && canvas.height > 4) {
-            try {
-              const ctx = canvas.getContext('2d', { willReadFrequently: true });
-              if (ctx) {
-                const a1 = ctx.getImageData(1, 1, 1, 1).data[3];
-                const a2 = ctx.getImageData(canvas.width - 2, 1, 1, 1).data[3];
-                const a3 = ctx.getImageData(1, canvas.height - 2, 1, 1).data[3];
-                const a4 = ctx.getImageData(canvas.width - 2, canvas.height - 2, 1, 1).data[3];
-                setCanvasPaperTransparent(a1 === 0 || a2 === 0 || a3 === 0 || a4 === 0);
-              }
-            } catch {
-              setCanvasPaperTransparent(false);
-            }
-          } else {
-            setCanvasPaperTransparent(true);
-          }
-          setRenderedStripKey(targetStripKeyForRender);
-        }
-      })
-      .catch(() => {
-        // Cancelled during rapid scroll/zoom
+    const startRender = () => {
+      if (cancelled) return;
+      const handle = pdfjsService.renderPageToCanvas({
+        sourceDocId: renderDocId,
+        bytes: renderBytes,
+        sourcePageIndex: renderPageIndex,
+        canvas,
+        zoom,
+        userRotation: page.userRotation,
+        dpr: Math.min(window.devicePixelRatio || 1, 2),
+        background: hasVisibleBehindImages ? 'rgba(0, 0, 0, 0)' : undefined,
       });
+      activeHandle = handle;
+
+      handle.promise
+        .then(() => {
+          if (!cancelled) {
+            if (hasVisibleBehindImages && canvas.width > 4 && canvas.height > 4) {
+              try {
+                const ctx = canvas.getContext('2d', { willReadFrequently: true });
+                if (ctx) {
+                  const a1 = ctx.getImageData(1, 1, 1, 1).data[3];
+                  const a2 = ctx.getImageData(canvas.width - 2, 1, 1, 1).data[3];
+                  const a3 = ctx.getImageData(1, canvas.height - 2, 1, 1).data[3];
+                  const a4 = ctx.getImageData(canvas.width - 2, canvas.height - 2, 1, 1).data[3];
+                  setCanvasPaperTransparent(a1 === 0 || a2 === 0 || a3 === 0 || a4 === 0);
+                }
+              } catch {
+                setCanvasPaperTransparent(false);
+              }
+            } else {
+              setCanvasPaperTransparent(true);
+            }
+            setRenderedStripKey(targetStripKeyForRender);
+          }
+        })
+        .catch(() => {
+          // Cancelled during rapid scroll/zoom
+        });
+    };
+
+    if (delayMs > 0) {
+      timerId = window.setTimeout(startRender, delayMs);
+    } else {
+      startRender();
+    }
 
     return () => {
       cancelled = true;
-      handle.cancel();
+      if (timerId !== null) window.clearTimeout(timerId);
+      activeHandle?.cancel();
     };
   }, [
     renderDocId,
@@ -298,6 +377,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
     zoom,
     targetStripKeyForRender,
     hasVisibleBehindImages,
+    isPinching,
   ]);
 
   // Lazily extract MuPDF StructuredText paragraphs + PDF.js XObject images & table rules
@@ -306,7 +386,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
     let cancelled = false;
 
     (async () => {
-      const { images, horizontalRules, verticalRules, cellRects } =
+      const { images, shapes, horizontalRules, verticalRules, cellRects } =
         await pdfjsService.extractPageImagesAndRules(
           page.sourceDocId,
           sourceBytes,
@@ -329,6 +409,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
           setPageExtraction(page.id, {
             textBlocks,
             images,
+            shapes,
             horizontalRules,
             verticalRules,
             cellRects,
@@ -345,6 +426,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
           setPageExtraction(page.id, {
             textBlocks: fallback.textBlocks,
             images,
+            shapes: shapes ?? fallback.shapes,
             horizontalRules,
             verticalRules,
             cellRects,
@@ -396,12 +478,24 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
     [pageElements],
   );
 
+  const promotedShapeIds = useMemo(
+    () =>
+      new Set(
+        pageElements
+          .filter((el) => el.kind === 'shape-replacement')
+          .map((el) => el.originalShapeId),
+      ),
+    [pageElements],
+  );
+
   const visibleElements = useMemo(
     () =>
       pageElements.filter(
         (el) =>
           !(
-            (el.kind === 'text-edit' || el.kind === 'image-replacement') &&
+            (el.kind === 'text-edit' ||
+              el.kind === 'image-replacement' ||
+              el.kind === 'shape-replacement') &&
             el.deleted
           ),
       ),
@@ -459,7 +553,8 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
     type HitCandidate =
       | { kind: 'element'; element: CanvasElement; tier: number; zIndex: number }
       | { kind: 'detected-text'; block: DetectedTextBlock; tier: number; zIndex: number }
-      | { kind: 'detected-image'; img: DetectedImageObject; tier: number; zIndex: number };
+      | { kind: 'detected-image'; img: DetectedImageObject; tier: number; zIndex: number }
+      | { kind: 'detected-shape'; shp: DetectedVectorShape; tier: number; zIndex: number };
 
     const candidates: HitCandidate[] = [];
     for (const el of visibleElements) {
@@ -500,6 +595,18 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
           });
         }
       }
+      for (const shp of extraction.shapes ?? []) {
+        if (promotedShapeIds.has(shp.id)) continue;
+        if (pointInRotatedRect(pt.x, pt.y, shp, 0, 2)) {
+          const isBg = Boolean(shp.isHeaderOrBackground || shp.behindContent);
+          candidates.push({
+            kind: 'detected-shape',
+            shp,
+            tier: isBg ? 1 : 2,
+            zIndex: isBg ? 104 : 204,
+          });
+        }
+      }
     }
 
     if (candidates.length === 0) return;
@@ -519,6 +626,9 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
     } else if (chosen.kind === 'detected-image') {
       setEditingTextElementId(null);
       promoteDetectedImage(chosen.img, true);
+    } else if (chosen.kind === 'detected-shape') {
+      setEditingTextElementId(null);
+      promoteDetectedShape(chosen.shp, true);
     } else {
       const disp = axisAlignedRectBaseToDisplay(
         {
@@ -572,6 +682,10 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       setEditingTextElementId(null);
       return Boolean(promoteDetectedImage(hit.image, false));
     }
+    if (hit.kind === 'detected-shape') {
+      setEditingTextElementId(null);
+      return Boolean(promoteDetectedShape(hit.shape, false));
+    }
     if (hit.kind === 'background-element') {
       if (!forceBg && !selectBackgroundMode && hit.element.locked) {
         return false;
@@ -586,6 +700,13 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       }
       setEditingTextElementId(null);
       return Boolean(promoteDetectedImage(hit.image, true));
+    }
+    if (hit.kind === 'background-detected-shape') {
+      if (!forceBg && !selectBackgroundMode) {
+        return false;
+      }
+      setEditingTextElementId(null);
+      return Boolean(promoteDetectedShape(hit.shape, true));
     }
     return false;
   };
@@ -605,12 +726,17 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       elements: visibleElements,
       detectedTextBlocks: extraction?.textBlocks ?? [],
       detectedImages: extraction?.images ?? [],
+      detectedShapes: extraction?.shapes ?? [],
       replacedBlockIds: editedBlockIds,
       replacedImageIds: promotedImageIds,
+      replacedShapeIds: promotedShapeIds,
     });
     if (
       hit &&
-      (hit.kind === 'element' || hit.kind === 'detected-text' || hit.kind === 'detected-image')
+      (hit.kind === 'element' ||
+        hit.kind === 'detected-text' ||
+        hit.kind === 'detected-image' ||
+        hit.kind === 'detected-shape')
     ) {
       return dispatchSmartHit(hit, false);
     }
@@ -649,8 +775,10 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
         elements: visibleElements,
         detectedTextBlocks: extraction?.textBlocks ?? [],
         detectedImages: extraction?.images ?? [],
+        detectedShapes: extraction?.shapes ?? [],
         replacedBlockIds: editedBlockIds,
         replacedImageIds: promotedImageIds,
+        replacedShapeIds: promotedShapeIds,
       });
 
       if (!hit) {
@@ -662,7 +790,8 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       if (
         hit.kind === 'element' ||
         hit.kind === 'detected-text' ||
-        hit.kind === 'detected-image'
+        hit.kind === 'detected-image' ||
+        hit.kind === 'detected-shape'
       ) {
         dispatchSmartHit(hit, e.altKey);
         return;
@@ -676,19 +805,23 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
         return;
       }
 
-      // hit.kind === 'background-detected-image'
+      // hit.kind === 'background-detected-image' or 'background-detected-shape'
+      const bgTarget = hit.kind === 'background-detected-image' ? hit.image : hit.shape;
       const bgAreaRatio =
-        (hit.image.width * hit.image.height) / Math.max(1, page.baseWidth * page.baseHeight);
-      if (
+        (bgTarget.width * bgTarget.height) / Math.max(1, page.baseWidth * page.baseHeight);
+      const isCoarse = isCoarsePointerEvent(e.pointerType);
+      const allowDirectPromote =
         selectBackgroundMode ||
         e.altKey ||
-        (bgAreaRatio < 0.65 && !isCoarsePointerEvent(e.pointerType))
-      ) {
+        (hit.kind === 'background-detected-shape'
+          ? bgAreaRatio < (isCoarse ? 0.35 : 0.65)
+          : bgAreaRatio < 0.65 && !isCoarse);
+      if (allowDirectPromote) {
         dispatchSmartHit(hit, true);
         return;
       }
 
-      // Open empty area over an unpromoted background image: deselect immediately and allow 500ms hold to reveal "Arka Planı Seç"
+      // Open empty area over an unpromoted full background: deselect immediately and allow 500ms hold to reveal "Arka Planı Seç"
       selectElements([]);
       setEditingTextElementId(null);
       const startX = e.clientX;
@@ -696,7 +829,10 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       const rect = layerRef.current?.getBoundingClientRect();
       const dispX = rect ? e.clientX - rect.left : 40;
       const dispY = rect ? e.clientY - rect.top : 40;
-      const bgImg = hit.image;
+      const bgPromptTarget =
+        hit.kind === 'background-detected-image'
+          ? { image: hit.image }
+          : { shape: hit.shape };
 
       const cancelHold = () => {
         if (longPressTimerRef.current !== null) {
@@ -723,7 +859,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
         cancelHold();
         const s = useEditorStore.getState();
         if (s.isPinching || s.activeTouchCount >= 2) return;
-        setBgLongPressPrompt({ x: dispX, y: dispY, image: bgImg });
+        setBgLongPressPrompt({ x: dispX, y: dispY, ...bgPromptTarget });
       }, 500);
       return;
     }
@@ -932,7 +1068,10 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
         return;
       }
       const isBehindEl =
-        (el.kind === 'image' || el.kind === 'image-replacement') && Boolean(el.behindContent);
+        (el.kind === 'image' ||
+          el.kind === 'image-replacement' ||
+          el.kind === 'shape-replacement') &&
+        Boolean(el.behindContent);
       if ((el.isBackgroundLayer || isBehindEl) && !selectBackgroundMode) {
         const claimed = resolveForegroundHitAtClientPoint(
           e.clientX,
@@ -1206,6 +1345,52 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       );
     }
 
+    if (el.kind === 'shape-replacement') {
+      const isBehindShape = el.behindContent === true;
+      const keepOriginalBehindInCanvas = isUnmodifiedBehindShape(el, extraction?.shapes);
+      const tierZIndex = getCssZIndexForElement(el);
+      const rawShapeZIndex = isBehindShape
+        ? keepOriginalBehindInCanvas || canvasPaperTransparent
+          ? 5
+          : 12
+        : tierZIndex;
+      const shapeZIndex =
+        el.isBackgroundLayer && !selectBackgroundMode
+          ? Math.min(rawShapeZIndex, 50)
+          : rawShapeZIndex;
+
+      return (
+        <div
+          key={el.id}
+          data-testid={`canvas-element-${el.id}`}
+          data-layer-tier={getElementLayerTier(el)}
+          onPointerDown={handleSelect}
+          style={{
+            position: 'absolute',
+            left: `${frame.left}px`,
+            top: `${frame.top}px`,
+            width: `${frame.width}px`,
+            height: `${frame.height}px`,
+            transform: `rotate(${frame.rotation}deg)`,
+            transformOrigin: 'center center',
+            opacity: keepOriginalBehindInCanvas ? 1 : el.opacity,
+            backgroundColor: keepOriginalBehindInCanvas
+              ? 'transparent'
+              : el.fillColor === 'transparent'
+                ? 'transparent'
+                : el.fillColor,
+            border:
+              !keepOriginalBehindInCanvas && el.strokeColor && el.strokeWidth > 0
+                ? `${el.strokeWidth * zoom}px solid ${el.strokeColor}`
+                : undefined,
+            boxSizing: 'border-box',
+            zIndex: shapeZIndex,
+          }}
+          className="cursor-pointer select-none"
+        />
+      );
+    }
+
     if (el.kind === 'highlight') {
       return (
         <div
@@ -1241,6 +1426,75 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
 
     return (
       <>
+        {(extraction.shapes ?? []).map((shp: DetectedVectorShape) => {
+          if (promotedShapeIds.has(shp.id)) return null;
+          const disp = axisAlignedRectBaseToDisplay(
+            { x: shp.x, y: shp.y, width: shp.width, height: shp.height },
+            page.baseWidth,
+            page.baseHeight,
+            page.userRotation,
+            zoom,
+          );
+          const hovered = hoveredShapeId === shp.id;
+          const isBg = Boolean(
+            shp.isBackgroundLayer || shp.isHeaderOrBackground || shp.behindContent,
+          );
+          const areaRatio =
+            (shp.width * shp.height) / Math.max(1, page.baseWidth * page.baseHeight);
+          const isolateBg = isBg && !selectBackgroundMode && areaRatio >= 0.65;
+          return (
+            <div
+              key={shp.id}
+              data-testid={`detected-shape-${shp.id}`}
+              data-detected-shape="true"
+              data-layer-tier={isBg ? 1 : 2}
+              data-background-layer={isBg ? 'true' : 'false'}
+              onMouseEnter={() => {
+                if (!isolateBg) setHoveredShapeId(shp.id);
+              }}
+              onMouseLeave={() => {
+                if (!isolateBg) setHoveredShapeId(null);
+              }}
+              onPointerDown={(e) => {
+                if (isolateBg || e.button !== 0) return;
+                e.stopPropagation();
+                if (e.altKey) {
+                  handleAltCycleAtClientPoint(e.clientX, e.clientY);
+                  return;
+                }
+                const isCoarse = isCoarsePointerEvent(e.pointerType);
+                if (!selectBackgroundMode && isCoarse && areaRatio >= 0.35) {
+                  return;
+                }
+                promoteDetectedShape(shp, selectBackgroundMode || !isCoarse || areaRatio < 0.35);
+              }}
+              style={{
+                position: 'absolute',
+                left: `${disp.x}px`,
+                top: `${disp.y}px`,
+                width: `${disp.width}px`,
+                height: `${disp.height}px`,
+                zIndex: isolateBg ? 10 : isBg ? 104 : 204,
+                pointerEvents: isolateBg ? 'none' : 'auto',
+              }}
+              title={
+                isolateBg
+                  ? undefined
+                  : 'Click to edit background shape color, border, size, or position'
+              }
+              className={
+                isolateBg
+                  ? 'border border-transparent'
+                  : `cursor-pointer transition ${
+                      hovered
+                        ? 'border-2 border-dashed border-indigo-400 bg-indigo-500/10'
+                        : 'border border-transparent hover:border-indigo-400/50'
+                    }`
+              }
+            />
+          );
+        })}
+
         {extraction.images.map((img: DetectedImageObject) => {
           if (promotedImageIds.has(img.id)) return null;
           const disp = axisAlignedRectBaseToDisplay(
@@ -1536,7 +1790,12 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       >
         <canvas
           ref={canvasRef}
-          style={{ position: 'relative', zIndex: 10 }}
+          style={{
+            position: 'relative',
+            zIndex: 10,
+            width: `${displayDims.width}px`,
+            height: `${displayDims.height}px`,
+          }}
           className="pointer-events-none block"
         />
 
@@ -1644,7 +1903,11 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
             onPointerDown={(e) => e.stopPropagation()}
             onClick={(e) => {
               e.stopPropagation();
-              promoteDetectedImage(bgLongPressPrompt.image, true);
+              if (bgLongPressPrompt.image) {
+                promoteDetectedImage(bgLongPressPrompt.image, true);
+              } else if (bgLongPressPrompt.shape) {
+                promoteDetectedShape(bgLongPressPrompt.shape, true);
+              }
               setBgLongPressPrompt(null);
             }}
             style={{

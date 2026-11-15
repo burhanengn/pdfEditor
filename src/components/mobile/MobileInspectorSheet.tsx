@@ -45,7 +45,9 @@ export function MobileInspectorSheet() {
             ? 'Çizim'
             : selectedEl.kind === 'highlight'
               ? 'Açıklama'
-              : 'Görsel';
+              : selectedEl.kind === 'shape-replacement'
+                ? 'Arkaplan'
+                : 'Görsel';
 
     return (
       <div
@@ -121,31 +123,59 @@ export function MobileInspectorSheet() {
             {selectedEl.locked ? <Unlock className="h-4 w-4" /> : <Lock className="h-4 w-4" />}
           </button>
 
-          {(selectedEl.kind === 'image' || selectedEl.kind === 'image-replacement') && (
-            <button
-              type="button"
-              aria-label="Arka Plan Katmanı"
-              data-testid="mobile-inspector-bg-btn"
-              aria-pressed={!!selectedEl.isBackgroundLayer}
-              onClick={() =>
-                updateElements(
-                  [
-                    {
-                      id: selectedEl.id,
-                      patch: { isBackgroundLayer: !selectedEl.isBackgroundLayer },
-                    },
-                  ],
-                  true,
-                )
-              }
-              className={`flex min-h-[40px] min-w-[40px] items-center justify-center rounded-lg border ${
-                selectedEl.isBackgroundLayer
-                  ? 'border-amber-500 bg-amber-500/15 text-amber-600 dark:text-amber-300'
-                  : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'
-              }`}
-            >
-              <Layers className="h-4 w-4" />
-            </button>
+          {(selectedEl.kind === 'image' ||
+            selectedEl.kind === 'image-replacement' ||
+            selectedEl.kind === 'shape-replacement') && (
+            <>
+              {selectedEl.kind === 'shape-replacement' && (
+                <label className="flex min-h-[40px] items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2 dark:border-slate-700 dark:bg-slate-900">
+                  <span className="text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                    Renk
+                  </span>
+                  <input
+                    type="color"
+                    aria-label="Arkaplan Rengi"
+                    data-testid="mobile-inspector-shape-fill"
+                    value={
+                      selectedEl.fillColor && selectedEl.fillColor !== 'transparent'
+                        ? selectedEl.fillColor
+                        : '#142447'
+                    }
+                    onChange={(e) =>
+                      updateElements(
+                        [{ id: selectedEl.id, patch: { fillColor: e.target.value } }],
+                        true,
+                      )
+                    }
+                    className="h-6 w-6 cursor-pointer rounded border border-slate-300 bg-transparent p-0"
+                  />
+                </label>
+              )}
+              <button
+                type="button"
+                aria-label="Arka Plan Katmanı"
+                data-testid="mobile-inspector-bg-btn"
+                aria-pressed={!!selectedEl.isBackgroundLayer}
+                onClick={() =>
+                  updateElements(
+                    [
+                      {
+                        id: selectedEl.id,
+                        patch: { isBackgroundLayer: !selectedEl.isBackgroundLayer },
+                      },
+                    ],
+                    true,
+                  )
+                }
+                className={`flex min-h-[40px] min-w-[40px] items-center justify-center rounded-lg border ${
+                  selectedEl.isBackgroundLayer
+                    ? 'border-amber-500 bg-amber-500/15 text-amber-600 dark:text-amber-300'
+                    : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200'
+                }`}
+              >
+                <Layers className="h-4 w-4" />
+              </button>
+            </>
           )}
 
           <button

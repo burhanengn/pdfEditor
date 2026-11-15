@@ -349,4 +349,91 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
       md.destroy();
     }
   });
+
+  test('Sample PDF header banner background can be selected, recolored, and exported behind white title without trapping text', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    await page.getByTestId('welcome-sample-btn').click();
+    const page1 = page.getByTestId('pdf-page-1');
+    await expect(page1.locator('canvas')).toBeVisible();
+    await expect
+      .poll(async () => page1.locator('canvas').evaluate((c: HTMLCanvasElement) => c.width))
+      .toBeGreaterThan(200);
+
+    // Wait for extracted text and vector shapes on Sample PDF Page 1
+    const shapeOverlay = page1.locator('[data-detected-shape="true"]').first();
+    await expect(shapeOverlay).toBeVisible();
+
+    const titleTextOverlay = page1.locator('[data-detected-text="true"]').first();
+    await expect(titleTextOverlay).toBeVisible();
+
+    // 1. Clicking title text still prioritizes text editing cleanly over the header banner
+    const titleBox = await titleTextOverlay.boundingBox();
+    expect(titleBox).not.toBeNull();
+    await page.mouse.click(titleBox!.x + titleBox!.width * 0.4, titleBox!.y + titleBox!.height * 0.5);
+    const inlineEditor = page.getByTestId('inline-text-editor');
+    await expect(inlineEditor).toBeVisible();
+    await expect(inlineEditor).toContainText('Q4 Product Architecture Brief');
+    await inlineEditor.press('Escape');
+    await expect(inlineEditor).toBeHidden();
+
+    // Wait briefly so we don't collide cleanly, now locate header banner by bounding box (< 0.15 of page top & widest)
+    const bannerRect = await page1.evaluate(() => {
+      const shapes = Array.from(document.querySelectorAll('[data-detected-shape="true"]'));
+      const header = shapes
+        .map((el) => el.getBoundingClientRect())
+        .sort((a, b) => a.top - b.top || b.width - a.width)[0];
+      return header ? { x: header.left, y: header.top, width: header.width, height: header.height } : null;
+    });
+    expect(bannerRect).not.toBeNull();
+
+    // 2. Click open right side of header banner -> promotes shape-replacement & opens Background Shape Style
+    await page.mouse.click(bannerRect!.x + bannerRect!.width * 0.88, bannerRect!.y + bannerRect!.height * 0.5);
+    const promotedShape = page1.locator('[data-testid^="canvas-element-shpedit_"]').first();
+    await expect(promotedShape).toBeVisible();
+
+    const redSwatch = page.getByTestId('inspector-shape-swatch-#dc2626');
+    await expect(redSwatch).toBeVisible();
+    await redSwatch.click();
+
+    await expect
+      .poll(async () =>
+        promotedShape.evaluate((el) => ({
+          bg: window.getComputedStyle(el).backgroundColor,
+          z: Number(window.getComputedStyle(el).zIndex),
+        })),
+      )
+      .toEqual({ bg: 'rgb(220, 38, 38)', z: 5 });
+
+    // 3. Export PDF -> verify red banner renders BEHIND preserved white title 'Q4 Product Architecture Brief'
+    const [pdfDownload] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByTestId('export-pdf-btn').click(),
+    ]);
+    const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
+    const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
+    try {
+      const mp = md.loadPage(0);
+      expect(mp.toStructuredText('preserve-whitespace').asText()).toContain(
+        'Q4 Product Architecture Brief',
+      );
+      const pm = mp.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
+      try {
+        const px = pm.getPixels();
+        const w = pm.getWidth();
+        const n = pm.getNumberOfComponents();
+        // Open right side of banner at top-right (x=520, y=65) is now red (#dc2626)
+        const bannerIdx = (65 * w + 520) * n;
+        expect(px[bannerIdx]).toBeGreaterThan(190);
+        expect(px[bannerIdx + 1]).toBeLessThan(65);
+        expect(px[bannerIdx + 2]).toBeLessThan(65);
+      } finally {
+        pm.destroy();
+        mp.destroy();
+      }
+    } finally {
+      md.destroy();
+    }
+  });
 });

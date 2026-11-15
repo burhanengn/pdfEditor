@@ -7,6 +7,7 @@ import {
   type ImageReplacementElement,
   type LayerTier,
   type SavedSignature,
+  type ShapeReplacementElement,
   type SignatureElement,
   type StrokeElement,
   type TextAddElement,
@@ -15,6 +16,7 @@ import {
 import type {
   DetectedImageObject,
   DetectedTextBlock,
+  DetectedVectorShape,
   ExtractedPdfFont,
   PageExtractionResult,
   PageMeta,
@@ -195,6 +197,10 @@ interface EditorState {
     img: DetectedImageObject,
     forcePromote?: boolean,
   ) => ImageReplacementElement | null;
+  promoteDetectedShape: (
+    shape: DetectedVectorShape,
+    forcePromote?: boolean,
+  ) => ShapeReplacementElement | null;
 
   // Repeating images / watermarks / headers / footers
   applyImageToPages: (
@@ -529,6 +535,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       selectedElementIds: [],
       editingTextElementId: null,
       pendingSignaturePlacement: null,
+      selectBackgroundMode: false,
+      isPinching: false,
+      activeTouchCount: 0,
       pageNumbering: null,
       past: [],
       future: [],
@@ -580,6 +589,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       selectedElementIds: [],
       editingTextElementId: null,
       pendingSignaturePlacement: null,
+      selectBackgroundMode: false,
+      isPinching: false,
+      activeTouchCount: 0,
       pageNumbering: null,
       past: [],
       future: [],
@@ -1037,6 +1049,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         nextElements.push({ ...el, deleted: true });
       } else if (el.kind === 'image-replacement') {
         nextElements.push({ ...el, deleted: true });
+      } else if (el.kind === 'shape-replacement') {
+        nextElements.push({ ...el, deleted: true });
       }
     }
 
@@ -1070,7 +1084,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     let maxZ = state.elements.reduce((m, e) => Math.max(m, e.zIndex), 0);
     const nextElements = state.elements.map((el) => {
       if (!idSet.has(el.id)) return el;
-      if (el.kind === 'image' || el.kind === 'image-replacement') {
+      if (
+        el.kind === 'image' ||
+        el.kind === 'image-replacement' ||
+        el.kind === 'shape-replacement'
+      ) {
         return {
           ...el,
           zIndex: ++maxZ,
@@ -1098,7 +1116,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     let minZ = state.elements.reduce((m, e) => Math.min(m, e.zIndex), 1);
     const nextElements = state.elements.map((el) => {
       if (!idSet.has(el.id)) return el;
-      if (el.kind === 'image' || el.kind === 'image-replacement') {
+      if (
+        el.kind === 'image' ||
+        el.kind === 'image-replacement' ||
+        el.kind === 'shape-replacement'
+      ) {
         return {
           ...el,
           zIndex: --minZ,
@@ -1143,7 +1165,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           layerOverride: nextTier,
           zIndex: el.zIndex + 1,
         };
-        if ((el.kind === 'image' || el.kind === 'image-replacement') && nextTier > 1) {
+        if (
+          (el.kind === 'image' ||
+            el.kind === 'image-replacement' ||
+            el.kind === 'shape-replacement') &&
+          nextTier > 1
+        ) {
           (patch as Partial<ImageAddElement>).behindContent = false;
         }
         return { ...el, ...patch } as CanvasElement;
@@ -1161,7 +1188,11 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         layerOverride: prevTier,
         zIndex: el.zIndex - 1,
       };
-      if (el.kind === 'image' || el.kind === 'image-replacement') {
+      if (
+        el.kind === 'image' ||
+        el.kind === 'image-replacement' ||
+        el.kind === 'shape-replacement'
+      ) {
         (patch as Partial<ImageAddElement>).behindContent = prevTier === 1;
       }
       return { ...el, ...patch } as CanvasElement;
@@ -1272,6 +1303,26 @@ export const useEditorStore = create<EditorState>((set, get) => ({
           behindContent: item.behindContent,
           flipX: item.flipX,
           flipY: item.flipY,
+        };
+        additions.push(converted);
+      } else if (item.kind === 'shape-replacement') {
+        const converted: HighlightElement = {
+          id,
+          pageId: targetPageId,
+          kind: 'highlight',
+          shape: 'rect',
+          x: item.x + 16,
+          y: item.y + 16,
+          width: item.width,
+          height: item.height,
+          rotation: item.rotation,
+          opacity: item.opacity,
+          zIndex: nextZ,
+          fillColor: item.fillColor,
+          strokeColor: item.strokeColor,
+          strokeWidth: item.strokeWidth,
+          layerOverride: item.behindContent ? 1 : 2,
+          isBackgroundLayer: item.isBackgroundLayer,
         };
         additions.push(converted);
       } else if (item.kind === 'signature') {
@@ -1501,6 +1552,78 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       elements: nextElements,
       selectedElementIds: [created.id],
       activePageId: img.pageId,
+      past: nextPast,
+      future: [],
+      canUndo: nextPast.length > 0,
+      canRedo: false,
+    });
+    return created;
+  },
+
+  promoteDetectedShape: (shape, forcePromote = false) => {
+    const state = get();
+    const isBgLayer = Boolean(shape.isBackgroundLayer || shape.isHeaderOrBackground);
+    const existing = state.elements.find(
+      (el): el is ShapeReplacementElement =>
+        el.kind === 'shape-replacement' &&
+        el.pageId === shape.pageId &&
+        el.originalShapeId === shape.id &&
+        !el.deleted,
+    );
+    if (existing) {
+      if (
+        !forcePromote &&
+        (existing.isBackgroundLayer || isBgLayer) &&
+        !state.selectBackgroundMode
+      ) {
+        return null;
+      }
+      set({
+        selectedElementIds: [existing.id],
+        activePageId: shape.pageId,
+      });
+      return existing;
+    }
+
+    if (!forcePromote && shape.isBackgroundLayer && !state.selectBackgroundMode) {
+      return null;
+    }
+
+    const isBehind = Boolean(shape.behindContent || isBgLayer);
+    const tier: LayerTier = isBehind ? 1 : 2;
+    const created: ShapeReplacementElement = {
+      id: createId('shpedit'),
+      pageId: shape.pageId,
+      kind: 'shape-replacement',
+      originalShapeId: shape.id,
+      originalRect: {
+        x: shape.x,
+        y: shape.y,
+        width: shape.width,
+        height: shape.height,
+      },
+      originalStrokeWidth: shape.strokeWidth,
+      fillColor: shape.fillColor ?? 'transparent',
+      strokeColor: shape.strokeColor ?? undefined,
+      strokeWidth: shape.strokeWidth,
+      x: shape.x,
+      y: shape.y,
+      width: shape.width,
+      height: shape.height,
+      rotation: 0,
+      opacity: shape.opacity ?? 1,
+      zIndex: shape.operatorIndex ?? getNextZIndexForTier(state.elements, shape.pageId, tier),
+      behindContent: isBehind,
+      isBackgroundLayer: isBgLayer,
+    };
+
+    const snapshot = cloneSnapshot(state.pages, state.elements, state.pageNumbering);
+    const nextElements = [...state.elements, created];
+    const nextPast = pushSnapshot(state.past, snapshot);
+    set({
+      elements: nextElements,
+      selectedElementIds: [created.id],
+      activePageId: shape.pageId,
       past: nextPast,
       future: [],
       canUndo: nextPast.length > 0,

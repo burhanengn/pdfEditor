@@ -156,9 +156,27 @@ export interface DetectedImageObject {
   opacity?: number;
 }
 
+export interface DetectedVectorShape {
+  id: string;
+  pageId: string;
+  operatorIndex: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  fillColor: string | null;
+  strokeColor: string | null;
+  strokeWidth: number;
+  opacity: number;
+  behindContent?: boolean;
+  isHeaderOrBackground?: boolean;
+  isBackgroundLayer?: boolean;
+}
+
 export interface PageExtractionResult {
   textBlocks: DetectedTextBlock[];
   images: DetectedImageObject[];
+  shapes?: DetectedVectorShape[];
   horizontalRules?: Array<{ y: number; x0: number; x1: number }>;
   verticalRules?: Array<{ x: number; y0: number; y1: number }>;
   cellRects?: RectBox[];

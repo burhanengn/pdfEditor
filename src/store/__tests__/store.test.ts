@@ -398,4 +398,56 @@ describe('useEditorStore undo/redo and operations', () => {
       'Live Edited Text',
     );
   });
+
+  it('promotes, restyles, toggles layer order, and soft-deletes detected vector background shapes', () => {
+    const { doc, pages } = makeDoc();
+    useEditorStore.getState().loadInitialDocument(doc, pages);
+
+    const bannerShape = {
+      id: 'shp_header_1',
+      pageId: 'p1',
+      operatorIndex: 7,
+      x: 48,
+      y: 38,
+      width: 516,
+      height: 54,
+      fillColor: '#142447',
+      strokeColor: null,
+      strokeWidth: 0,
+      opacity: 1,
+      behindContent: true,
+      isHeaderOrBackground: true,
+      isBackgroundLayer: true,
+    };
+
+    // Blocked when !selectBackgroundMode and !forcePromote
+    expect(useEditorStore.getState().promoteDetectedShape(bannerShape, false)).toBeNull();
+
+    // Force promote (e.g. clicking open banner header area or Inspector item)
+    const promoted = useEditorStore.getState().promoteDetectedShape(bannerShape, true);
+    expect(promoted).not.toBeNull();
+    expect(promoted!.kind).toBe('shape-replacement');
+    expect(promoted!.fillColor).toBe('#142447');
+    expect(getElementLayerTier(promoted!)).toBe(1);
+
+    // Update fill color, border, opacity
+    useEditorStore.getState().updateElements(
+      [
+        {
+          id: promoted!.id,
+          patch: { fillColor: '#dc2626', strokeColor: '#ffffff', strokeWidth: 2, opacity: 0.9 },
+        },
+      ],
+      true,
+    );
+    const updated = useEditorStore.getState().elements.find((e) => e.id === promoted!.id)!;
+    expect(updated.kind === 'shape-replacement' && updated.fillColor).toBe('#dc2626');
+    expect(updated.kind === 'shape-replacement' && updated.strokeWidth).toBe(2);
+
+    // Soft delete preserves entry with deleted=true so MuPDF strips original banner rect
+    useEditorStore.getState().deleteElements([promoted!.id]);
+    const deletedEl = useEditorStore.getState().elements.find((e) => e.id === promoted!.id);
+    expect(deletedEl).toBeDefined();
+    expect(deletedEl!.kind === 'shape-replacement' && deletedEl!.deleted).toBe(true);
+  });
 });

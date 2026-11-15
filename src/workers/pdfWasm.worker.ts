@@ -113,6 +113,7 @@ self.onmessage = async (event: MessageEvent<WorkerEnvelope>) => {
           p.sourcePageIndex,
           p.textRects,
           p.imageRects,
+          p.shapeRects ?? [],
         );
         transfer.push(bytes.buffer);
         result = { bytes };

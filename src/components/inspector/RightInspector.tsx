@@ -65,6 +65,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
   const deletePages = useEditorStore((s) => s.deletePages);
   const startEditDetectedText = useEditorStore((s) => s.startEditDetectedText);
   const promoteDetectedImage = useEditorStore((s) => s.promoteDetectedImage);
+  const promoteDetectedShape = useEditorStore((s) => s.promoteDetectedShape);
   const applyImageToPages = useEditorStore((s) => s.applyImageToPages);
   const unlinkRepeatingImage = useEditorStore((s) => s.unlinkRepeatingImage);
   const applySignatureToPages = useEditorStore((s) => s.applySignatureToPages);
@@ -166,6 +167,11 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
       elements
         .filter((e) => e.pageId === activePage.id && e.kind === 'image-replacement')
         .map((e) => (e.kind === 'image-replacement' ? e.originalImageId : '')),
+    );
+    const promotedShapes = new Set(
+      elements
+        .filter((e) => e.pageId === activePage.id && e.kind === 'shape-replacement')
+        .map((e) => (e.kind === 'shape-replacement' ? e.originalShapeId : '')),
     );
 
     const Wrapper = variant === 'sheet' ? 'div' : 'aside';
@@ -340,6 +346,42 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                   ))}
                   {extraction.images.length === 0 && (
                     <p className="text-[11px] text-slate-400">No embedded XObject images.</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-1.5">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                  Background Shapes ({(extraction.shapes ?? []).length})
+                </div>
+                <div className="max-h-36 space-y-1 overflow-y-auto pr-1">
+                  {(extraction.shapes ?? []).map((shp, i) => (
+                    <button
+                      key={shp.id}
+                      type="button"
+                      data-testid={`inspector-shape-item-${shp.id}`}
+                      onClick={() => promoteDetectedShape(shp, true)}
+                      className="flex w-full items-center gap-2 rounded-md border border-slate-200 px-2 py-1.5 text-left hover:border-indigo-400 hover:bg-indigo-50/40 dark:border-slate-800 dark:hover:bg-slate-900"
+                    >
+                      <span
+                        className="h-3.5 w-3.5 shrink-0 rounded-sm border border-slate-300 dark:border-slate-600"
+                        style={{
+                          backgroundColor: shp.fillColor ?? 'transparent',
+                          borderColor: shp.strokeColor ?? undefined,
+                        }}
+                      />
+                      <span className="truncate text-[11px] text-slate-700 dark:text-slate-300">
+                        Shape #{i + 1} ({Math.round(shp.width)}×{Math.round(shp.height)})
+                      </span>
+                      {promotedShapes.has(shp.id) && (
+                        <span className="ml-auto shrink-0 rounded bg-indigo-500/15 px-1 text-[9px] text-indigo-500">
+                          Active
+                        </span>
+                      )}
+                    </button>
+                  ))}
+                  {(extraction.shapes ?? []).length === 0 && (
+                    <p className="text-[11px] text-slate-400">No vector background shapes detected.</p>
                   )}
                 </div>
               </div>
@@ -958,6 +1000,120 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
           </div>
         )}
 
+        {selectedEl.kind === 'shape-replacement' && (
+          <div className="space-y-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              Background Shape Style
+            </div>
+            <div>
+              <div className="mb-1 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                <span>Fill Color</span>
+                <button
+                  type="button"
+                  data-testid="inspector-shape-fill-transparent"
+                  onClick={() =>
+                    patchSelected({
+                      fillColor:
+                        selectedEl.fillColor === 'transparent' ? '#142447' : 'transparent',
+                    })
+                  }
+                  className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${
+                    selectedEl.fillColor === 'transparent'
+                      ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                      : 'border-slate-200 text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {selectedEl.fillColor === 'transparent' ? 'Transparent ✓' : 'Make Transparent'}
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {SWATCHES.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    data-testid={`inspector-shape-swatch-${c}`}
+                    onClick={() => patchSelected({ fillColor: c })}
+                    style={{ backgroundColor: c }}
+                    className={`h-5 w-5 rounded-full border ${
+                      selectedEl.fillColor.toLowerCase() === c.toLowerCase()
+                        ? 'ring-2 ring-blue-500 ring-offset-1'
+                        : 'border-slate-300 dark:border-slate-600'
+                    }`}
+                  />
+                ))}
+                <input
+                  type="color"
+                  data-testid="inspector-shape-fill-color"
+                  value={
+                    selectedEl.fillColor && selectedEl.fillColor !== 'transparent'
+                      ? selectedEl.fillColor
+                      : '#142447'
+                  }
+                  onChange={(e) => patchSelected({ fillColor: e.target.value })}
+                  className="h-6 w-8 cursor-pointer rounded border border-slate-300 bg-transparent p-0"
+                />
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-1 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                <span>Border</span>
+                <button
+                  type="button"
+                  data-testid="inspector-shape-stroke-none"
+                  onClick={() =>
+                    patchSelected(
+                      selectedEl.strokeColor && selectedEl.strokeWidth > 0
+                        ? { strokeColor: undefined, strokeWidth: 0 }
+                        : {
+                            strokeColor: selectedEl.strokeColor ?? '#94a3b8',
+                            strokeWidth: Math.max(1, selectedEl.strokeWidth || 1.5),
+                          },
+                    )
+                  }
+                  className="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                >
+                  {selectedEl.strokeColor && selectedEl.strokeWidth > 0 ? 'Remove Border' : 'Add Border'}
+                </button>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  data-testid="inspector-shape-stroke-color"
+                  value={selectedEl.strokeColor ?? '#94a3b8'}
+                  onChange={(e) =>
+                    patchSelected({
+                      strokeColor: e.target.value,
+                      strokeWidth: Math.max(1, selectedEl.strokeWidth || 1.5),
+                    })
+                  }
+                  className="h-6 w-8 shrink-0 cursor-pointer rounded border border-slate-300 bg-transparent p-0"
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={12}
+                  step={0.5}
+                  value={selectedEl.strokeWidth}
+                  data-testid="inspector-shape-stroke-width"
+                  onChange={(e) => {
+                    const width = Number(e.target.value);
+                    patchSelected({
+                      strokeWidth: width,
+                      strokeColor:
+                        width > 0 ? selectedEl.strokeColor ?? '#94a3b8' : undefined,
+                    });
+                  }}
+                  className="w-full accent-blue-600"
+                />
+                <span className="w-10 text-right text-[11px] text-slate-500 dark:text-slate-400">
+                  {selectedEl.strokeWidth}pt
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
         {selectedEl.kind === 'highlight' && (
           <div className="space-y-3">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
@@ -1291,7 +1447,9 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
               )}
             </button>
 
-            {(selectedEl.kind === 'image' || selectedEl.kind === 'image-replacement') && (
+            {(selectedEl.kind === 'image' ||
+              selectedEl.kind === 'image-replacement' ||
+              selectedEl.kind === 'shape-replacement') && (
               <>
                 <button
                   type="button"

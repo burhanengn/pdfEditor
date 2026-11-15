@@ -1,5 +1,11 @@
 import type { CanvasElement } from './elements';
-import type { DetectedTextBlock, PageMeta, RectBox, RotationAngle } from './pdf';
+import type {
+  DetectedTextBlock,
+  DetectedVectorShape,
+  PageMeta,
+  RectBox,
+  RotationAngle,
+} from './pdf';
 
 export interface HorizontalRule {
   y: number;
@@ -17,6 +23,7 @@ export interface VectorGeometry {
   horizontalRules: HorizontalRule[];
   verticalRules: VerticalRule[];
   cellRects: RectBox[];
+  shapes?: DetectedVectorShape[];
 }
 
 export interface InspectPdfPayload {
@@ -68,6 +75,7 @@ export interface PrepareCleanPagePayload {
   sourcePageIndex: number;
   textRects: RectBox[];
   imageRects: RectBox[];
+  shapeRects?: RectBox[];
 }
 
 export interface CompilePdfPayload {

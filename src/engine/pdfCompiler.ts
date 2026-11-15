@@ -23,6 +23,7 @@ import {
   getElementLayerTier,
   type CanvasElement,
   type HighlightElement,
+  type ShapeReplacementElement,
   type SignatureElement,
   type StrokeElement,
   type TextAddElement,
@@ -270,12 +271,27 @@ export async function inspectPdfDocument(
   }
 }
 
+function addMupdfRedactAnnotation(
+  page: MuPdfNamespace.PDFPage,
+  rect: RectBox,
+  bounds: [number, number, number, number],
+): void {
+  const annot = page.createAnnotation('Redact');
+  try {
+    annot.setRect(rectBaseVisualToMupdfRect(rect, bounds));
+    annot.update();
+  } finally {
+    annot.destroy();
+  }
+}
+
 function applyRedactionsToMupdfPage(
   mupdf: MuPdfModule,
   page: MuPdfNamespace.PDFPage,
   textRects: RectBox[],
   imageRects: RectBox[],
   blackRedactRects: RectBox[] = [],
+  shapeRects: RectBox[] = [],
 ): void {
   const bounds = page.getBounds('CropBox');
 
@@ -351,6 +367,19 @@ function applyRedactionsToMupdfPage(
       mupdf.PDFPage.REDACT_TEXT_REMOVE,
     );
   }
+
+  // Pass 4: Remove replaced/deleted vector background shapes cleanly without erasing overlapping foreground text
+  if (shapeRects.length > 0) {
+    for (const r of shapeRects) {
+      addMupdfRedactAnnotation(page, r, bounds);
+    }
+    page.applyRedactions(
+      false,
+      mupdf.PDFPage.REDACT_IMAGE_NONE,
+      mupdf.PDFPage.REDACT_LINE_ART_REMOVE_IF_COVERED,
+      mupdf.PDFPage.REDACT_TEXT_NONE,
+    );
+  }
 }
 
 /**
@@ -363,11 +392,12 @@ export function prepareCleanPreviewPagePdf(
   sourcePageIndex: number,
   textRects: RectBox[],
   imageRects: RectBox[],
+  shapeRects: RectBox[] = [],
 ): Uint8Array {
   const singleDoc = new mupdf.PDFDocument();
   try {
     singleDoc.graftPage(0, srcPdfDoc, sourcePageIndex);
-    if (textRects.length > 0 || imageRects.length > 0) {
+    if (textRects.length > 0 || imageRects.length > 0 || shapeRects.length > 0) {
       const rawPage = singleDoc.loadPage(0);
       try {
         if (rawPage.isPDF()) {
@@ -376,6 +406,8 @@ export function prepareCleanPreviewPagePdf(
             rawPage as MuPdfNamespace.PDFPage,
             textRects,
             imageRects,
+            [],
+            shapeRects,
           );
         }
       } finally {
@@ -412,6 +444,7 @@ function applyMupdfStreamRemovals(
       textRects: RectBox[];
       imageRects: RectBox[];
       blackRedactRects: RectBox[];
+      shapeRects: RectBox[];
     }
   >();
 
@@ -420,19 +453,38 @@ function applyMupdfStreamRemovals(
     const textRects: RectBox[] = [];
     const imageRects: RectBox[] = [];
     const blackRedactRects: RectBox[] = [];
+    const shapeRects: RectBox[] = [];
 
     for (const el of pageEls) {
       if (el.kind === 'text-edit') {
         textRects.push(el.originalRect);
       } else if (el.kind === 'image-replacement') {
         imageRects.push(el.originalRect);
+      } else if (el.kind === 'shape-replacement') {
+        const pad = Math.max(0.5, (el.originalStrokeWidth ?? 0) / 2 + 0.5);
+        shapeRects.push({
+          x: Math.max(0, el.originalRect.x - pad),
+          y: Math.max(0, el.originalRect.y - pad),
+          width: el.originalRect.width + pad * 2,
+          height: el.originalRect.height + pad * 2,
+        });
       } else if (el.kind === 'highlight' && el.shape === 'redact') {
         blackRedactRects.push({ x: el.x, y: el.y, width: el.width, height: el.height });
       }
     }
 
-    if (textRects.length > 0 || imageRects.length > 0 || blackRedactRects.length > 0) {
-      pagesNeedingRedaction.set(pageIndex, { textRects, imageRects, blackRedactRects });
+    if (
+      textRects.length > 0 ||
+      imageRects.length > 0 ||
+      blackRedactRects.length > 0 ||
+      shapeRects.length > 0
+    ) {
+      pagesNeedingRedaction.set(pageIndex, {
+        textRects,
+        imageRects,
+        blackRedactRects,
+        shapeRects,
+      });
     }
   });
 
@@ -461,6 +513,7 @@ function applyMupdfStreamRemovals(
           ops.textRects,
           ops.imageRects,
           ops.blackRedactRects,
+          ops.shapeRects,
         );
       } finally {
         page.destroy();
@@ -824,6 +877,37 @@ function scaleSvgPath(d: string, sx: number, sy: number): string {
   });
 }
 
+function drawRectShapeOnPage(
+  pdfPage: PDFPage,
+  pageMeta: PageMeta,
+  box: RectBox,
+  rotation: number,
+  style: {
+    fillColor?: string;
+    strokeColor?: string;
+    strokeWidth?: number;
+    opacity: number;
+    isHighlight?: boolean;
+  },
+): void {
+  const placement = computePdfLibDrawPlacement(box, rotation, pageMeta);
+  const fillHex = style.fillColor;
+  const strokeHex = style.strokeColor;
+  const borderWidth = strokeHex ? style.strokeWidth ?? 0 : 0;
+  pdfPage.drawRectangle({
+    x: placement.x,
+    y: placement.y,
+    width: placement.width,
+    height: placement.height,
+    rotate: degrees(placement.rotateDegCCW),
+    color: style.isHighlight || (fillHex && fillHex !== 'transparent') ? pdfRgb(fillHex ?? '#fef08a') : undefined,
+    opacity: style.isHighlight ? Math.min(0.45, style.opacity) : style.opacity,
+    borderColor: strokeHex && borderWidth > 0 ? pdfRgb(strokeHex) : undefined,
+    borderWidth,
+    borderOpacity: style.opacity,
+  });
+}
+
 function drawPlacedImage(
   pdfPage: PDFPage,
   img: PDFImage,
@@ -1147,29 +1231,44 @@ export async function compilePdfDocument(
       (a, b) => getElementLayerTier(a) - getElementLayerTier(b) || a.zIndex - b.zIndex,
     );
 
-    const behindImages = pageEls.filter(
+    const behindEls = pageEls.filter(
       (el) =>
-        (el.kind === 'image' || el.kind === 'image-replacement') &&
-        el.behindContent === true &&
-        !(el.kind === 'image-replacement' && el.deleted),
+        ((el.kind === 'image' || el.kind === 'image-replacement') &&
+          el.behindContent === true &&
+          !(el.kind === 'image-replacement' && el.deleted)) ||
+        (el.kind === 'shape-replacement' && el.behindContent === true && !el.deleted),
     );
-    const behindIds = new Set(behindImages.map((el) => el.id));
+    const behindIds = new Set(behindEls.map((el) => el.id));
     const frontEls = pageEls.filter((el) => !behindIds.has(el.id));
 
-    // Prepend behindContent background/watermark images before original page streams
-    if (behindImages.length > 0) {
+    // Prepend behindContent background/watermark layers before original page streams
+    if (behindEls.length > 0) {
       const origRefs = extractContentRefs(pdfPage);
       pdfPage.node.set(PDFName.of('Contents'), finalDoc.context.obj([]));
 
-      for (const el of behindImages) {
-        if (el.kind !== 'image' && el.kind !== 'image-replacement') continue;
-        const img = await embedImageBytes(el.bytes, el.mimeType);
-        const placement = computePdfLibDrawPlacement(
-          { x: el.x, y: el.y, width: el.width, height: el.height },
-          el.rotation,
-          pageMeta,
-        );
-        drawPlacedImage(pdfPage, img, placement, el.opacity, el.flipX, el.flipY);
+      for (const el of behindEls) {
+        if (el.kind === 'image' || el.kind === 'image-replacement') {
+          const img = await embedImageBytes(el.bytes, el.mimeType);
+          const placement = computePdfLibDrawPlacement(
+            { x: el.x, y: el.y, width: el.width, height: el.height },
+            el.rotation,
+            pageMeta,
+          );
+          drawPlacedImage(pdfPage, img, placement, el.opacity, el.flipX, el.flipY);
+        } else if (el.kind === 'shape-replacement') {
+          drawRectShapeOnPage(
+            pdfPage,
+            pageMeta,
+            { x: el.x, y: el.y, width: el.width, height: el.height },
+            el.rotation,
+            {
+              fillColor: el.fillColor,
+              strokeColor: el.strokeColor,
+              strokeWidth: el.strokeWidth,
+              opacity: el.opacity,
+            },
+          );
+        }
       }
 
       const bgRefs = extractContentRefs(pdfPage);
@@ -1266,29 +1365,42 @@ export async function compilePdfDocument(
           );
           break;
         }
+        case 'shape-replacement': {
+          const shp: ShapeReplacementElement = el;
+          if (shp.deleted) break;
+          drawRectShapeOnPage(
+            pdfPage,
+            pageMeta,
+            { x: shp.x, y: shp.y, width: shp.width, height: shp.height },
+            shp.rotation,
+            {
+              fillColor: shp.fillColor,
+              strokeColor: shp.strokeColor,
+              strokeWidth: shp.strokeWidth,
+              opacity: shp.opacity,
+            },
+          );
+          break;
+        }
         case 'highlight': {
           const h: HighlightElement = el;
           if (h.shape === 'redact') {
             // Already burned in via MuPDF Pass 3
             break;
           }
-          const placement = computePdfLibDrawPlacement(
+          drawRectShapeOnPage(
+            pdfPage,
+            pageMeta,
             { x: h.x, y: h.y, width: h.width, height: h.height },
             h.rotation,
-            pageMeta,
+            {
+              fillColor: h.fillColor,
+              strokeColor: h.strokeColor,
+              strokeWidth: h.strokeWidth,
+              opacity: h.opacity,
+              isHighlight: h.shape === 'highlight',
+            },
           );
-          pdfPage.drawRectangle({
-            x: placement.x,
-            y: placement.y,
-            width: placement.width,
-            height: placement.height,
-            rotate: degrees(placement.rotateDegCCW),
-            color: h.shape === 'highlight' || h.fillColor !== 'transparent' ? pdfRgb(h.fillColor) : undefined,
-            opacity: h.shape === 'highlight' ? Math.min(0.45, h.opacity) : h.opacity,
-            borderColor: h.strokeColor ? pdfRgb(h.strokeColor) : undefined,
-            borderWidth: h.strokeWidth ?? 0,
-            borderOpacity: h.opacity,
-          });
           break;
         }
       }

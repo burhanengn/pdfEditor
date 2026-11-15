@@ -5,6 +5,7 @@ import {
 import type {
   DetectedImageObject,
   DetectedTextBlock,
+  DetectedVectorShape,
   PageMeta,
   RectBox,
   RotationAngle,
@@ -673,16 +674,20 @@ export interface SmartHitOptions {
   elements: CanvasElement[];
   detectedTextBlocks: DetectedTextBlock[];
   detectedImages: DetectedImageObject[];
+  detectedShapes?: DetectedVectorShape[];
   replacedBlockIds: Set<string>;
   replacedImageIds: Set<string>;
+  replacedShapeIds?: Set<string>;
 }
 
 export type SmartHitResult =
   | { tier: 2; kind: 'element'; element: CanvasElement }
   | { tier: 3; kind: 'detected-text'; block: DetectedTextBlock }
   | { tier: 4; kind: 'detected-image'; image: DetectedImageObject }
+  | { tier: 4; kind: 'detected-shape'; shape: DetectedVectorShape }
   | { tier: 5; kind: 'background-element'; element: CanvasElement }
   | { tier: 5; kind: 'background-detected-image'; image: DetectedImageObject }
+  | { tier: 5; kind: 'background-detected-shape'; shape: DetectedVectorShape }
   | null;
 
 function distToBoxCenterSq(point: Point2D, box: RectBox): number {
@@ -698,7 +703,12 @@ function isTextElementKind(el: CanvasElement): boolean {
 }
 
 function isElementDeleted(el: CanvasElement): boolean {
-  return (el.kind === 'text-edit' || el.kind === 'image-replacement') && Boolean(el.deleted);
+  return (
+    (el.kind === 'text-edit' ||
+      el.kind === 'image-replacement' ||
+      el.kind === 'shape-replacement') &&
+    Boolean(el.deleted)
+  );
 }
 
 /**
@@ -759,12 +769,28 @@ export function resolveSmartHitAtPoint(opts: SmartHitOptions): SmartHitResult {
     return matches[0].block;
   };
 
+  const detectedShapes = opts.detectedShapes ?? [];
+  const replacedShapeIds = opts.replacedShapeIds ?? new Set<string>();
+
   const findForegroundDetectedImageHit = (): DetectedImageObject | null => {
     const matches: DetectedImageObject[] = [];
     for (const img of opts.detectedImages) {
       if (opts.replacedImageIds.has(img.id) || img.isBackgroundLayer) continue;
       if (pointInRotatedRect(opts.point.x, opts.point.y, img, img.rotation ?? 0, fgNonTextPadPt)) {
         matches.push(img);
+      }
+    }
+    if (matches.length === 0) return null;
+    matches.sort((a, b) => b.operatorIndex - a.operatorIndex || a.width * a.height - b.width * b.height);
+    return matches[0];
+  };
+
+  const findForegroundDetectedShapeHit = (): DetectedVectorShape | null => {
+    const matches: DetectedVectorShape[] = [];
+    for (const shp of detectedShapes) {
+      if (replacedShapeIds.has(shp.id) || shp.isBackgroundLayer) continue;
+      if (pointInRotatedRect(opts.point.x, opts.point.y, shp, 0, fgNonTextPadPt)) {
+        matches.push(shp);
       }
     }
     if (matches.length === 0) return null;
@@ -799,12 +825,42 @@ export function resolveSmartHitAtPoint(opts: SmartHitOptions): SmartHitResult {
     return matches[0];
   };
 
+  const findBackgroundDetectedShapeHit = (): DetectedVectorShape | null => {
+    const matches: DetectedVectorShape[] = [];
+    for (const shp of detectedShapes) {
+      if (replacedShapeIds.has(shp.id) || !shp.isBackgroundLayer) continue;
+      if (pointInRotatedRect(opts.point.x, opts.point.y, shp, 0, fgNonTextPadPt)) {
+        matches.push(shp);
+      }
+    }
+    if (matches.length === 0) return null;
+    matches.sort((a, b) => b.operatorIndex - a.operatorIndex || a.width * a.height - b.width * b.height);
+    return matches[0];
+  };
+
+  const pickHigherBackgroundObject = (
+    bgImg: DetectedImageObject | null,
+    bgShape: DetectedVectorShape | null,
+  ): SmartHitResult => {
+    if (bgImg && bgShape) {
+      return bgShape.operatorIndex >= bgImg.operatorIndex
+        ? { tier: 5, kind: 'background-detected-shape', shape: bgShape }
+        : { tier: 5, kind: 'background-detected-image', image: bgImg };
+    }
+    if (bgShape) return { tier: 5, kind: 'background-detected-shape', shape: bgShape };
+    if (bgImg) return { tier: 5, kind: 'background-detected-image', image: bgImg };
+    return null;
+  };
+
   // Explicit background-selection mode or Alt+Click: evaluate background layers first
   if (opts.selectBackgroundMode || opts.altKey) {
     const bgEl = findBackgroundElementHit(opts.selectBackgroundMode);
     if (bgEl) return { tier: 5, kind: 'background-element', element: bgEl };
-    const bgImg = findBackgroundDetectedImageHit();
-    if (bgImg) return { tier: 5, kind: 'background-detected-image', image: bgImg };
+    const bgObjHit = pickHigherBackgroundObject(
+      findBackgroundDetectedImageHit(),
+      findBackgroundDetectedShapeHit(),
+    );
+    if (bgObjHit) return bgObjHit;
   }
 
   // Tier 2: Unlocked foreground elements & promoted text
@@ -815,9 +871,11 @@ export function resolveSmartHitAtPoint(opts: SmartHitOptions): SmartHitResult {
   const textBlock = findDetectedTextHit(textPadPt);
   if (textBlock) return { tier: 3, kind: 'detected-text', block: textBlock };
 
-  // Tier 4: Foreground detected images
+  // Tier 4: Foreground detected images & vector shapes
   const fgImg = findForegroundDetectedImageHit();
   if (fgImg) return { tier: 4, kind: 'detected-image', image: fgImg };
+  const fgShape = findForegroundDetectedShapeHit();
+  if (fgShape) return { tier: 4, kind: 'detected-shape', shape: fgShape };
 
   // Tier 5: Guarded background fallback — check proximity guard before ever touching background
   const nearFgEl = findForegroundElementHit(bgGuardPt);
@@ -827,8 +885,11 @@ export function resolveSmartHitAtPoint(opts: SmartHitOptions): SmartHitResult {
 
   const bgEl = findBackgroundElementHit(false);
   if (bgEl) return { tier: 5, kind: 'background-element', element: bgEl };
-  const bgImg = findBackgroundDetectedImageHit();
-  if (bgImg) return { tier: 5, kind: 'background-detected-image', image: bgImg };
+  const bgObjHit = pickHigherBackgroundObject(
+    findBackgroundDetectedImageHit(),
+    findBackgroundDetectedShapeHit(),
+  );
+  if (bgObjHit) return bgObjHit;
 
   return null;
 }

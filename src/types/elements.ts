@@ -12,6 +12,7 @@ export type ElementKind =
   | 'text-add'
   | 'image'
   | 'image-replacement'
+  | 'shape-replacement'
   | 'signature'
   | 'stroke'
   | 'highlight';
@@ -169,11 +170,24 @@ export interface HighlightElement extends BaseElement {
   strokeWidth?: number;
 }
 
+export interface ShapeReplacementElement extends BaseElement {
+  kind: 'shape-replacement';
+  originalShapeId: string;
+  originalRect: RectBox;
+  originalStrokeWidth?: number;
+  fillColor: string;
+  strokeColor?: string;
+  strokeWidth: number;
+  behindContent?: boolean;
+  deleted?: boolean;
+}
+
 export type CanvasElement =
   | TextEditElement
   | TextAddElement
   | ImageAddElement
   | ImageReplacementElement
+  | ShapeReplacementElement
   | SignatureElement
   | StrokeElement
   | HighlightElement;
@@ -210,7 +224,7 @@ export interface SavedSignature {
 export function getElementDefaultLayerTier(
   el: Pick<CanvasElement, 'kind'> & { behindContent?: boolean; isBackgroundLayer?: boolean },
 ): LayerTier {
-  if (el.kind === 'image' || el.kind === 'image-replacement') {
+  if (el.kind === 'image' || el.kind === 'image-replacement' || el.kind === 'shape-replacement') {
     return el.behindContent || el.isBackgroundLayer ? 1 : 2;
   }
   if (el.kind === 'text-edit' || el.kind === 'text-add') {

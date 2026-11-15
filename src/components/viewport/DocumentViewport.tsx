@@ -41,6 +41,11 @@ interface PinchSession {
   anchorPageIndex: number;
   pdfLocalX: number;
   pdfLocalY: number;
+  anchorSurfaceX: number;
+  anchorSurfaceY: number;
+  liveZoom: number;
+  lastRelX: number;
+  lastRelY: number;
 }
 
 export const DocumentViewport = forwardRef<DocumentViewportHandle>(function DocumentViewport(
@@ -58,9 +63,12 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
   const cancelPendingSignaturePlacement = useEditorStore((s) => s.cancelPendingSignaturePlacement);
 
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const surfaceRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const touchPointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   const pinchSessionRef = useRef<PinchSession | null>(null);
+  const pinchRafRef = useRef<number | null>(null);
+  const pendingGpuTransformRef = useRef<{ tx: number; ty: number; s: number } | null>(null);
   const pendingScrollRef = useRef<{
     left: number;
     top: number;
@@ -244,10 +252,38 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
     return () => el.removeEventListener('wheel', onWheel);
   }, [setZoom]);
 
-  // Multi-touch Pinch-to-Zoom & Two-Finger Pan
+  // Multi-touch Pinch-to-Zoom & Two-Finger Pan (GPU-composited during gesture, committed once on release)
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+
+    const clearSurfaceTransform = () => {
+      if (pinchRafRef.current !== null) {
+        window.cancelAnimationFrame(pinchRafRef.current);
+        pinchRafRef.current = null;
+      }
+      pendingGpuTransformRef.current = null;
+      const surf = surfaceRef.current;
+      if (surf) {
+        surf.style.transform = '';
+        surf.style.transformOrigin = '';
+        surf.style.willChange = '';
+      }
+    };
+
+    const scheduleSurfaceTransform = (tx: number, ty: number, s: number) => {
+      pendingGpuTransformRef.current = { tx, ty, s };
+      if (pinchRafRef.current !== null) return;
+      pinchRafRef.current = window.requestAnimationFrame(() => {
+        pinchRafRef.current = null;
+        const t = pendingGpuTransformRef.current;
+        const surf = surfaceRef.current;
+        if (!t || !surf) return;
+        surf.style.transformOrigin = '0 0';
+        surf.style.willChange = 'transform';
+        surf.style.transform = `translate3d(${t.tx.toFixed(2)}px, ${t.ty.toFixed(2)}px, 0) scale(${t.s.toFixed(5)})`;
+      });
+    };
 
     const startPinchSession = (
       p1: { x: number; y: number },
@@ -285,12 +321,19 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
         activeIdx,
       );
       const offset = getPageOffsetInSurface(state.pages, anchorPageIndex, currentZoom, metrics);
+      const anchorSurfaceX = el.scrollLeft + relX;
+      const anchorSurfaceY = el.scrollTop + relY;
       return {
         startZoom: currentZoom,
         startDist: dist,
         anchorPageIndex,
-        pdfLocalX: (el.scrollLeft + relX - offset.left) / currentZoom,
-        pdfLocalY: (el.scrollTop + relY - offset.top) / currentZoom,
+        pdfLocalX: (anchorSurfaceX - offset.left) / currentZoom,
+        pdfLocalY: (anchorSurfaceY - offset.top) / currentZoom,
+        anchorSurfaceX,
+        anchorSurfaceY,
+        liveZoom: currentZoom,
+        lastRelX: relX,
+        lastRelY: relY,
       };
     };
 
@@ -322,6 +365,29 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
         Math.max(VIEWPORT_MIN_ZOOM, Number(rawNextZoom.toFixed(3))),
       );
 
+      session.liveZoom = nextZoom;
+      session.lastRelX = relX;
+      session.lastRelY = relY;
+
+      const scaleFactor = nextZoom / session.startZoom;
+      const tx = el.scrollLeft + relX - session.anchorSurfaceX * scaleFactor;
+      const ty = el.scrollTop + relY - session.anchorSurfaceY * scaleFactor;
+      scheduleSurfaceTransform(tx, ty, scaleFactor);
+    };
+
+    const commitPinchSession = () => {
+      const session = pinchSessionRef.current;
+      pinchSessionRef.current = null;
+      clearSurfaceTransform();
+      if (!session) return;
+
+      const state = useEditorStore.getState();
+      if (state.pages.length === 0) return;
+
+      const nextZoom = Math.min(
+        VIEWPORT_MAX_ZOOM,
+        Math.max(VIEWPORT_MIN_ZOOM, Number(session.liveZoom.toFixed(3))),
+      );
       const containerW = el.clientWidth || window.innerWidth;
       const containerH = el.clientHeight || window.innerHeight;
       const nextMetrics = computeViewportSurfaceMetrics(
@@ -338,12 +404,18 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
         nextMetrics,
       );
 
-      const nextScrollLeft = Math.max(0, nextOffset.left + session.pdfLocalX * nextZoom - relX);
-      const nextScrollTop = Math.max(0, nextOffset.top + session.pdfLocalY * nextZoom - relY);
+      const nextScrollLeft = Math.max(
+        0,
+        nextOffset.left + session.pdfLocalX * nextZoom - session.lastRelX,
+      );
+      const nextScrollTop = Math.max(
+        0,
+        nextOffset.top + session.pdfLocalY * nextZoom - session.lastRelY,
+      );
       pendingScrollRef.current = {
         left: nextScrollLeft,
         top: nextScrollTop,
-        targetZoom: Math.min(5, Math.max(0.25, Number(nextZoom.toFixed(3)))),
+        targetZoom: nextZoom,
       };
 
       if (Math.abs(nextZoom - state.zoom) < 0.0005) {
@@ -359,10 +431,11 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
       if (!touchPointersRef.current.delete(pointerId)) return;
       const remaining = touchPointersRef.current.size;
       if (remaining < 2) {
-        pinchSessionRef.current = null;
+        commitPinchSession();
         el.style.touchAction = 'pan-x pan-y';
         setPinchState(false, remaining);
       } else {
+        commitPinchSession();
         const pts = Array.from(touchPointersRef.current.values());
         pinchSessionRef.current = startPinchSession(pts[0], pts[1]);
         setPinchState(true, remaining);
@@ -431,7 +504,7 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
 
     const onTouchEnd = (e: TouchEvent) => {
       if (e.touches.length < 2 && touchPointersRef.current.size < 2) {
-        pinchSessionRef.current = null;
+        commitPinchSession();
         el.style.touchAction = 'pan-x pan-y';
         setPinchState(false, e.touches.length);
       }
@@ -447,6 +520,7 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
     el.addEventListener('touchcancel', onTouchEnd, { passive: true });
 
     return () => {
+      clearSurfaceTransform();
       el.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('pointermove', onPointerMove);
       window.removeEventListener('pointerup', onPointerEnd);
@@ -591,6 +665,7 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
         </div>
       ) : (
         <div
+          ref={surfaceRef}
           style={{
             height: `${surfaceHeight}px`,
             width: `${surfaceMetrics.surfaceWidth}px`,

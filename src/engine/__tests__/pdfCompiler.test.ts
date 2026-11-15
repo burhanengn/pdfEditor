@@ -20,7 +20,12 @@ import {
 import { extractTextBlocksFromMuPdfPage } from '../textExtractor';
 import { normalizeUnicodeForPdf } from '../fonts';
 import type { PageMeta } from '@/types/pdf';
-import type { ImageReplacementElement, TextAddElement, TextEditElement } from '@/types/elements';
+import type {
+  ImageReplacementElement,
+  ShapeReplacementElement,
+  TextAddElement,
+  TextEditElement,
+} from '@/types/elements';
 import type { FontAssetPayload } from '@/types/worker';
 
 function loadNodeUnicodeFontPack(): FontAssetPayload[] {
@@ -1075,5 +1080,143 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
     const outText = extractPagePlainText(compiled, 0);
     expect(outText).toContain('İSTANBUL');
     expect(outText).toContain('izmir ğüşöç');
+  });
+
+  it('strips and re-colors a behind-content vector header banner while preserving white title text', async () => {
+    const doc = await PDFDocument.create();
+    const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
+    const page = doc.addPage([612, 792]);
+    // Dark navy header banner (visual top-down: x:48, y:38, width:516, height:54)
+    page.drawRectangle({ x: 48, y: 700, width: 516, height: 54, color: rgb(0.08, 0.14, 0.28) });
+    // Overlapping white title inside banner
+    page.drawText('Q4 Product Architecture Brief', {
+      x: 64,
+      y: 720,
+      size: 22,
+      font: fontBold,
+      color: rgb(1, 1, 1),
+    });
+    // Nearby hairline rule outside banner (visual y ~ 101)
+    page.drawRectangle({ x: 48, y: 690, width: 516, height: 1, color: rgb(0.5, 0.5, 0.5) });
+    const bytes = await doc.save();
+
+    // 1. Clean preview strips only the banner vector shape while keeping overlapping white title
+    const srcMupdfDoc = mupdf.Document.openDocument(bytes.slice(), 'application/pdf').asPDF()!;
+    try {
+      const cleanBytes = prepareCleanPreviewPagePdf(
+        mupdf,
+        srcMupdfDoc,
+        0,
+        [],
+        [],
+        [{ x: 47.5, y: 37.5, width: 517, height: 55 }],
+      );
+      expect(extractPagePlainText(cleanBytes, 0)).toContain('Q4 Product Architecture Brief');
+
+      const cleanDoc = mupdf.Document.openDocument(cleanBytes, 'application/pdf');
+      try {
+        const cp = cleanDoc.loadPage(0);
+        const pm = cp.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
+        try {
+          const px = pm.getPixels();
+          const w = pm.getWidth();
+          const n = pm.getNumberOfComponents();
+          const idx = (65 * w + 520) * n;
+          // Banner fill removed cleanly -> white paper pixel
+          expect(px[idx]).toBeGreaterThan(240);
+          expect(px[idx + 1]).toBeGreaterThan(240);
+          expect(px[idx + 2]).toBeGreaterThan(240);
+          cp.destroy();
+        } finally {
+          pm.destroy();
+        }
+      } finally {
+        cleanDoc.destroy();
+      }
+    } finally {
+      srcMupdfDoc.destroy();
+    }
+
+    // 2. Full export replaces behind-content banner with solid red (#dc2626) behind original white title
+    const info = await inspectPdfDocument(mupdf, bytes);
+    const pages: PageMeta[] = [info.pages[0]].map((p) => ({
+      id: 'page_0',
+      sourceDocId: 'src_banner',
+      sourcePageIndex: p.sourcePageIndex,
+      baseWidth: p.baseWidth,
+      baseHeight: p.baseHeight,
+      intrinsicRotation: p.intrinsicRotation,
+      userRotation: 0,
+      mediaBox: p.mediaBox,
+      cropBox: p.cropBox,
+    }));
+
+    const shapeEdit: ShapeReplacementElement = {
+      id: 'shp_edit_1',
+      pageId: 'page_0',
+      kind: 'shape-replacement',
+      originalShapeId: 'shp_orig_1',
+      originalRect: { x: 48, y: 38, width: 516, height: 54 },
+      originalStrokeWidth: 0,
+      x: 48,
+      y: 38,
+      width: 516,
+      height: 54,
+      rotation: 0,
+      opacity: 1,
+      zIndex: 7,
+      fillColor: '#dc2626',
+      strokeWidth: 0,
+      behindContent: true,
+      isBackgroundLayer: true,
+    };
+
+    const compiled = await compilePdfDocument(mupdf, {
+      sourceDocs: [{ id: 'src_banner', bytes }],
+      pages,
+      elements: [shapeEdit],
+      optimizeWithMupdf: true,
+    });
+
+    expect(extractPagePlainText(compiled, 0)).toContain('Q4 Product Architecture Brief');
+
+    const md = mupdf.Document.openDocument(compiled, 'application/pdf');
+    try {
+      const mp = md.loadPage(0);
+      const pm = mp.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
+      try {
+        const px = pm.getPixels();
+        const w = pm.getWidth();
+        const n = pm.getNumberOfComponents();
+        // Open right side of banner is now red (#dc2626)
+        const bannerIdx = (65 * w + 520) * n;
+        expect(px[bannerIdx]).toBeGreaterThan(190);
+        expect(px[bannerIdx + 1]).toBeLessThan(65);
+        expect(px[bannerIdx + 2]).toBeLessThan(65);
+
+        // Scan title text box (x:62..360, y:50..78) and verify white glyph pixels render ON TOP of red banner
+        let foundWhiteTextOverRed = false;
+        for (let py = 50; py <= 78; py++) {
+          for (let pxX = 62; pxX <= 360; pxX++) {
+            const pIdx = (py * w + pxX) * n;
+            if (px[pIdx] > 230 && px[pIdx + 1] > 230 && px[pIdx + 2] > 230) {
+              foundWhiteTextOverRed = true;
+              break;
+            }
+          }
+          if (foundWhiteTextOverRed) break;
+        }
+        expect(foundWhiteTextOverRed).toBe(true);
+
+        // Hairline rule at y=101 remained untouched
+        const ruleIdx = (101 * w + 100) * n;
+        expect(px[ruleIdx]).toBeLessThan(170);
+      } finally {
+        pm.destroy();
+        mp.destroy();
+      }
+    } finally {
+      md.destroy();
+    }
   });
 });

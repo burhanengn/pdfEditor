@@ -35,6 +35,11 @@ export function cloneElement(el: CanvasElement): CanvasElement {
         ...el,
         originalRect: { ...el.originalRect },
       };
+    case 'shape-replacement':
+      return {
+        ...el,
+        originalRect: { ...el.originalRect },
+      };
     case 'stroke':
       return {
         ...el,

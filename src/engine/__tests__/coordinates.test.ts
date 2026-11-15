@@ -20,7 +20,12 @@ import {
   resolveSmartHitAtPoint,
   VIEWPORT_PAGE_GAP,
 } from '../coordinates';
-import type { DetectedImageObject, DetectedTextBlock, RotationAngle } from '@/types/pdf';
+import type {
+  DetectedImageObject,
+  DetectedTextBlock,
+  DetectedVectorShape,
+  RotationAngle,
+} from '@/types/pdf';
 import type { CanvasElement } from '@/types/elements';
 
 describe('coordinates engine', () => {
@@ -333,5 +338,105 @@ describe('coordinates engine', () => {
 
     // Normal 100% zoom retains full Retina dpr=3
     expect(computeCappedCanvasDpr(595, 842, 3)).toBe(3);
+  });
+
+  it('keeps foreground text priority over behind-content vector banners while allowing open-area & explicit selection', () => {
+    const bannerShape: DetectedVectorShape = {
+      id: 'shp_banner',
+      pageId: 'p1',
+      operatorIndex: 7,
+      x: 48,
+      y: 38,
+      width: 516,
+      height: 54,
+      fillColor: '#142447',
+      strokeColor: null,
+      strokeWidth: 0,
+      opacity: 1,
+      behindContent: true,
+      isHeaderOrBackground: true,
+      isBackgroundLayer: true,
+    };
+    const titleBlock: DetectedTextBlock = {
+      id: 'txt_title',
+      pageId: 'p1',
+      text: 'Q4 Product Architecture Brief',
+      x: 64,
+      y: 50,
+      width: 280,
+      height: 26,
+      fontSize: 22,
+      fontFamily: 'Helvetica',
+      rawFontName: 'Helvetica-Bold',
+      bold: true,
+      italic: false,
+      color: '#ffffff',
+      lineHeight: 1.2,
+      baselineOffset: 20,
+    };
+
+    // Clicking text over banner must select text
+    const onText = resolveSmartHitAtPoint({
+      point: { x: 140, y: 63 },
+      zoom: 1,
+      isCoarsePointer: true,
+      selectBackgroundMode: false,
+      elements: [],
+      detectedTextBlocks: [titleBlock],
+      detectedImages: [],
+      detectedShapes: [bannerShape],
+      replacedBlockIds: new Set(),
+      replacedImageIds: new Set(),
+      replacedShapeIds: new Set(),
+    });
+    expect(onText?.kind).toBe('detected-text');
+
+    // Coarse tap within 6px of title text edge still prefers text due to proximity guard
+    const nearText = resolveSmartHitAtPoint({
+      point: { x: 350, y: 63 },
+      zoom: 1,
+      isCoarsePointer: true,
+      selectBackgroundMode: false,
+      elements: [],
+      detectedTextBlocks: [titleBlock],
+      detectedImages: [],
+      detectedShapes: [bannerShape],
+      replacedBlockIds: new Set(),
+      replacedImageIds: new Set(),
+      replacedShapeIds: new Set(),
+    });
+    expect(nearText?.kind).toBe('detected-text');
+
+    // Tapping open navy area far from title selects the background vector shape
+    const openBanner = resolveSmartHitAtPoint({
+      point: { x: 500, y: 63 },
+      zoom: 1,
+      isCoarsePointer: true,
+      selectBackgroundMode: false,
+      elements: [],
+      detectedTextBlocks: [titleBlock],
+      detectedImages: [],
+      detectedShapes: [bannerShape],
+      replacedBlockIds: new Set(),
+      replacedImageIds: new Set(),
+      replacedShapeIds: new Set(),
+    });
+    expect(openBanner?.kind).toBe('background-detected-shape');
+
+    // Explicit selectBackgroundMode selects background shape even directly over text
+    const bgModeHit = resolveSmartHitAtPoint({
+      point: { x: 140, y: 63 },
+      zoom: 1,
+      isCoarsePointer: false,
+      selectBackgroundMode: true,
+      elements: [],
+      detectedTextBlocks: [titleBlock],
+      detectedImages: [],
+      detectedShapes: [bannerShape],
+      replacedBlockIds: new Set(),
+      replacedImageIds: new Set(),
+      replacedShapeIds: new Set(),
+    });
+    expect(bgModeHit?.kind).toBe('background-detected-shape');
   });
 });
