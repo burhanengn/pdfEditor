@@ -15,12 +15,14 @@ import {
   Image as ImageIcon,
   Italic,
   Layers,
+  Link2,
   Link2Off,
   Lock,
   Plus,
   Repeat,
   RotateCcw,
   RotateCw,
+  Spline,
   Subscript,
   Superscript,
   Trash2,
@@ -34,8 +36,15 @@ import {
   isBuiltinFontFamily,
   resolveFontDisplayStatus,
 } from '@/engine/fonts';
+import { denormalizePathPoints } from '@/engine/vectorShapes';
 import { useEditorStore, type SignatureBatchScope } from '@/store/useEditorStore';
-import { getElementLayerTier, type CanvasElement } from '@/types/elements';
+import {
+  getElementLayerTier,
+  type CanvasElement,
+  type VectorPathElement,
+  type VectorShapeType,
+  type VectorStrokeDash,
+} from '@/types/elements';
 import type { BuiltinFontFamilyOption, FontFamilyOption, FontSourceKind } from '@/types/pdf';
 import { dispatchInlineRichFormat } from '../viewport/InlineTextEditor';
 
@@ -51,6 +60,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
   const elements = useEditorStore((s) => s.elements);
   const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
   const editingTextElementId = useEditorStore((s) => s.editingTextElementId);
+  const editingPathElementId = useEditorStore((s) => s.editingPathElementId);
   const pageExtractions = useEditorStore((s) => s.pageExtractions);
 
   const updateElements = useEditorStore((s) => s.updateElements);
@@ -59,6 +69,8 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
   const sendToBack = useEditorStore((s) => s.sendToBack);
   const stepLayer = useEditorStore((s) => s.stepLayer);
   const setEditingTextElementId = useEditorStore((s) => s.setEditingTextElementId);
+  const setEditingPathElementId = useEditorStore((s) => s.setEditingPathElementId);
+  const joinVectorPaths = useEditorStore((s) => s.joinVectorPaths);
 
   const rotatePages = useEditorStore((s) => s.rotatePages);
   const duplicatePages = useEditorStore((s) => s.duplicatePages);
@@ -512,6 +524,32 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
       </div>
 
       <div className="space-y-5 p-4 text-xs">
+        {/* Multi-selection Vector Path Join Bar */}
+        {selectedElementIds.length >= 2 &&
+          (() => {
+            const selectedPaths = elements.filter(
+              (el): el is VectorPathElement =>
+                el.kind === 'path' && selectedElementIds.includes(el.id),
+            );
+            if (selectedPaths.length < 2) return null;
+            return (
+              <div className="space-y-2 rounded-xl border border-blue-500/40 bg-blue-50/70 p-2.5 dark:bg-blue-950/30">
+                <div className="text-[11px] font-semibold text-blue-700 dark:text-blue-300">
+                  {selectedPaths.length} Çizgi / Yol Seçildi
+                </div>
+                <button
+                  type="button"
+                  data-testid="inspector-join-paths-btn"
+                  onClick={() => joinVectorPaths(selectedPaths.map((p) => p.id))}
+                  className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-500"
+                >
+                  <Link2 className="h-3.5 w-3.5" />
+                  Yolları Birleştir (Join)
+                </button>
+              </div>
+            );
+          })()}
+
         {/* Text Properties */}
         {isText && (
           <div className="space-y-3">
@@ -1114,6 +1152,340 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
           </div>
         )}
 
+        {selectedEl.kind === 'shape' && (
+          <div className="space-y-3">
+            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              Vector Shape Style
+            </div>
+
+            <div>
+              <label className="mb-1 block text-[11px] text-slate-500 dark:text-slate-400">
+                Şekil Tipi
+              </label>
+              <div className="grid grid-cols-5 gap-1">
+                {(
+                  [
+                    { id: 'rect', label: 'Kare' },
+                    { id: 'ellipse', label: 'Yuvarlak' },
+                    { id: 'triangle', label: 'Üçgen' },
+                    { id: 'diamond', label: 'Elmas' },
+                    { id: 'arrow', label: 'Ok' },
+                  ] as Array<{ id: VectorShapeType; label: string }>
+                ).map((opt) => (
+                  <button
+                    key={opt.id}
+                    type="button"
+                    data-testid={`inspector-shape-type-${opt.id}`}
+                    onClick={() => patchSelected({ shapeType: opt.id })}
+                    className={`rounded border py-1 text-[10px] font-medium ${
+                      selectedEl.shapeType === opt.id
+                        ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                        : 'border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300'
+                    }`}
+                  >
+                    {opt.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {selectedEl.shapeType === 'rect' && (
+              <div>
+                <label className="mb-1 flex justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                  <span>Köşe Yuvarlatma (Border Radius)</span>
+                  <span>{Math.round(selectedEl.borderRadius ?? 0)}pt</span>
+                </label>
+                <input
+                  type="range"
+                  min={0}
+                  max={Math.max(
+                    1,
+                    Math.round(Math.min(selectedEl.width, selectedEl.height) / 2),
+                  )}
+                  step={1}
+                  value={selectedEl.borderRadius ?? 0}
+                  data-testid="inspector-vector-border-radius"
+                  onChange={(e) => patchSelected({ borderRadius: Number(e.target.value) })}
+                  className="w-full accent-blue-600"
+                />
+              </div>
+            )}
+
+            <div>
+              <div className="mb-1 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                <span>Dolgu Rengi (Fill)</span>
+                <button
+                  type="button"
+                  data-testid="inspector-vector-fill-transparent"
+                  onClick={() =>
+                    patchSelected({
+                      fillColor:
+                        selectedEl.fillColor === 'transparent' ? '#3b82f6' : 'transparent',
+                    })
+                  }
+                  className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${
+                    selectedEl.fillColor === 'transparent'
+                      ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-blue-400'
+                      : 'border-slate-200 text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800'
+                  }`}
+                >
+                  {selectedEl.fillColor === 'transparent' ? 'Boş ✓' : 'İçini Boşalt'}
+                </button>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {SWATCHES.map((c) => (
+                  <button
+                    key={c}
+                    type="button"
+                    onClick={() => patchSelected({ fillColor: c })}
+                    style={{ backgroundColor: c }}
+                    className={`h-5 w-5 rounded-full border ${
+                      selectedEl.fillColor.toLowerCase() === c.toLowerCase()
+                        ? 'ring-2 ring-blue-500 ring-offset-1'
+                        : 'border-slate-300 dark:border-slate-600'
+                    }`}
+                  />
+                ))}
+                <input
+                  type="color"
+                  data-testid="inspector-vector-fill-color"
+                  value={
+                    selectedEl.fillColor && selectedEl.fillColor !== 'transparent'
+                      ? selectedEl.fillColor
+                      : '#3b82f6'
+                  }
+                  onChange={(e) => patchSelected({ fillColor: e.target.value })}
+                  className="h-6 w-8 cursor-pointer rounded border border-slate-300 bg-transparent p-0"
+                />
+              </div>
+            </div>
+
+            <div>
+              <div className="mb-1 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                <span>Kenarlık (Stroke)</span>
+                <select
+                  value={selectedEl.strokeDash ?? 'solid'}
+                  onChange={(e) =>
+                    patchSelected({ strokeDash: e.target.value as VectorStrokeDash })
+                  }
+                  className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                >
+                  <option value="solid">Düz</option>
+                  <option value="dashed">Kesikli</option>
+                  <option value="dotted">Noktalı</option>
+                </select>
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="color"
+                  data-testid="inspector-vector-stroke-color"
+                  value={
+                    selectedEl.strokeColor && selectedEl.strokeColor !== 'transparent'
+                      ? selectedEl.strokeColor
+                      : '#1e3a8a'
+                  }
+                  onChange={(e) =>
+                    patchSelected({
+                      strokeColor: e.target.value,
+                      strokeWidth: Math.max(1, selectedEl.strokeWidth || 1.5),
+                    })
+                  }
+                  className="h-6 w-8 shrink-0 cursor-pointer rounded border border-slate-300 bg-transparent p-0"
+                />
+                <input
+                  type="range"
+                  min={0}
+                  max={16}
+                  step={0.5}
+                  value={selectedEl.strokeWidth}
+                  data-testid="inspector-vector-stroke-width"
+                  onChange={(e) => patchSelected({ strokeWidth: Number(e.target.value) })}
+                  className="w-full accent-blue-600"
+                />
+                <span className="w-10 text-right text-[11px] text-slate-500 dark:text-slate-400">
+                  {selectedEl.strokeWidth}pt
+                </span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {selectedEl.kind === 'path' &&
+          (() => {
+            const peerPaths = elements.filter(
+              (el): el is VectorPathElement =>
+                el.kind === 'path' &&
+                el.pageId === selectedEl.pageId &&
+                el.id !== selectedEl.id &&
+                !el.closed,
+            );
+            let nearestPeer: VectorPathElement | null = null;
+            if (!selectedEl.closed && peerPaths.length > 0) {
+              const myPts = denormalizePathPoints(selectedEl);
+              const myEnds = [myPts[0], myPts[myPts.length - 1]].filter(Boolean);
+              let bestDist = Infinity;
+              for (const peer of peerPaths) {
+                const pPts = denormalizePathPoints(peer);
+                const pEnds = [pPts[0], pPts[pPts.length - 1]].filter(Boolean);
+                for (const a of myEnds) {
+                  for (const b of pEnds) {
+                    const d = Math.hypot(a.x - b.x, a.y - b.y);
+                    if (d < bestDist) {
+                      bestDist = d;
+                      nearestPeer = peer;
+                    }
+                  }
+                }
+              }
+            }
+
+            return (
+              <div className="space-y-3">
+                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                  Vector Path ({selectedEl.points.length} Nokta)
+                </div>
+
+                <div className="grid grid-cols-2 gap-1.5">
+                  <button
+                    type="button"
+                    data-testid="inspector-edit-path-nodes-btn"
+                    onClick={() =>
+                      setEditingPathElementId(
+                        editingPathElementId === selectedEl.id ? null : selectedEl.id,
+                      )
+                    }
+                    className={`flex items-center justify-center gap-1 rounded-lg border py-1.5 text-[11px] font-medium transition ${
+                      editingPathElementId === selectedEl.id
+                        ? 'border-blue-500 bg-blue-600 text-white'
+                        : 'border-slate-200 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900'
+                    }`}
+                  >
+                    <Spline className="h-3.5 w-3.5" />
+                    {editingPathElementId === selectedEl.id ? 'Düzenlemeyi Bitir' : 'Noktaları Düzenle'}
+                  </button>
+
+                  <button
+                    type="button"
+                    data-testid="inspector-path-closed-toggle"
+                    onClick={() => patchSelected({ closed: !selectedEl.closed })}
+                    className={`rounded-lg border py-1.5 text-[11px] font-medium transition ${
+                      selectedEl.closed
+                        ? 'border-emerald-500 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
+                        : 'border-slate-200 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900'
+                    }`}
+                  >
+                    {selectedEl.closed ? 'Kapalı Yol ✓' : 'Yolu Kapat'}
+                  </button>
+                </div>
+
+                {nearestPeer && (
+                  <button
+                    type="button"
+                    data-testid="inspector-join-nearest-path-btn"
+                    onClick={() => joinVectorPaths([selectedEl.id, nearestPeer!.id])}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-blue-500/40 bg-blue-500/10 py-1.5 text-[11px] font-semibold text-blue-600 hover:bg-blue-500/20 dark:text-blue-300"
+                  >
+                    <Link2 className="h-3.5 w-3.5" />
+                    En Yakın Çizgiyle Birleştir
+                  </button>
+                )}
+
+                <button
+                  type="button"
+                  data-testid="inspector-path-smooth-toggle"
+                  onClick={() => patchSelected({ smooth: !selectedEl.smooth })}
+                  className={`flex w-full items-center justify-center gap-1.5 rounded-lg border py-1.5 text-[11px] font-medium transition ${
+                    selectedEl.smooth
+                      ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                      : 'border-slate-200 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-900'
+                  }`}
+                >
+                  {selectedEl.smooth ? 'Yumuşak Eğri (Smooth) ✓' : 'Keskin Köşeler (Polyline)'}
+                </button>
+
+                <div>
+                  <div className="mb-1 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                    <span>Çizgi Rengi &amp; Kalınlık</span>
+                    <select
+                      value={selectedEl.strokeDash ?? 'solid'}
+                      onChange={(e) =>
+                        patchSelected({ strokeDash: e.target.value as VectorStrokeDash })
+                      }
+                      className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                    >
+                      <option value="solid">Düz</option>
+                      <option value="dashed">Kesikli</option>
+                      <option value="dotted">Noktalı</option>
+                    </select>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="color"
+                      data-testid="inspector-path-stroke-color"
+                      value={selectedEl.strokeColor}
+                      onChange={(e) => patchSelected({ strokeColor: e.target.value })}
+                      className="h-6 w-8 shrink-0 cursor-pointer rounded border border-slate-300 bg-transparent p-0"
+                    />
+                    <input
+                      type="range"
+                      min={0.5}
+                      max={16}
+                      step={0.5}
+                      value={selectedEl.strokeWidth}
+                      data-testid="inspector-path-stroke-width"
+                      onChange={(e) => patchSelected({ strokeWidth: Number(e.target.value) })}
+                      className="w-full accent-blue-600"
+                    />
+                    <span className="w-10 text-right text-[11px] text-slate-500 dark:text-slate-400">
+                      {selectedEl.strokeWidth}pt
+                    </span>
+                  </div>
+                </div>
+
+                {selectedEl.closed && (
+                  <div>
+                    <div className="mb-1 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                      <span>İç Dolgu (Kapalı Yol)</span>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          patchSelected({
+                            fillColor:
+                              selectedEl.fillColor === 'transparent' ? '#3b82f6' : 'transparent',
+                          })
+                        }
+                        className="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 dark:border-slate-700 dark:text-slate-300"
+                      >
+                        {selectedEl.fillColor === 'transparent' ? 'Boş ✓' : 'İçini Boşalt'}
+                      </button>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      {SWATCHES.slice(0, 6).map((c) => (
+                        <button
+                          key={c}
+                          type="button"
+                          onClick={() => patchSelected({ fillColor: c })}
+                          style={{ backgroundColor: c }}
+                          className="h-5 w-5 rounded-full border border-slate-300"
+                        />
+                      ))}
+                      <input
+                        type="color"
+                        value={
+                          selectedEl.fillColor && selectedEl.fillColor !== 'transparent'
+                            ? selectedEl.fillColor
+                            : '#3b82f6'
+                        }
+                        onChange={(e) => patchSelected({ fillColor: e.target.value })}
+                        className="h-6 w-8 cursor-pointer rounded border border-slate-300 bg-transparent p-0"
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })()}
+
         {selectedEl.kind === 'highlight' && (
           <div className="space-y-3">
             <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
@@ -1449,7 +1821,9 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
 
             {(selectedEl.kind === 'image' ||
               selectedEl.kind === 'image-replacement' ||
-              selectedEl.kind === 'shape-replacement') && (
+              selectedEl.kind === 'shape-replacement' ||
+              selectedEl.kind === 'shape' ||
+              selectedEl.kind === 'path') && (
               <>
                 <button
                   type="button"

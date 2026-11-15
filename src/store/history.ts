@@ -41,6 +41,7 @@ export function cloneElement(el: CanvasElement): CanvasElement {
         originalRect: { ...el.originalRect },
       };
     case 'stroke':
+    case 'path':
       return {
         ...el,
         points: el.points.map((p) => ({ ...p })),

@@ -1,5 +1,8 @@
 import { useRef } from 'react';
 import {
+  ArrowRight,
+  Circle,
+  Diamond,
   FilePlus2,
   FileSignature,
   FolderOpen,
@@ -8,17 +11,22 @@ import {
   ImagePlus,
   Layers,
   LayoutGrid,
+  Link2,
   Magnet,
   Maximize2,
+  Minus,
   Moon,
   MousePointer2,
   PenTool,
   Redo2,
   Scissors,
+  Shapes,
   ShieldAlert,
   SlidersHorizontal,
+  Spline,
   Square,
   Sun,
+  Triangle,
   Type,
   Undo2,
   Download,
@@ -32,6 +40,7 @@ import {
   openPdfFile,
 } from '@/engine/documentController';
 import { useEditorStore } from '@/store/useEditorStore';
+import type { VectorShapeType, VectorStrokeDash } from '@/types/elements';
 import type { ToolMode, ZoomMode } from '@/types/pdf';
 import { BrandLogo } from '../BrandLogo';
 
@@ -55,6 +64,17 @@ export function TopToolbar() {
   const highlightColor = useEditorStore((s) => s.highlightColor);
   const highlightShape = useEditorStore((s) => s.highlightShape);
 
+  const activeShapePreset = useEditorStore((s) => s.activeShapePreset);
+  const activePathMode = useEditorStore((s) => s.activePathMode);
+  const shapeFillColor = useEditorStore((s) => s.shapeFillColor);
+  const shapeStrokeColor = useEditorStore((s) => s.shapeStrokeColor);
+  const shapeStrokeWidth = useEditorStore((s) => s.shapeStrokeWidth);
+  const shapeBorderRadius = useEditorStore((s) => s.shapeBorderRadius);
+  const shapeStrokeDash = useEditorStore((s) => s.shapeStrokeDash);
+  const pathSmoothDefault = useEditorStore((s) => s.pathSmoothDefault);
+  const elements = useEditorStore((s) => s.elements);
+  const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
+
   const setToolMode = useEditorStore((s) => s.setToolMode);
   const setZoom = useEditorStore((s) => s.setZoom);
   const setZoomMode = useEditorStore((s) => s.setZoomMode);
@@ -62,6 +82,9 @@ export function TopToolbar() {
   const setSnapEnabled = useEditorStore((s) => s.setSnapEnabled);
   const setDrawStyle = useEditorStore((s) => s.setDrawStyle);
   const setHighlightStyle = useEditorStore((s) => s.setHighlightStyle);
+  const setShapeStyle = useEditorStore((s) => s.setShapeStyle);
+  const setPathToolStyle = useEditorStore((s) => s.setPathToolStyle);
+  const joinVectorPaths = useEditorStore((s) => s.joinVectorPaths);
   const setSignatureModalOpen = useEditorStore((s) => s.setSignatureModalOpen);
   const setSplitModalOpen = useEditorStore((s) => s.setSplitModalOpen);
   const setOrganizeModalOpen = useEditorStore((s) => s.setOrganizeModalOpen);
@@ -98,6 +121,8 @@ export function TopToolbar() {
       icon: ImagePlus,
       onClick: () => imageInputRef.current?.click(),
     },
+    { id: 'shape', label: 'Shapes', icon: Shapes },
+    { id: 'path', label: 'Line / Path', icon: Spline },
     { id: 'draw', label: 'Draw', icon: PenTool },
     { id: 'highlight', label: 'Annotate', icon: Highlighter },
     {
@@ -468,6 +493,243 @@ export function TopToolbar() {
           </label>
         </div>
       )}
+
+      {hasPages && toolMode === 'shape' && (
+        <div
+          data-testid="shape-subtoolbar"
+          className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-xs dark:border-slate-800 dark:bg-slate-900 sm:px-4"
+        >
+          <span className="font-medium text-slate-500 dark:text-slate-400">Şekil:</span>
+          <div className="flex items-center gap-1">
+            {(
+              [
+                { id: 'rect', label: 'Kare', icon: Square },
+                { id: 'ellipse', label: 'Yuvarlak', icon: Circle },
+                { id: 'triangle', label: 'Üçgen', icon: Triangle },
+                { id: 'diamond', label: 'Elmas', icon: Diamond },
+                { id: 'arrow', label: 'Ok', icon: ArrowRight },
+              ] as Array<{ id: VectorShapeType; label: string; icon: typeof Square }>
+            ).map((opt) => {
+              const Icon = opt.icon;
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  data-testid={`shape-preset-${opt.id}`}
+                  onClick={() => setShapeStyle({ preset: opt.id })}
+                  className={`inline-flex items-center gap-1 rounded px-2 py-0.5 font-medium ${
+                    activeShapePreset === opt.id
+                      ? 'bg-blue-600 text-white'
+                      : 'bg-white text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+                  }`}
+                >
+                  <Icon className="h-3 w-3" />
+                  <span>{opt.label}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <span className="text-slate-500 dark:text-slate-400">Dolgu:</span>
+            <button
+              type="button"
+              data-testid="shape-fill-transparent"
+              onClick={() =>
+                setShapeStyle({
+                  fillColor: shapeFillColor === 'transparent' ? '#3b82f6' : 'transparent',
+                })
+              }
+              className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${
+                shapeFillColor === 'transparent'
+                  ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                  : 'border-slate-300 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
+              }`}
+            >
+              Boş
+            </button>
+            {QUICK_COLORS.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setShapeStyle({ fillColor: c })}
+                style={{ backgroundColor: c }}
+                className={`h-4 w-4 rounded-full border ${
+                  shapeFillColor === c ? 'ring-2 ring-blue-500 ring-offset-1' : 'border-slate-400'
+                }`}
+              />
+            ))}
+            <input
+              type="color"
+              value={shapeFillColor === 'transparent' ? '#3b82f6' : shapeFillColor}
+              onChange={(e) => setShapeStyle({ fillColor: e.target.value })}
+              className="h-5 w-6 cursor-pointer rounded border-0 bg-transparent p-0"
+            />
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            <span className="text-slate-500 dark:text-slate-400">Kenarlık:</span>
+            <input
+              type="color"
+              value={shapeStrokeColor === 'transparent' ? '#1e3a8a' : shapeStrokeColor}
+              onChange={(e) => setShapeStyle({ strokeColor: e.target.value })}
+              className="h-5 w-6 cursor-pointer rounded border-0 bg-transparent p-0"
+            />
+            <input
+              type="range"
+              min={0}
+              max={12}
+              step={0.5}
+              value={shapeStrokeWidth}
+              onChange={(e) => setShapeStyle({ strokeWidth: Number(e.target.value) })}
+              className="w-16 accent-blue-600"
+            />
+            <span className="w-8 text-[11px] text-slate-600 dark:text-slate-300">
+              {shapeStrokeWidth}pt
+            </span>
+          </div>
+
+          {activeShapePreset === 'rect' && (
+            <label className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300">
+              <span>Köşe: {shapeBorderRadius}pt</span>
+              <input
+                type="range"
+                min={0}
+                max={48}
+                step={1}
+                value={shapeBorderRadius}
+                data-testid="shape-radius-slider"
+                onChange={(e) => setShapeStyle({ borderRadius: Number(e.target.value) })}
+                className="w-20 accent-blue-600"
+              />
+            </label>
+          )}
+        </div>
+      )}
+
+      {hasPages && toolMode === 'path' && (
+        <div
+          data-testid="path-subtoolbar"
+          className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-xs dark:border-slate-800 dark:bg-slate-900 sm:px-4"
+        >
+          <span className="font-medium text-slate-500 dark:text-slate-400">Çizgi & Yol:</span>
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              data-testid="path-mode-line"
+              onClick={() => setPathToolStyle({ mode: 'line' })}
+              className={`inline-flex items-center gap-1 rounded px-2 py-0.5 font-medium ${
+                activePathMode === 'line'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+              }`}
+            >
+              <Minus className="h-3 w-3" />
+              Düz Çizgi
+            </button>
+            <button
+              type="button"
+              data-testid="path-mode-pen"
+              onClick={() => setPathToolStyle({ mode: 'pen' })}
+              className={`inline-flex items-center gap-1 rounded px-2 py-0.5 font-medium ${
+                activePathMode === 'pen'
+                  ? 'bg-blue-600 text-white'
+                  : 'bg-white text-slate-600 dark:bg-slate-800 dark:text-slate-300'
+              }`}
+            >
+              <Spline className="h-3 w-3" />
+              Kalem (Path)
+            </button>
+          </div>
+
+          <div className="flex items-center gap-1.5">
+            {QUICK_COLORS.map((c) => (
+              <button
+                key={c}
+                type="button"
+                onClick={() => setShapeStyle({ strokeColor: c })}
+                style={{ backgroundColor: c }}
+                className={`h-4 w-4 rounded-full border ${
+                  shapeStrokeColor === c ? 'ring-2 ring-blue-500 ring-offset-1' : 'border-slate-400'
+                }`}
+              />
+            ))}
+            <input
+              type="color"
+              value={shapeStrokeColor === 'transparent' ? '#0f172a' : shapeStrokeColor}
+              onChange={(e) => setShapeStyle({ strokeColor: e.target.value })}
+              className="h-5 w-6 cursor-pointer rounded border-0 bg-transparent p-0"
+            />
+          </div>
+
+          <label className="flex items-center gap-1.5 text-slate-600 dark:text-slate-300">
+            <span>Kalınlık: {shapeStrokeWidth}pt</span>
+            <input
+              type="range"
+              min={1}
+              max={12}
+              step={0.5}
+              value={shapeStrokeWidth}
+              onChange={(e) => setShapeStyle({ strokeWidth: Number(e.target.value) })}
+              className="w-20 accent-blue-600"
+            />
+          </label>
+
+          <select
+            value={shapeStrokeDash}
+            onChange={(e) => setShapeStyle({ strokeDash: e.target.value as VectorStrokeDash })}
+            aria-label="Çizgi Stili"
+            className="h-6 rounded border border-slate-300 bg-white px-1.5 text-[11px] dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+          >
+            <option value="solid">Düz</option>
+            <option value="dashed">Kesikli</option>
+            <option value="dotted">Noktalı</option>
+          </select>
+
+          {activePathMode === 'pen' && (
+            <button
+              type="button"
+              onClick={() => setPathToolStyle({ smooth: !pathSmoothDefault })}
+              className={`rounded border px-2 py-0.5 text-[11px] font-medium ${
+                pathSmoothDefault
+                  ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                  : 'border-slate-300 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
+              }`}
+            >
+              Yumuşak Eğri
+            </button>
+          )}
+          <span className="hidden text-[10px] text-slate-400 xl:inline">
+            Uç noktaya yaklaşınca otomatik yapışır &amp; birleşir (Shift: 45° açı)
+          </span>
+        </div>
+      )}
+
+      {hasPages &&
+        toolMode === 'select' &&
+        selectedElementIds.length >= 2 &&
+        (() => {
+          const selectedPaths = elements.filter(
+            (el) => el.kind === 'path' && selectedElementIds.includes(el.id),
+          );
+          if (selectedPaths.length < 2) return null;
+          return (
+            <div className="flex items-center gap-3 border-t border-blue-200 bg-blue-50/80 px-3 py-1 text-xs dark:border-blue-900/50 dark:bg-blue-950/40 sm:px-4">
+              <span className="font-medium text-blue-700 dark:text-blue-300">
+                {selectedPaths.length} yol seçildi:
+              </span>
+              <button
+                type="button"
+                data-testid="toolbar-join-paths-btn"
+                onClick={() => joinVectorPaths(selectedPaths.map((p) => p.id))}
+                className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-[11px] font-semibold text-white shadow-sm hover:bg-blue-500"
+              >
+                <Link2 className="h-3 w-3" />
+                Yolları Birleştir (Join)
+              </button>
+            </div>
+          );
+        })()}
 
       {hasPages && toolMode === 'highlight' && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-xs dark:border-slate-800 dark:bg-slate-900 sm:px-4">

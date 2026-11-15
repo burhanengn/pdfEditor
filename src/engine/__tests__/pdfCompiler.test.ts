@@ -1219,4 +1219,127 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       md.destroy();
     }
   });
+
+  it('exports vector rounded rectangles, circles, and closed joined paths crisply via pdf-lib', async () => {
+    const blankDoc = await PDFDocument.create();
+    blankDoc.addPage([400, 400]);
+    const bytes = new Uint8Array(await blankDoc.save());
+    const info = await inspectPdfDocument(mupdf, bytes);
+    const pages: PageMeta[] = [info.pages[0]].map((p) => ({
+      id: 'p_vec',
+      sourceDocId: 'src_vec',
+      sourcePageIndex: p.sourcePageIndex,
+      baseWidth: p.baseWidth,
+      baseHeight: p.baseHeight,
+      intrinsicRotation: p.intrinsicRotation,
+      userRotation: 0,
+      mediaBox: p.mediaBox,
+      cropBox: p.cropBox,
+    }));
+
+    const out = await compilePdfDocument(mupdf, {
+      sourceDocs: [{ id: 'src_vec', bytes }],
+      pages,
+      elements: [
+        // Heavily rounded blue square at (40, 40, 120x120, r=30)
+        {
+          id: 'shp_round',
+          pageId: 'p_vec',
+          kind: 'shape',
+          shapeType: 'rect',
+          x: 40,
+          y: 40,
+          width: 120,
+          height: 120,
+          rotation: 0,
+          opacity: 1,
+          zIndex: 1,
+          fillColor: '#2563eb',
+          strokeColor: '#0f172a',
+          strokeWidth: 2,
+          borderRadius: 30,
+        },
+        // Red filled circle (ellipse) at (220, 40, 100x100)
+        {
+          id: 'shp_circle',
+          pageId: 'p_vec',
+          kind: 'shape',
+          shapeType: 'ellipse',
+          x: 220,
+          y: 40,
+          width: 100,
+          height: 100,
+          rotation: 0,
+          opacity: 1,
+          zIndex: 2,
+          fillColor: '#dc2626',
+          strokeColor: 'transparent',
+          strokeWidth: 0,
+        },
+        // Joined closed green triangle path at (60, 220, 120x100)
+        {
+          id: 'path_tri',
+          pageId: 'p_vec',
+          kind: 'path',
+          x: 60,
+          y: 220,
+          width: 120,
+          height: 100,
+          rotation: 0,
+          opacity: 1,
+          zIndex: 3,
+          points: [
+            { x: 0.5, y: 0 },
+            { x: 1, y: 1 },
+            { x: 0, y: 1 },
+          ],
+          closed: true,
+          smooth: false,
+          fillColor: '#16a34a',
+          strokeColor: '#0f172a',
+          strokeWidth: 2,
+        },
+      ],
+      optimizeWithMupdf: true,
+    });
+
+    const md = mupdf.Document.openDocument(out, 'application/pdf');
+    try {
+      const mp = md.loadPage(0);
+      const pm = mp.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
+      try {
+        const px = pm.getPixels();
+        const w = pm.getWidth();
+        const n = pm.getNumberOfComponents();
+
+        // Rounded rect center (100, 100) is blue (#2563eb)
+        const rectCenter = (100 * w + 100) * n;
+        expect(px[rectCenter]).toBeLessThan(80);
+        expect(px[rectCenter + 2]).toBeGreaterThan(190);
+
+        // Very outer bounding corner (41, 41) outside radius=30 curve stays crisp white!
+        const outerCorner = (41 * w + 41) * n;
+        expect(px[outerCorner]).toBeGreaterThan(240);
+        expect(px[outerCorner + 1]).toBeGreaterThan(240);
+        expect(px[outerCorner + 2]).toBeGreaterThan(240);
+
+        // Circle center (270, 90) is red (#dc2626); outer bbox corner (222, 42) stays white!
+        const circleCenter = (90 * w + 270) * n;
+        expect(px[circleCenter]).toBeGreaterThan(190);
+        expect(px[circleCenter + 1]).toBeLessThan(65);
+        const circleCorner = (42 * w + 222) * n;
+        expect(px[circleCorner]).toBeGreaterThan(240);
+
+        // Closed triangle interior centroid (120, 290) is green (#16a34a)
+        const triCenter = (290 * w + 120) * n;
+        expect(px[triCenter + 1]).toBeGreaterThan(140);
+        expect(px[triCenter]).toBeLessThan(60);
+      } finally {
+        pm.destroy();
+        mp.destroy();
+      }
+    } finally {
+      md.destroy();
+    }
+  });
 });

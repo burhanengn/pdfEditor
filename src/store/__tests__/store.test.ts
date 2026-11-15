@@ -450,4 +450,98 @@ describe('useEditorStore undo/redo and operations', () => {
     expect(deletedEl).toBeDefined();
     expect(deletedEl!.kind === 'shape-replacement' && deletedEl!.deleted).toBe(true);
   });
+
+  it('adds rounded shapes, joins separate straight lines into a closed vector polygon, and supports Undo/Redo', () => {
+    const { doc, pages } = makeDoc();
+    useEditorStore.getState().loadInitialDocument(doc, pages);
+
+    // 1. Add a rounded rectangle
+    useEditorStore.getState().addElement(
+      {
+        id: 'shp_round_1',
+        pageId: 'p1',
+        kind: 'shape',
+        shapeType: 'rect',
+        x: 50,
+        y: 50,
+        width: 120,
+        height: 80,
+        rotation: 0,
+        opacity: 1,
+        zIndex: 0,
+        fillColor: '#3b82f6',
+        strokeColor: '#1e3a8a',
+        strokeWidth: 2,
+        borderRadius: 16,
+      },
+      true,
+    );
+    expect(useEditorStore.getState().elements).toHaveLength(1);
+
+    // 2. Draw 3 straight lines forming a closed triangle via extendOrJoinPathWithSegment + joinVectorPaths
+    const lineA = useEditorStore.getState().extendOrJoinPathWithSegment(
+      [
+        { x: 200, y: 200 },
+        { x: 300, y: 200 },
+      ],
+      'p1',
+      null,
+      null,
+      {
+        strokeColor: '#ef4444',
+        strokeWidth: 2.5,
+        strokeDash: 'solid',
+        fillColor: 'transparent',
+        opacity: 1,
+        smooth: false,
+      },
+    )!;
+    const lineB = useEditorStore.getState().extendOrJoinPathWithSegment(
+      [
+        { x: 300, y: 200 },
+        { x: 250, y: 300 },
+      ],
+      'p1',
+      null,
+      null,
+      {
+        strokeColor: '#ef4444',
+        strokeWidth: 2.5,
+        strokeDash: 'solid',
+        fillColor: 'transparent',
+        opacity: 1,
+        smooth: false,
+      },
+    )!;
+    const lineC = useEditorStore.getState().extendOrJoinPathWithSegment(
+      [
+        { x: 250, y: 300 },
+        { x: 200, y: 200 },
+      ],
+      'p1',
+      null,
+      null,
+      {
+        strokeColor: '#ef4444',
+        strokeWidth: 2.5,
+        strokeDash: 'solid',
+        fillColor: 'transparent',
+        opacity: 1,
+        smooth: false,
+      },
+    )!;
+
+    const joined = useEditorStore.getState().joinVectorPaths([lineA.id, lineB.id, lineC.id]);
+    expect(joined).not.toBeNull();
+    expect(joined!.closed).toBe(true);
+    expect(joined!.points).toHaveLength(3);
+    expect(useEditorStore.getState().elements.filter((e) => e.kind === 'path')).toHaveLength(1);
+
+    // Undo restores the 3 separate line elements
+    useEditorStore.getState().undo();
+    expect(useEditorStore.getState().elements.filter((e) => e.kind === 'path')).toHaveLength(3);
+    // Redo restores the unified closed triangle path
+    useEditorStore.getState().redo();
+    expect(useEditorStore.getState().elements.filter((e) => e.kind === 'path')).toHaveLength(1);
+  });
 });

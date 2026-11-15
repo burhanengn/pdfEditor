@@ -13,6 +13,8 @@ export type ElementKind =
   | 'image'
   | 'image-replacement'
   | 'shape-replacement'
+  | 'shape'
+  | 'path'
   | 'signature'
   | 'stroke'
   | 'highlight';
@@ -182,12 +184,40 @@ export interface ShapeReplacementElement extends BaseElement {
   deleted?: boolean;
 }
 
+export type VectorShapeType = 'rect' | 'ellipse' | 'triangle' | 'diamond' | 'arrow';
+export type VectorStrokeDash = 'solid' | 'dashed' | 'dotted';
+
+export interface VectorShapeElement extends BaseElement {
+  kind: 'shape';
+  shapeType: VectorShapeType;
+  fillColor: string;
+  strokeColor: string;
+  strokeWidth: number;
+  strokeDash?: VectorStrokeDash;
+  borderRadius?: number;
+  behindContent?: boolean;
+}
+
+export interface VectorPathElement extends BaseElement {
+  kind: 'path';
+  points: NormalizedPoint[];
+  closed: boolean;
+  smooth?: boolean;
+  fillColor: string;
+  strokeColor: string;
+  strokeWidth: number;
+  strokeDash?: VectorStrokeDash;
+  behindContent?: boolean;
+}
+
 export type CanvasElement =
   | TextEditElement
   | TextAddElement
   | ImageAddElement
   | ImageReplacementElement
   | ShapeReplacementElement
+  | VectorShapeElement
+  | VectorPathElement
   | SignatureElement
   | StrokeElement
   | HighlightElement;
@@ -216,16 +246,19 @@ export interface SavedSignature {
 
 /**
  * Deterministic Z-order layer tier:
- * Tier 1: Background/Header Images
+ * Tier 1: Background/Header Images & Behind-Content Shapes
  * Tier 2: Standard Images
  * Tier 3: Text Blocks
- * Tier 4: Annotations & Signatures
+ * Tier 4: Annotations, Vector Shapes, Paths & Signatures
  */
 export function getElementDefaultLayerTier(
   el: Pick<CanvasElement, 'kind'> & { behindContent?: boolean; isBackgroundLayer?: boolean },
 ): LayerTier {
   if (el.kind === 'image' || el.kind === 'image-replacement' || el.kind === 'shape-replacement') {
     return el.behindContent || el.isBackgroundLayer ? 1 : 2;
+  }
+  if ((el.kind === 'shape' || el.kind === 'path') && (el.behindContent || el.isBackgroundLayer)) {
+    return 1;
   }
   if (el.kind === 'text-edit' || el.kind === 'text-add') {
     return 3;

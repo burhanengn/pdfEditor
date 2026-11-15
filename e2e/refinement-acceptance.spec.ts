@@ -436,4 +436,123 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
       md.destroy();
     }
   });
+
+  test('Vector Shapes (rounded rect, circle), Straight Lines, Path Joining & Node Editing export cleanly to PDF', async ({
+    page,
+  }) => {
+    await page.goto('/');
+    await page.getByTestId('welcome-sample-btn').click();
+    const page1 = page.getByTestId('pdf-page-1');
+    await expect(page1.locator('canvas')).toBeVisible();
+    await expect
+      .poll(async () => page1.locator('canvas').evaluate((c: HTMLCanvasElement) => c.width))
+      .toBeGreaterThan(200);
+
+    const pBox = (await page1.boundingBox())!;
+    expect(pBox).not.toBeNull();
+
+    // 1. Add a rounded rectangle using Shape tool + adjust Corner Radius in Inspector
+    await page.getByTestId('tool-shape').click();
+    await expect(page.getByTestId('shape-subtoolbar')).toBeVisible();
+    await page.getByTestId('shape-preset-rect').click();
+    await page.mouse.move(pBox.x + 80, pBox.y + 320);
+    await page.mouse.down();
+    await page.mouse.move(pBox.x + 210, pBox.y + 410, { steps: 6 });
+    await page.mouse.up();
+
+    const addedShape = page1.locator('[data-testid^="canvas-element-shp_"]').first();
+    await expect(addedShape).toBeVisible();
+
+    const radiusSlider = page.getByTestId('inspector-vector-border-radius');
+    await expect(radiusSlider).toBeVisible();
+    await radiusSlider.fill('18');
+    await radiusSlider.dispatchEvent('change');
+
+    await expect
+      .poll(async () => addedShape.locator('path').getAttribute('d'))
+      .toContain('C ');
+
+    // 2. Switch to Ellipse preset & draw a circle/ellipse
+    await page.getByTestId('tool-shape').click();
+    await page.getByTestId('shape-preset-ellipse').click();
+    await page.mouse.move(pBox.x + 250, pBox.y + 320);
+    await page.mouse.down();
+    await page.mouse.move(pBox.x + 330, pBox.y + 400, { steps: 6 });
+    await page.mouse.up();
+    await expect(page1.locator('[data-testid^="canvas-element-shp_"]')).toHaveCount(2);
+
+    // 3. Draw 2 separate straight lines -> Join them via 'En Yakın Çizgiyle Birleştir' -> Edit Anchor Node
+    await page.getByTestId('tool-path').click();
+    await expect(page.getByTestId('path-subtoolbar')).toBeVisible();
+    await page.getByTestId('path-mode-line').click();
+
+    // Line 1: horizontal segment
+    await page.mouse.move(pBox.x + 80, pBox.y + 460);
+    await page.mouse.down();
+    await page.mouse.move(pBox.x + 180, pBox.y + 460, { steps: 5 });
+    await page.mouse.up();
+
+    // Line 2: starting 30px away vertically so it creates a separate path element
+    await page.mouse.move(pBox.x + 180, pBox.y + 490);
+    await page.mouse.down();
+    await page.mouse.move(pBox.x + 180, pBox.y + 560, { steps: 5 });
+    await page.mouse.up();
+
+    await expect(page1.locator('[data-testid^="canvas-element-path_"]')).toHaveCount(2);
+
+    // Switch to Select mode and join via Inspector
+    await page.getByTestId('tool-select').click();
+    const joinNearestBtn = page.getByTestId('inspector-join-nearest-path-btn');
+    await expect(joinNearestBtn).toBeVisible();
+    await joinNearestBtn.click();
+
+    // Two lines merged into ONE unified VectorPathElement
+    await expect(page1.locator('[data-testid^="canvas-element-path_"]')).toHaveCount(1);
+
+    // Activate Direct Node Editor -> drag anchor -> finish
+    await page.getByTestId('inspector-edit-path-nodes-btn').click();
+    const anchor0 = page.getByTestId('path-anchor-handle-0');
+    await expect(anchor0).toBeVisible();
+    const aBox = (await anchor0.boundingBox())!;
+    await page.mouse.move(aBox.x + aBox.width / 2, aBox.y + aBox.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(aBox.x + 25, aBox.y - 15, { steps: 4 });
+    await page.mouse.up();
+    await page.getByTestId('finish-path-edit-btn').click();
+    await expect(anchor0).toBeHidden();
+
+    // 4. Export PDF -> verify rendered pixels contain blue rounded shape inside PDF via MuPDF
+    const [pdfDownload] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByTestId('export-pdf-btn').click(),
+    ]);
+    const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
+    const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
+    try {
+      const mp = md.loadPage(0);
+      const pm = mp.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
+      try {
+        const px = pm.getPixels();
+        const w = pm.getWidth();
+        const h = pm.getHeight();
+        const n = pm.getNumberOfComponents();
+        // Scan mid-page area where the blue filled vector shapes were placed (x: 50..360, y: 200..500)
+        let bluePixelCount = 0;
+        for (let py = Math.floor(h * 0.3); py < Math.floor(h * 0.75); py++) {
+          for (let pxX = Math.floor(w * 0.1); pxX < Math.floor(w * 0.8); pxX++) {
+            const idx = (py * w + pxX) * n;
+            if (px[idx + 2] > 180 && px[idx] < 100) {
+              bluePixelCount++;
+            }
+          }
+        }
+        expect(bluePixelCount).toBeGreaterThan(500);
+      } finally {
+        pm.destroy();
+        mp.destroy();
+      }
+    } finally {
+      md.destroy();
+    }
+  });
 });

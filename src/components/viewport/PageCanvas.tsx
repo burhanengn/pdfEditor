@@ -1,22 +1,26 @@
 import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
-import { Layers } from 'lucide-react';
+import { Check, Layers, X } from 'lucide-react';
 import {
   getElementLayerTier,
   type CanvasElement,
   type HighlightElement,
   type StrokeElement,
   type TextAddElement,
+  type VectorPathElement,
+  type VectorShapeElement,
 } from '@/types/elements';
 import type {
   DetectedImageObject,
   DetectedTextBlock,
   DetectedVectorShape,
   PageMeta,
+  Point,
   RectBox,
 } from '@/types/pdf';
 import {
   axisAlignedRectBaseToDisplay,
   getDisplayDimensions,
+  pointBaseToDisplay,
   pointDisplayToBase,
   pointInRotatedRect,
   rectBaseToDisplayFrame,
@@ -27,10 +31,19 @@ import { calibrateDomTextMetrics, resolveFontDisplayStatus } from '@/engine/font
 import { computePageNumberLayout } from '@/engine/pageNumbers';
 import { pointsToSmoothSvgPath } from '@/engine/pdfCompiler';
 import { pdfjsService } from '@/engine/pdfjsService';
+import {
+  constrainSegmentAngle45,
+  findNearestOpenPathEndpoint,
+  pathPointsToSvgPath,
+  shapeToSvgPath,
+  strokeDashToArray,
+  type OpenPathSnapHit,
+} from '@/engine/vectorShapes';
 import { wasmWorkerClient } from '@/engine/wasmWorkerClient';
 import { useEditorStore } from '@/store/useEditorStore';
 import { createId } from '@/utils/id';
 import { InlineTextEditor } from './InlineTextEditor';
+import { PathNodeEditorOverlay } from './PathNodeEditorOverlay';
 import { SelectionOverlay } from './SelectionOverlay';
 
 interface PageCanvasProps {
@@ -88,6 +101,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   const extractedFonts = useEditorStore((s) => s.extractedFonts);
   const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
   const editingTextElementId = useEditorStore((s) => s.editingTextElementId);
+  const editingPathElementId = useEditorStore((s) => s.editingPathElementId);
   const extraction = useEditorStore((s) => s.pageExtractions[page.id]);
 
   const drawColor = useEditorStore((s) => s.drawColor);
@@ -96,11 +110,29 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   const highlightColor = useEditorStore((s) => s.highlightColor);
   const highlightShape = useEditorStore((s) => s.highlightShape);
 
+  const activeShapePreset = useEditorStore((s) => s.activeShapePreset);
+  const activePathMode = useEditorStore((s) => s.activePathMode);
+  const shapeFillColor = useEditorStore((s) => s.shapeFillColor);
+  const shapeStrokeColor = useEditorStore((s) => s.shapeStrokeColor);
+  const shapeStrokeWidth = useEditorStore((s) => s.shapeStrokeWidth);
+  const shapeBorderRadius = useEditorStore((s) => s.shapeBorderRadius);
+  const shapeStrokeDash = useEditorStore((s) => s.shapeStrokeDash);
+  const shapeOpacity = useEditorStore((s) => s.shapeOpacity);
+  const pathClosedDefault = useEditorStore((s) => s.pathClosedDefault);
+  const pathSmoothDefault = useEditorStore((s) => s.pathSmoothDefault);
+
   const setActivePage = useEditorStore((s) => s.setActivePage);
   const selectElements = useEditorStore((s) => s.selectElements);
   const setEditingTextElementId = useEditorStore((s) => s.setEditingTextElementId);
+  const setEditingPathElementId = useEditorStore((s) => s.setEditingPathElementId);
   const setPageExtraction = useEditorStore((s) => s.setPageExtraction);
   const addElement = useEditorStore((s) => s.addElement);
+  const extendOrJoinPathWithSegment = useEditorStore((s) => s.extendOrJoinPathWithSegment);
+  const joinVectorPaths = useEditorStore((s) => s.joinVectorPaths);
+  const updatePathPoints = useEditorStore((s) => s.updatePathPoints);
+  const beginTransaction = useEditorStore((s) => s.beginTransaction);
+  const commitTransaction = useEditorStore((s) => s.commitTransaction);
+  const abortTransaction = useEditorStore((s) => s.abortTransaction);
   const setToolMode = useEditorStore((s) => s.setToolMode);
   const startEditDetectedText = useEditorStore((s) => s.startEditDetectedText);
   const promoteDetectedImage = useEditorStore((s) => s.promoteDetectedImage);
@@ -147,11 +179,91 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   const [canvasPaperTransparent, setCanvasPaperTransparent] = useState<boolean>(true);
   const activeCleanDocIdRef = useRef<string | null>(null);
 
-  // Live drawing / highlight draft states
+  // Live drawing / highlight / vector shape / path draft states
   const [draftStrokePoints, setDraftStrokePoints] = useState<Array<{ x: number; y: number }> | null>(
     null,
   );
   const [draftRect, setDraftRect] = useState<RectBox | null>(null);
+  const [draftShapeRect, setDraftShapeRect] = useState<RectBox | null>(null);
+  const [draftLineSegment, setDraftLineSegment] = useState<{
+    start: Point;
+    end: Point;
+    startSnap: OpenPathSnapHit | null;
+    endSnap: OpenPathSnapHit | null;
+  } | null>(null);
+  const [penDraftPoints, setPenDraftPoints] = useState<Point[] | null>(null);
+  const [penStartSnap, setPenStartSnap] = useState<OpenPathSnapHit | null>(null);
+  const [penHoverSnap, setPenHoverSnap] = useState<{
+    kind: 'self-close' | 'join-peer';
+    point: Point;
+    hit?: OpenPathSnapHit;
+  } | null>(null);
+
+  const pagePaths = useMemo(
+    () =>
+      allElements.filter(
+        (el): el is VectorPathElement => el.pageId === page.id && el.kind === 'path',
+      ),
+    [allElements, page.id],
+  );
+
+  useEffect(() => {
+    if (toolMode !== 'path' || activePathMode !== 'pen') {
+      setPenDraftPoints(null);
+      setPenStartSnap(null);
+      setPenHoverSnap(null);
+    }
+  }, [toolMode, activePathMode]);
+
+  const finishPenDraft = (closeLoop = false) => {
+    if (!penDraftPoints || penDraftPoints.length < 2) {
+      setPenDraftPoints(null);
+      setPenStartSnap(null);
+      setPenHoverSnap(null);
+      return;
+    }
+    const isClosed = closeLoop || pathClosedDefault;
+    extendOrJoinPathWithSegment(
+      penDraftPoints,
+      page.id,
+      penStartSnap,
+      null,
+      {
+        strokeColor: shapeStrokeColor,
+        strokeWidth: shapeStrokeWidth,
+        strokeDash: shapeStrokeDash,
+        fillColor: isClosed ? shapeFillColor : 'transparent',
+        opacity: shapeOpacity,
+        smooth: pathSmoothDefault,
+        closed: isClosed,
+      },
+    );
+    setPenDraftPoints(null);
+    setPenStartSnap(null);
+    setPenHoverSnap(null);
+  };
+
+  useEffect(() => {
+    const onKeyDown = (ev: KeyboardEvent) => {
+      if (editingPathElementId && ev.key === 'Escape') {
+        ev.preventDefault();
+        setEditingPathElementId(null);
+        return;
+      }
+      if (!penDraftPoints) return;
+      if (ev.key === 'Escape') {
+        ev.preventDefault();
+        setPenDraftPoints(null);
+        setPenStartSnap(null);
+        setPenHoverSnap(null);
+      } else if (ev.key === 'Enter') {
+        ev.preventDefault();
+        finishPenDraft(false);
+      }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  });
 
   const displayDims = getDisplayDimensions(
     page.baseWidth,
@@ -868,6 +980,261 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       return;
     }
 
+    if (toolMode === 'shape') {
+      const targetEl = e.currentTarget;
+      targetEl.setPointerCapture(e.pointerId);
+      const startPt = getBasePointFromEvent(e.clientX, e.clientY);
+      setDraftShapeRect({ x: startPt.x, y: startPt.y, width: 1, height: 1 });
+
+      let latestRect: RectBox = { x: startPt.x, y: startPt.y, width: 1, height: 1 };
+      let maxDragDist = 0;
+      let aborted = false;
+
+      const cleanup = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', abortGesture);
+        window.removeEventListener('gullac:multitouch-start', abortGesture);
+        try {
+          if (targetEl.hasPointerCapture(e.pointerId)) {
+            targetEl.releasePointerCapture(e.pointerId);
+          }
+        } catch {
+          // ignore if released
+        }
+      };
+
+      const abortGesture = () => {
+        if (aborted) return;
+        aborted = true;
+        cleanup();
+        setDraftShapeRect(null);
+      };
+
+      const onMove = (me: PointerEvent) => {
+        const store = useEditorStore.getState();
+        if (aborted || store.isPinching || store.activeTouchCount >= 2) {
+          abortGesture();
+          return;
+        }
+        const curPt = getBasePointFromEvent(me.clientX, me.clientY);
+        let dx = curPt.x - startPt.x;
+        let dy = curPt.y - startPt.y;
+        maxDragDist = Math.max(maxDragDist, Math.hypot(dx, dy));
+        if (me.shiftKey) {
+          const side = Math.max(Math.abs(dx), Math.abs(dy));
+          dx = dx >= 0 ? side : -side;
+          dy = dy >= 0 ? side : -side;
+        }
+        latestRect = {
+          x: Math.min(startPt.x, startPt.x + dx),
+          y: Math.min(startPt.y, startPt.y + dy),
+          width: Math.max(2, Math.abs(dx)),
+          height: Math.max(2, Math.abs(dy)),
+        };
+        setDraftShapeRect(latestRect);
+      };
+
+      const onUp = () => {
+        if (aborted) return;
+        cleanup();
+        setDraftShapeRect(null);
+
+        const rectToCreate: RectBox =
+          maxDragDist < 5
+            ? {
+                x: Math.max(8, Math.min(page.baseWidth - 104, startPt.x - 48)),
+                y: Math.max(
+                  8,
+                  Math.min(
+                    page.baseHeight - (activeShapePreset === 'rect' ? 76 : 104),
+                    startPt.y - (activeShapePreset === 'rect' ? 34 : 48),
+                  ),
+                ),
+                width: 96,
+                height: activeShapePreset === 'rect' ? 68 : 96,
+              }
+            : latestRect;
+
+        if (rectToCreate.width >= 6 && rectToCreate.height >= 6) {
+          const shapeEl: VectorShapeElement = {
+            id: createId('shp'),
+            pageId: page.id,
+            kind: 'shape',
+            shapeType: activeShapePreset,
+            x: rectToCreate.x,
+            y: rectToCreate.y,
+            width: rectToCreate.width,
+            height: rectToCreate.height,
+            rotation: 0,
+            opacity: shapeOpacity,
+            zIndex: 0,
+            fillColor: shapeFillColor,
+            strokeColor: shapeStrokeColor,
+            strokeWidth: shapeStrokeWidth,
+            strokeDash: shapeStrokeDash,
+            borderRadius: activeShapePreset === 'rect' ? shapeBorderRadius : 0,
+          };
+          addElement(shapeEl, true);
+          setToolMode('select');
+        }
+      };
+
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', abortGesture);
+      window.addEventListener('gullac:multitouch-start', abortGesture);
+      return;
+    }
+
+    if (toolMode === 'path') {
+      const snapRadius = 11 / Math.max(0.25, zoom);
+
+      if (activePathMode === 'line') {
+        const targetEl = e.currentTarget;
+        targetEl.setPointerCapture(e.pointerId);
+        const rawStart = getBasePointFromEvent(e.clientX, e.clientY);
+        const startSnap = findNearestOpenPathEndpoint(rawStart, pagePaths, snapRadius);
+        const startPt = startSnap ? startSnap.point : rawStart;
+
+        let latestEnd = { ...startPt };
+        let latestEndSnap: OpenPathSnapHit | null = null;
+        let aborted = false;
+        setDraftLineSegment({
+          start: startPt,
+          end: startPt,
+          startSnap,
+          endSnap: null,
+        });
+
+        const cleanup = () => {
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+          window.removeEventListener('pointercancel', abortGesture);
+          window.removeEventListener('gullac:multitouch-start', abortGesture);
+          try {
+            if (targetEl.hasPointerCapture(e.pointerId)) {
+              targetEl.releasePointerCapture(e.pointerId);
+            }
+          } catch {
+            // ignore if released
+          }
+        };
+
+        const abortGesture = () => {
+          if (aborted) return;
+          aborted = true;
+          cleanup();
+          setDraftLineSegment(null);
+        };
+
+        const onMove = (me: PointerEvent) => {
+          const store = useEditorStore.getState();
+          if (aborted || store.isPinching || store.activeTouchCount >= 2) {
+            abortGesture();
+            return;
+          }
+          let cur = getBasePointFromEvent(me.clientX, me.clientY);
+          if (me.shiftKey) {
+            cur = constrainSegmentAngle45(startPt, cur);
+          }
+          const endSnap = findNearestOpenPathEndpoint(cur, pagePaths, snapRadius);
+          if (endSnap) {
+            cur = endSnap.point;
+          }
+          latestEnd = cur;
+          latestEndSnap = endSnap;
+          setDraftLineSegment({
+            start: startPt,
+            end: cur,
+            startSnap,
+            endSnap,
+          });
+        };
+
+        const onUp = () => {
+          if (aborted) return;
+          cleanup();
+          setDraftLineSegment(null);
+          if (Math.hypot(latestEnd.x - startPt.x, latestEnd.y - startPt.y) >= 4) {
+            extendOrJoinPathWithSegment(
+              [startPt, latestEnd],
+              page.id,
+              startSnap,
+              latestEndSnap,
+              {
+                strokeColor: shapeStrokeColor,
+                strokeWidth: shapeStrokeWidth,
+                strokeDash: shapeStrokeDash,
+                fillColor: 'transparent',
+                opacity: shapeOpacity,
+                smooth: false,
+                closed: false,
+              },
+            );
+          }
+        };
+
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+        window.addEventListener('pointercancel', abortGesture);
+        window.addEventListener('gullac:multitouch-start', abortGesture);
+        return;
+      }
+
+      // Pen multi-vertex path drafting mode
+      e.stopPropagation();
+      const rawPt = getBasePointFromEvent(e.clientX, e.clientY);
+
+      if (!penDraftPoints || penDraftPoints.length === 0) {
+        const startSnap = findNearestOpenPathEndpoint(rawPt, pagePaths, snapRadius);
+        const firstPt = startSnap ? startSnap.point : rawPt;
+        setPenStartSnap(startSnap);
+        setPenDraftPoints([firstPt]);
+        setHoverBasePoint(firstPt);
+        return;
+      }
+
+      const lastPlaced = penDraftPoints[penDraftPoints.length - 1];
+      let nextPt = e.shiftKey ? constrainSegmentAngle45(lastPlaced, rawPt) : rawPt;
+
+      // Close loop if clicking back near Anchor #0 with >= 3 placed points
+      if (penDraftPoints.length >= 3) {
+        const dStart = Math.hypot(
+          nextPt.x - penDraftPoints[0].x,
+          nextPt.y - penDraftPoints[0].y,
+        );
+        if (dStart <= snapRadius) {
+          finishPenDraft(true);
+          return;
+        }
+      }
+
+      // Snap and auto-join onto another open path endpoint on the page
+      const peerEndSnap = findNearestOpenPathEndpoint(nextPt, pagePaths, snapRadius);
+      if (peerEndSnap && penDraftPoints.length >= 1) {
+        const combined = [...penDraftPoints, peerEndSnap.point];
+        extendOrJoinPathWithSegment(combined, page.id, penStartSnap, peerEndSnap, {
+          strokeColor: shapeStrokeColor,
+          strokeWidth: shapeStrokeWidth,
+          strokeDash: shapeStrokeDash,
+          fillColor: pathClosedDefault ? shapeFillColor : 'transparent',
+          opacity: shapeOpacity,
+          smooth: pathSmoothDefault,
+          closed: pathClosedDefault,
+        });
+        setPenDraftPoints(null);
+        setPenStartSnap(null);
+        setPenHoverSnap(null);
+        return;
+      }
+
+      if (Math.hypot(nextPt.x - lastPlaced.x, nextPt.y - lastPlaced.y) >= 2.5) {
+        setPenDraftPoints([...penDraftPoints, nextPt]);
+      }
+      return;
+    }
+
     if (toolMode === 'draw') {
       const targetEl = e.currentTarget;
       targetEl.setPointerCapture(e.pointerId);
@@ -1070,7 +1437,9 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       const isBehindEl =
         (el.kind === 'image' ||
           el.kind === 'image-replacement' ||
-          el.kind === 'shape-replacement') &&
+          el.kind === 'shape-replacement' ||
+          el.kind === 'shape' ||
+          el.kind === 'path') &&
         Boolean(el.behindContent);
       if ((el.isBackgroundLayer || isBehindEl) && !selectBackgroundMode) {
         const claimed = resolveForegroundHitAtClientPoint(
@@ -1080,7 +1449,17 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
         );
         if (claimed) return;
       }
-      selectElements([el.id]);
+      if (e.shiftKey) {
+        const exists = selectedElementIds.includes(el.id);
+        const nextSel = exists
+          ? selectedElementIds.length > 1
+            ? selectedElementIds.filter((id) => id !== el.id)
+            : selectedElementIds
+          : [...selectedElementIds, el.id];
+        selectElements(nextSel);
+      } else {
+        selectElements([el.id]);
+      }
     };
 
     if (el.kind === 'text-add' || el.kind === 'text-edit') {
@@ -1391,6 +1770,116 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       );
     }
 
+    if (el.kind === 'shape') {
+      const d = shapeToSvgPath(el.shapeType, el.width, el.height, el.borderRadius ?? 0);
+      const dashArr = strokeDashToArray(el.strokeDash, el.strokeWidth);
+      const hasStroke = el.strokeColor !== 'transparent' && el.strokeWidth > 0;
+      const shapeZ =
+        el.behindContent || el.isBackgroundLayer
+          ? canvasPaperTransparent
+            ? 5
+            : 12
+          : getCssZIndexForElement(el);
+      return (
+        <div
+          key={el.id}
+          data-testid={`canvas-element-${el.id}`}
+          data-layer-tier={getElementLayerTier(el)}
+          onPointerDown={handleSelect}
+          style={{
+            position: 'absolute',
+            left: `${frame.left}px`,
+            top: `${frame.top}px`,
+            width: `${frame.width}px`,
+            height: `${frame.height}px`,
+            transform: `rotate(${frame.rotation}deg)`,
+            transformOrigin: 'center center',
+            opacity: el.opacity,
+            zIndex: shapeZ,
+          }}
+          className="cursor-pointer select-none"
+        >
+          <svg
+            viewBox={`0 0 ${Math.max(1, el.width)} ${Math.max(1, el.height)}`}
+            preserveAspectRatio="none"
+            className="h-full w-full overflow-visible"
+          >
+            <path
+              d={d}
+              fill={el.fillColor === 'transparent' ? 'none' : el.fillColor}
+              stroke={hasStroke ? el.strokeColor : 'none'}
+              strokeWidth={hasStroke ? el.strokeWidth : 0}
+              strokeDasharray={hasStroke && dashArr ? dashArr.join(' ') : undefined}
+              strokeLinejoin="round"
+              strokeLinecap="round"
+            />
+          </svg>
+        </div>
+      );
+    }
+
+    if (el.kind === 'path') {
+      const d = pathPointsToSvgPath(el.points, el.width, el.height, el.closed, el.smooth);
+      const dashArr = strokeDashToArray(el.strokeDash, el.strokeWidth);
+      const hasStroke = el.strokeColor !== 'transparent' && el.strokeWidth > 0;
+      const pathZ =
+        el.behindContent || el.isBackgroundLayer
+          ? canvasPaperTransparent
+            ? 5
+            : 12
+          : getCssZIndexForElement(el);
+      return (
+        <div
+          key={el.id}
+          data-testid={`canvas-element-${el.id}`}
+          data-layer-tier={getElementLayerTier(el)}
+          onPointerDown={handleSelect}
+          onDoubleClick={(ev) => {
+            if (toolMode !== 'select' || el.locked) return;
+            ev.stopPropagation();
+            selectElements([el.id]);
+            setEditingPathElementId(el.id);
+          }}
+          style={{
+            position: 'absolute',
+            left: `${frame.left}px`,
+            top: `${frame.top}px`,
+            width: `${frame.width}px`,
+            height: `${frame.height}px`,
+            transform: `rotate(${frame.rotation}deg)`,
+            transformOrigin: 'center center',
+            opacity: el.opacity,
+            zIndex: pathZ,
+          }}
+          className="cursor-pointer select-none"
+        >
+          <svg
+            viewBox={`0 0 ${Math.max(1, el.width)} ${Math.max(1, el.height)}`}
+            preserveAspectRatio="none"
+            className="h-full w-full overflow-visible"
+          >
+            <path
+              d={d}
+              fill="none"
+              stroke="transparent"
+              strokeWidth={Math.max(14, el.strokeWidth + 10)}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+            <path
+              d={d}
+              fill={el.closed && el.fillColor !== 'transparent' ? el.fillColor : 'none'}
+              stroke={hasStroke ? el.strokeColor : 'none'}
+              strokeWidth={hasStroke ? el.strokeWidth : 0}
+              strokeDasharray={hasStroke && dashArr ? dashArr.join(' ') : undefined}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </div>
+      );
+    }
+
     if (el.kind === 'highlight') {
       return (
         <div
@@ -1649,6 +2138,227 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       );
     }
 
+    if (draftShapeRect) {
+      const disp = axisAlignedRectBaseToDisplay(
+        draftShapeRect,
+        page.baseWidth,
+        page.baseHeight,
+        page.userRotation,
+        zoom,
+      );
+      const d = shapeToSvgPath(
+        activeShapePreset,
+        Math.max(1, disp.width),
+        Math.max(1, disp.height),
+        activeShapePreset === 'rect' ? shapeBorderRadius * zoom : 0,
+      );
+      const dashArr = strokeDashToArray(shapeStrokeDash, shapeStrokeWidth);
+      const hasStroke = shapeStrokeColor !== 'transparent' && shapeStrokeWidth > 0;
+      return (
+        <svg
+          className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
+          style={{ zIndex: 45 }}
+        >
+          <g transform={`translate(${disp.x.toFixed(1)}, ${disp.y.toFixed(1)})`}>
+            <path
+              d={d}
+              fill={shapeFillColor === 'transparent' ? 'none' : shapeFillColor}
+              stroke={hasStroke ? shapeStrokeColor : '#3b82f6'}
+              strokeWidth={hasStroke ? shapeStrokeWidth * zoom : 1.5}
+              strokeDasharray={
+                hasStroke && dashArr
+                  ? dashArr.map((v) => (v * zoom).toFixed(1)).join(' ')
+                  : undefined
+              }
+              opacity={shapeOpacity}
+              strokeLinejoin="round"
+            />
+          </g>
+        </svg>
+      );
+    }
+
+    if (draftLineSegment) {
+      const p1 = pointBaseToDisplay(
+        draftLineSegment.start.x,
+        draftLineSegment.start.y,
+        page.baseWidth,
+        page.baseHeight,
+        page.userRotation,
+        zoom,
+      );
+      const p2 = pointBaseToDisplay(
+        draftLineSegment.end.x,
+        draftLineSegment.end.y,
+        page.baseWidth,
+        page.baseHeight,
+        page.userRotation,
+        zoom,
+      );
+      const dashArr = strokeDashToArray(shapeStrokeDash, shapeStrokeWidth);
+      return (
+        <svg
+          className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
+          style={{ zIndex: 45 }}
+        >
+          <line
+            x1={p1.x}
+            y1={p1.y}
+            x2={p2.x}
+            y2={p2.y}
+            stroke={shapeStrokeColor === 'transparent' ? '#0f172a' : shapeStrokeColor}
+            strokeWidth={Math.max(1, shapeStrokeWidth) * zoom}
+            strokeDasharray={dashArr ? dashArr.map((v) => (v * zoom).toFixed(1)).join(' ') : undefined}
+            strokeLinecap="round"
+            opacity={shapeOpacity}
+          />
+          {draftLineSegment.startSnap && (
+            <circle
+              cx={p1.x}
+              cy={p1.y}
+              r={8}
+              fill="rgba(16, 185, 129, 0.25)"
+              stroke="#10b981"
+              strokeWidth={2}
+            />
+          )}
+          {draftLineSegment.endSnap && (
+            <circle
+              cx={p2.x}
+              cy={p2.y}
+              r={8}
+              fill="rgba(16, 185, 129, 0.25)"
+              stroke="#10b981"
+              strokeWidth={2}
+            />
+          )}
+        </svg>
+      );
+    }
+
+    if (penDraftPoints && penDraftPoints.length > 0) {
+      const dispPts = penDraftPoints.map((pt) =>
+        pointBaseToDisplay(pt.x, pt.y, page.baseWidth, page.baseHeight, page.userRotation, zoom),
+      );
+      const hoverDisp = hoverBasePoint
+        ? pointBaseToDisplay(
+            hoverBasePoint.x,
+            hoverBasePoint.y,
+            page.baseWidth,
+            page.baseHeight,
+            page.userRotation,
+            zoom,
+          )
+        : null;
+      const snapDisp = penHoverSnap
+        ? pointBaseToDisplay(
+            penHoverSnap.point.x,
+            penHoverSnap.point.y,
+            page.baseWidth,
+            page.baseHeight,
+            page.userRotation,
+            zoom,
+          )
+        : null;
+      const dashArr = strokeDashToArray(shapeStrokeDash, shapeStrokeWidth);
+      const d = `M ${dispPts.map((p) => `${p.x.toFixed(1)} ${p.y.toFixed(1)}`).join(' L ')}`;
+      return (
+        <>
+          <svg
+            className="pointer-events-none absolute inset-0 h-full w-full overflow-visible"
+            style={{ zIndex: 45 }}
+          >
+            <path
+              d={d}
+              fill="none"
+              stroke={shapeStrokeColor === 'transparent' ? '#0f172a' : shapeStrokeColor}
+              strokeWidth={Math.max(1, shapeStrokeWidth) * zoom}
+              strokeDasharray={dashArr ? dashArr.map((v) => (v * zoom).toFixed(1)).join(' ') : undefined}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+              opacity={shapeOpacity}
+            />
+            {hoverDisp && (
+              <line
+                x1={dispPts[dispPts.length - 1].x}
+                y1={dispPts[dispPts.length - 1].y}
+                x2={snapDisp ? snapDisp.x : hoverDisp.x}
+                y2={snapDisp ? snapDisp.y : hoverDisp.y}
+                stroke="#3b82f6"
+                strokeWidth={Math.max(1.5, shapeStrokeWidth * 0.7 * zoom)}
+                strokeDasharray="5 4"
+                strokeLinecap="round"
+              />
+            )}
+            {dispPts.map((p, i) => (
+              <circle
+                key={i}
+                cx={p.x}
+                cy={p.y}
+                r={i === 0 ? 5 : 4}
+                fill="#ffffff"
+                stroke={i === 0 ? '#10b981' : '#3b82f6'}
+                strokeWidth={2}
+              />
+            ))}
+            {snapDisp && (
+              <circle
+                cx={snapDisp.x}
+                cy={snapDisp.y}
+                r={9}
+                fill={
+                  penHoverSnap?.kind === 'join-peer'
+                    ? 'rgba(16, 185, 129, 0.25)'
+                    : 'rgba(59, 130, 246, 0.25)'
+                }
+                stroke={penHoverSnap?.kind === 'join-peer' ? '#10b981' : '#3b82f6'}
+                strokeWidth={2}
+              />
+            )}
+          </svg>
+          {penDraftPoints.length >= 2 && (
+            <div
+              onPointerDown={(ev) => ev.stopPropagation()}
+              style={{
+                position: 'absolute',
+                left: `${Math.max(8, dispPts[dispPts.length - 1].x - 65)}px`,
+                top: `${Math.max(8, dispPts[dispPts.length - 1].y + 14)}px`,
+                zIndex: 540,
+              }}
+              className="flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900/95 px-2.5 py-1 text-[11px] font-medium text-white shadow-xl"
+            >
+              <button
+                type="button"
+                data-testid="pen-finish-btn"
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  finishPenDraft(false);
+                }}
+                className="inline-flex items-center gap-1 rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-blue-500"
+              >
+                <Check className="h-3 w-3" />
+                Tamamla
+              </button>
+              <button
+                type="button"
+                data-testid="pen-cancel-btn"
+                onClick={(ev) => {
+                  ev.stopPropagation();
+                  setPenDraftPoints(null);
+                  setPenStartSnap(null);
+                  setPenHoverSnap(null);
+                }}
+                className="inline-flex items-center gap-0.5 rounded-full bg-slate-700 px-2 py-0.5 text-[10px] text-slate-200 hover:bg-slate-600"
+              >
+                <X className="h-3 w-3" />
+                İptal
+              </button>
+            </div>
+          )}
+        </>
+      );
+    }
+
     if (draftRect) {
       const disp = axisAlignedRectBaseToDisplay(
         draftRect,
@@ -1734,7 +2444,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
     ? 'cursor-crosshair'
     : toolMode === 'text'
       ? 'cursor-text'
-      : toolMode === 'draw' || toolMode === 'highlight'
+      : toolMode === 'draw' || toolMode === 'highlight' || toolMode === 'shape' || toolMode === 'path'
         ? 'cursor-crosshair'
         : 'cursor-default';
 
@@ -1746,11 +2456,36 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
         data-testid={`pdf-page-${pageIndex + 1}`}
         onPointerDown={handleLayerPointerDown}
         onPointerMove={(e) => {
-          if (!pendingSignaturePlacement) return;
-          setHoverBasePoint(getBasePointFromEvent(e.clientX, e.clientY));
+          if (pendingSignaturePlacement) {
+            setHoverBasePoint(getBasePointFromEvent(e.clientX, e.clientY));
+            return;
+          }
+          if (toolMode === 'path' && activePathMode === 'pen' && penDraftPoints) {
+            const rawPt = getBasePointFromEvent(e.clientX, e.clientY);
+            const last = penDraftPoints[penDraftPoints.length - 1];
+            const pt = e.shiftKey && last ? constrainSegmentAngle45(last, rawPt) : rawPt;
+            setHoverBasePoint(pt);
+            const snapRadius = 11 / Math.max(0.25, zoom);
+            if (
+              penDraftPoints.length >= 3 &&
+              Math.hypot(pt.x - penDraftPoints[0].x, pt.y - penDraftPoints[0].y) <= snapRadius
+            ) {
+              setPenHoverSnap({ kind: 'self-close', point: penDraftPoints[0] });
+            } else {
+              const peerHit = findNearestOpenPathEndpoint(pt, pagePaths, snapRadius);
+              setPenHoverSnap(peerHit ? { kind: 'join-peer', point: peerHit.point, hit: peerHit } : null);
+            }
+          }
         }}
         onPointerLeave={() => {
           if (hoverBasePoint) setHoverBasePoint(null);
+          if (penHoverSnap) setPenHoverSnap(null);
+        }}
+        onDoubleClick={(e) => {
+          if (toolMode === 'path' && activePathMode === 'pen' && penDraftPoints && penDraftPoints.length >= 2) {
+            e.stopPropagation();
+            finishPenDraft(false);
+          }
         }}
         onClick={(e) => {
           if (useEditorStore.getState().isPinching) return;
@@ -1784,7 +2519,13 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
         style={{
           width: `${displayDims.width}px`,
           height: `${displayDims.height}px`,
-          touchAction: toolMode === 'draw' || toolMode === 'highlight' ? 'none' : undefined,
+          touchAction:
+            toolMode === 'draw' ||
+            toolMode === 'highlight' ||
+            toolMode === 'shape' ||
+            toolMode === 'path'
+              ? 'none'
+              : undefined,
         }}
         className={`relative overflow-hidden bg-white shadow-xl ring-1 ring-slate-300 dark:ring-slate-700 ${cursorClass}`}
       >
@@ -1861,40 +2602,61 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
           </div>
         )}
 
-        {/* Active selection overlay(s) */}
+        {/* Active selection overlay(s) or direct vector path anchor editor */}
         {toolMode === 'select' &&
           !pendingSignaturePlacement &&
           visibleElements
             .filter((el) => selectedElementIds.includes(el.id) && editingTextElementId !== el.id)
-            .map((sel) => (
-              <SelectionOverlay
-                key={`sel-${sel.id}`}
-                element={sel}
-                siblingRects={visibleElements
-                  .filter((other) => other.id !== sel.id)
-                  .map((other) => ({
-                    x: other.x,
-                    y: other.y,
-                    width: other.width,
-                    height: other.height,
-                  }))}
-                baseWidth={page.baseWidth}
-                baseHeight={page.baseHeight}
-                userRotation={page.userRotation}
-                zoom={zoom}
-                selectBackgroundMode={selectBackgroundMode}
-                onSmartForegroundFallback={resolveForegroundHitAtClientPoint}
-                onUnlockElement={() =>
-                  updateElements([{ id: sel.id, patch: { locked: false } }], true)
-                }
-                onAltClickCycle={(cx, cy) => handleAltCycleAtClientPoint(cx, cy)}
-                onStartTextEdit={
-                  sel.kind === 'text-add' || sel.kind === 'text-edit'
-                    ? () => setEditingTextElementId(sel.id)
-                    : undefined
-                }
-              />
-            ))}
+            .map((sel) =>
+              sel.kind === 'path' && editingPathElementId === sel.id ? (
+                <PathNodeEditorOverlay
+                  key={`node-${sel.id}`}
+                  element={sel}
+                  peerPaths={pagePaths}
+                  baseWidth={page.baseWidth}
+                  baseHeight={page.baseHeight}
+                  userRotation={page.userRotation}
+                  zoom={zoom}
+                  layerRef={layerRef}
+                  onClose={() => setEditingPathElementId(null)}
+                  beginTransaction={beginTransaction}
+                  commitTransaction={commitTransaction}
+                  abortTransaction={abortTransaction}
+                  updatePathPoints={updatePathPoints}
+                  joinVectorPaths={joinVectorPaths}
+                />
+              ) : (
+                <SelectionOverlay
+                  key={`sel-${sel.id}`}
+                  element={sel}
+                  siblingRects={visibleElements
+                    .filter((other) => other.id !== sel.id)
+                    .map((other) => ({
+                      x: other.x,
+                      y: other.y,
+                      width: other.width,
+                      height: other.height,
+                    }))}
+                  baseWidth={page.baseWidth}
+                  baseHeight={page.baseHeight}
+                  userRotation={page.userRotation}
+                  zoom={zoom}
+                  selectBackgroundMode={selectBackgroundMode}
+                  onSmartForegroundFallback={resolveForegroundHitAtClientPoint}
+                  onUnlockElement={() =>
+                    updateElements([{ id: sel.id, patch: { locked: false } }], true)
+                  }
+                  onAltClickCycle={(cx, cy) => handleAltCycleAtClientPoint(cx, cy)}
+                  onStartTextEdit={
+                    sel.kind === 'text-add' || sel.kind === 'text-edit'
+                      ? () => setEditingTextElementId(sel.id)
+                      : sel.kind === 'path'
+                        ? () => setEditingPathElementId(sel.id)
+                        : undefined
+                  }
+                />
+              ),
+            )}
 
         {bgLongPressPrompt && (
           <button

@@ -7,8 +7,11 @@ import {
   Layers,
   LayoutGrid,
   Maximize2,
+  Minus,
   MousePointer2,
   PenTool,
+  Shapes,
+  Spline,
   Type,
   X,
   ZoomIn,
@@ -22,8 +25,12 @@ export function MobileToolsSheet() {
   const pages = useEditorStore((s) => s.pages);
   const activePageId = useEditorStore((s) => s.activePageId);
   const toolMode = useEditorStore((s) => s.toolMode);
+  const activeShapePreset = useEditorStore((s) => s.activeShapePreset);
+  const activePathMode = useEditorStore((s) => s.activePathMode);
   const zoom = useEditorStore((s) => s.zoom);
   const setToolMode = useEditorStore((s) => s.setToolMode);
+  const setShapeStyle = useEditorStore((s) => s.setShapeStyle);
+  const setPathToolStyle = useEditorStore((s) => s.setPathToolStyle);
   const setZoom = useEditorStore((s) => s.setZoom);
   const setZoomMode = useEditorStore((s) => s.setZoomMode);
   const setMobileSheet = useEditorStore((s) => s.setMobileSheet);
@@ -149,6 +156,60 @@ export function MobileToolsSheet() {
               >
                 <PenTool className="h-4 w-4 shrink-0" />
                 <span>Çizim (Ink)</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!hasPages}
+                data-testid="mobile-tool-shape-rect"
+                onClick={() => {
+                  setShapeStyle({ preset: 'rect' });
+                  chooseMode('shape');
+                }}
+                className={`flex min-h-[48px] items-center gap-2.5 rounded-xl border px-3 py-2 text-left font-medium transition disabled:opacity-40 ${
+                  toolMode === 'shape' && activeShapePreset === 'rect'
+                    ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                    : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200'
+                }`}
+              >
+                <Shapes className="h-4 w-4 shrink-0" />
+                <span>Kare / Yuvarlak Şekil</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!hasPages}
+                data-testid="mobile-tool-path-line"
+                onClick={() => {
+                  setPathToolStyle({ mode: 'line' });
+                  chooseMode('path');
+                }}
+                className={`flex min-h-[48px] items-center gap-2.5 rounded-xl border px-3 py-2 text-left font-medium transition disabled:opacity-40 ${
+                  toolMode === 'path' && activePathMode === 'line'
+                    ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                    : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200'
+                }`}
+              >
+                <Minus className="h-4 w-4 shrink-0" />
+                <span>Düz Çizgi</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!hasPages}
+                data-testid="mobile-tool-path-pen"
+                onClick={() => {
+                  setPathToolStyle({ mode: 'pen' });
+                  chooseMode('path');
+                }}
+                className={`col-span-2 flex min-h-[48px] items-center gap-2.5 rounded-xl border px-3 py-2 text-left font-medium transition disabled:opacity-40 ${
+                  toolMode === 'path' && activePathMode === 'pen'
+                    ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                    : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200'
+                }`}
+              >
+                <Spline className="h-4 w-4 shrink-0" />
+                <span>Kalem / Birleşen Yol (Path)</span>
               </button>
 
               <button

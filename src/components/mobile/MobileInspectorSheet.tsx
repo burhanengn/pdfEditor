@@ -45,9 +45,13 @@ export function MobileInspectorSheet() {
             ? 'Çizim'
             : selectedEl.kind === 'highlight'
               ? 'Açıklama'
-              : selectedEl.kind === 'shape-replacement'
-                ? 'Arkaplan'
-                : 'Görsel';
+              : selectedEl.kind === 'shape'
+                ? 'Şekil'
+                : selectedEl.kind === 'path'
+                  ? 'Yol / Çizgi'
+                  : selectedEl.kind === 'shape-replacement'
+                    ? 'Arkaplan'
+                    : 'Görsel';
 
     return (
       <div

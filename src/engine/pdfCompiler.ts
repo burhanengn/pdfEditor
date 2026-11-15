@@ -62,6 +62,7 @@ import {
 } from './fonts';
 import { computePageNumberLayout } from './pageNumbers';
 import { buildWrappedRichLines, ensureRunsFromElement } from './richText';
+import { pathPointsToSvgPath, shapeToSvgPath, strokeDashToArray } from './vectorShapes';
 
 type PdfLibDrawPlacement = ReturnType<typeof computePdfLibDrawPlacement>;
 
@@ -809,8 +810,16 @@ function drawSvgBoxOnPage(
   strokeColor: string,
   strokeWidth: number,
   opacity: number,
+  extra?: {
+    fillColor?: string;
+    dashArray?: number[];
+  },
 ): void {
   if (!svgPath) return;
+  const fillHex = extra?.fillColor;
+  const hasFill = Boolean(fillHex && fillHex !== 'transparent');
+  const hasStroke = Boolean(strokeColor && strokeColor !== 'transparent' && strokeWidth > 0);
+  if (!hasFill && !hasStroke) return;
 
   const cx = rect.x + rect.width / 2;
   const cy = rect.y + rect.height / 2;
@@ -848,16 +857,57 @@ function drawSvgBoxOnPage(
       ? scaleSvgPath(svgPath, scaleX, scaleY)
       : svgPath;
 
-  page.drawSvgPath(effectivePath, {
+  const drawOpts: Parameters<PDFPage['drawSvgPath']>[1] = {
     x: tlPdf.x,
     y: tlPdf.y,
     scale: uniformScale,
     rotate: degrees(drawAngleCCW),
-    borderColor: pdfRgb(strokeColor),
-    borderWidth: strokeWidth,
-    borderOpacity: opacity,
     borderLineCap: LineCapStyle.Round,
-  });
+  };
+  if (hasFill && fillHex) {
+    drawOpts.color = pdfRgb(fillHex);
+    drawOpts.opacity = opacity;
+  }
+  if (hasStroke) {
+    drawOpts.borderColor = pdfRgb(strokeColor);
+    drawOpts.borderWidth = strokeWidth;
+    drawOpts.borderOpacity = opacity;
+    if (extra?.dashArray && extra.dashArray.length > 0) {
+      drawOpts.borderDashArray = extra.dashArray;
+    }
+  } else {
+    drawOpts.borderWidth = 0;
+  }
+
+  page.drawSvgPath(effectivePath, drawOpts);
+}
+
+function drawVectorElementOnPage(
+  pdfPage: PDFPage,
+  pageMeta: PageMeta,
+  el: Extract<CanvasElement, { kind: 'shape' | 'path' }>,
+): void {
+  const svgPath =
+    el.kind === 'shape'
+      ? shapeToSvgPath(el.shapeType, el.width, el.height, el.borderRadius ?? 0)
+      : pathPointsToSvgPath(el.points, el.width, el.height, el.closed, el.smooth);
+  const fillColor = el.kind === 'shape' || el.closed ? el.fillColor : 'transparent';
+  drawSvgBoxOnPage(
+    pdfPage,
+    pageMeta,
+    { x: el.x, y: el.y, width: el.width, height: el.height },
+    el.rotation,
+    svgPath,
+    1,
+    1,
+    el.strokeColor,
+    el.strokeWidth,
+    el.opacity,
+    {
+      fillColor,
+      dashArray: strokeDashToArray(el.strokeDash, el.strokeWidth),
+    },
+  );
 }
 
 function scaleSvgPath(d: string, sx: number, sy: number): string {
@@ -1236,7 +1286,8 @@ export async function compilePdfDocument(
         ((el.kind === 'image' || el.kind === 'image-replacement') &&
           el.behindContent === true &&
           !(el.kind === 'image-replacement' && el.deleted)) ||
-        (el.kind === 'shape-replacement' && el.behindContent === true && !el.deleted),
+        (el.kind === 'shape-replacement' && el.behindContent === true && !el.deleted) ||
+        ((el.kind === 'shape' || el.kind === 'path') && el.behindContent === true),
     );
     const behindIds = new Set(behindEls.map((el) => el.id));
     const frontEls = pageEls.filter((el) => !behindIds.has(el.id));
@@ -1268,6 +1319,8 @@ export async function compilePdfDocument(
               opacity: el.opacity,
             },
           );
+        } else if (el.kind === 'shape' || el.kind === 'path') {
+          drawVectorElementOnPage(pdfPage, pageMeta, el);
         }
       }
 
@@ -1380,6 +1433,11 @@ export async function compilePdfDocument(
               opacity: shp.opacity,
             },
           );
+          break;
+        }
+        case 'shape':
+        case 'path': {
+          drawVectorElementOnPage(pdfPage, pageMeta, el);
           break;
         }
         case 'highlight': {

@@ -4,6 +4,8 @@ export type ToolMode =
   | 'select'
   | 'text'
   | 'image'
+  | 'shape'
+  | 'path'
   | 'draw'
   | 'highlight'
   | 'signature'
@@ -98,6 +100,11 @@ export interface PageMeta {
   userRotation: RotationAngle;
   mediaBox: [number, number, number, number];
   cropBox: [number, number, number, number];
+}
+
+export interface Point {
+  x: number;
+  y: number;
 }
 
 export interface RectBox {

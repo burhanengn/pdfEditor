@@ -12,6 +12,10 @@ import {
   type StrokeElement,
   type TextAddElement,
   type TextEditElement,
+  type VectorPathElement,
+  type VectorShapeElement,
+  type VectorShapeType,
+  type VectorStrokeDash,
 } from '@/types/elements';
 import type {
   DetectedImageObject,
@@ -21,6 +25,7 @@ import type {
   PageExtractionResult,
   PageMeta,
   PageNumberingConfig,
+  Point,
   RotationAngle,
   SourceDocument,
   ThemeMode,
@@ -29,6 +34,14 @@ import type {
   ZoomMode,
 } from '@/types/pdf';
 import { normalizeRotation } from '@/engine/coordinates';
+import {
+  denormalizePathPoints,
+  mergeMultiplePointChains,
+  mergeTwoPointChains,
+  normalizeAbsolutePoints,
+  type OpenPathSnapHit,
+  type PathToolMode,
+} from '@/engine/vectorShapes';
 import {
   calibrateDomTextMetrics,
   findMatchingFontByKey,
@@ -85,6 +98,7 @@ interface EditorState {
   lastSelectedPageId: string | null;
   selectedElementIds: string[];
   editingTextElementId: string | null;
+  editingPathElementId: string | null;
   clipboard: CanvasElement[];
   pendingSignaturePlacement: PendingSignaturePlacement | null;
   pageNumbering: PageNumberingConfig | null;
@@ -100,6 +114,17 @@ interface EditorState {
   drawOpacity: number;
   highlightColor: string;
   highlightShape: 'highlight' | 'rect' | 'redact';
+
+  activeShapePreset: VectorShapeType;
+  activePathMode: PathToolMode;
+  shapeFillColor: string;
+  shapeStrokeColor: string;
+  shapeStrokeWidth: number;
+  shapeBorderRadius: number;
+  shapeStrokeDash: VectorStrokeDash;
+  shapeOpacity: number;
+  pathClosedDefault: boolean;
+  pathSmoothDefault: boolean;
 
   isLoading: boolean;
   loadingMessage: string;
@@ -135,6 +160,20 @@ interface EditorState {
   setHighlightStyle: (
     style: Partial<{ color: string; shape: 'highlight' | 'rect' | 'redact' }>,
   ) => void;
+  setShapeStyle: (
+    style: Partial<{
+      preset: VectorShapeType;
+      fillColor: string;
+      strokeColor: string;
+      strokeWidth: number;
+      borderRadius: number;
+      strokeDash: VectorStrokeDash;
+      opacity: number;
+    }>,
+  ) => void;
+  setPathToolStyle: (
+    style: Partial<{ mode: PathToolMode; closed: boolean; smooth: boolean }>,
+  ) => void;
   setLoading: (isLoading: boolean, loadingMessage?: string) => void;
   setErrorBanner: (message: string | null) => void;
   setPasswordPrompt: (prompt: PasswordPromptState | null) => void;
@@ -166,6 +205,30 @@ interface EditorState {
   ) => void;
   selectElements: (ids: string[]) => void;
   setEditingTextElementId: (id: string | null) => void;
+  setEditingPathElementId: (id: string | null) => void;
+
+  // Vector path joining & node editing
+  joinVectorPaths: (ids: string[]) => VectorPathElement | null;
+  extendOrJoinPathWithSegment: (
+    segmentPoints: Point[],
+    pageId: string,
+    startSnap: OpenPathSnapHit | null,
+    endSnap: OpenPathSnapHit | null,
+    style: {
+      strokeColor: string;
+      strokeWidth: number;
+      strokeDash: VectorStrokeDash;
+      fillColor: string;
+      opacity: number;
+      smooth: boolean;
+      closed?: boolean;
+    },
+  ) => VectorPathElement | null;
+  updatePathPoints: (
+    id: string,
+    absPoints: Point[],
+    options?: { closed?: boolean; recordHistory?: boolean },
+  ) => void;
 
   // Page operations (undoable)
   reorderPages: (fromIndex: number, toIndex: number) => void;
@@ -425,6 +488,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   lastSelectedPageId: null,
   selectedElementIds: [],
   editingTextElementId: null,
+  editingPathElementId: null,
   clipboard: [],
   pendingSignaturePlacement: null,
   pageNumbering: null,
@@ -440,6 +504,17 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   drawOpacity: 1,
   highlightColor: '#facc15',
   highlightShape: 'highlight',
+
+  activeShapePreset: 'rect',
+  activePathMode: 'line',
+  shapeFillColor: '#3b82f6',
+  shapeStrokeColor: '#1e3a8a',
+  shapeStrokeWidth: 2,
+  shapeBorderRadius: 0,
+  shapeStrokeDash: 'solid',
+  shapeOpacity: 1,
+  pathClosedDefault: false,
+  pathSmoothDefault: false,
 
   isLoading: false,
   loadingMessage: '',
@@ -470,7 +545,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set({
       toolMode,
       pendingSignaturePlacement: null,
-      ...(toolMode !== 'select' ? { selectedElementIds: [], editingTextElementId: null } : {}),
+      ...(toolMode !== 'select'
+        ? { selectedElementIds: [], editingTextElementId: null, editingPathElementId: null }
+        : {}),
     }),
   setZoom: (zoom, mode = 'custom') =>
     set({
@@ -489,6 +566,22 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set((s) => ({
       highlightColor: style.color ?? s.highlightColor,
       highlightShape: style.shape ?? s.highlightShape,
+    })),
+  setShapeStyle: (style) =>
+    set((s) => ({
+      activeShapePreset: style.preset ?? s.activeShapePreset,
+      shapeFillColor: style.fillColor ?? s.shapeFillColor,
+      shapeStrokeColor: style.strokeColor ?? s.shapeStrokeColor,
+      shapeStrokeWidth: style.strokeWidth ?? s.shapeStrokeWidth,
+      shapeBorderRadius: style.borderRadius ?? s.shapeBorderRadius,
+      shapeStrokeDash: style.strokeDash ?? s.shapeStrokeDash,
+      shapeOpacity: style.opacity ?? s.shapeOpacity,
+    })),
+  setPathToolStyle: (style) =>
+    set((s) => ({
+      activePathMode: style.mode ?? s.activePathMode,
+      pathClosedDefault: style.closed ?? s.pathClosedDefault,
+      pathSmoothDefault: style.smooth ?? s.pathSmoothDefault,
     })),
   setLoading: (isLoading, loadingMessage = '') => set({ isLoading, loadingMessage }),
   setErrorBanner: (errorBanner) => set({ errorBanner }),
@@ -534,6 +627,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       lastSelectedPageId: pages[0]?.id ?? null,
       selectedElementIds: [],
       editingTextElementId: null,
+      editingPathElementId: null,
       pendingSignaturePlacement: null,
       selectBackgroundMode: false,
       isPinching: false,
@@ -588,6 +682,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       lastSelectedPageId: null,
       selectedElementIds: [],
       editingTextElementId: null,
+      editingPathElementId: null,
       pendingSignaturePlacement: null,
       selectBackgroundMode: false,
       isPinching: false,
@@ -771,8 +866,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       };
     }),
 
-  selectElements: (selectedElementIds) => set({ selectedElementIds }),
+  selectElements: (selectedElementIds) =>
+    set((s) => ({
+      selectedElementIds,
+      editingPathElementId:
+        s.editingPathElementId && selectedElementIds.includes(s.editingPathElementId)
+          ? s.editingPathElementId
+          : null,
+    })),
   setEditingTextElementId: (editingTextElementId) => set({ editingTextElementId }),
+  setEditingPathElementId: (editingPathElementId) => set({ editingPathElementId }),
 
   reorderPages: (fromIndex, toIndex) => {
     const state = get();
@@ -1062,6 +1165,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         state.editingTextElementId && idSet.has(state.editingTextElementId)
           ? null
           : state.editingTextElementId,
+      editingPathElementId:
+        state.editingPathElementId && idSet.has(state.editingPathElementId)
+          ? null
+          : state.editingPathElementId,
       past: nextPast,
       future: [],
       canUndo: nextPast.length > 0,
@@ -1087,7 +1194,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       if (
         el.kind === 'image' ||
         el.kind === 'image-replacement' ||
-        el.kind === 'shape-replacement'
+        el.kind === 'shape-replacement' ||
+        el.kind === 'shape' ||
+        el.kind === 'path'
       ) {
         return {
           ...el,
@@ -1119,7 +1228,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       if (
         el.kind === 'image' ||
         el.kind === 'image-replacement' ||
-        el.kind === 'shape-replacement'
+        el.kind === 'shape-replacement' ||
+        el.kind === 'shape' ||
+        el.kind === 'path'
       ) {
         return {
           ...el,
@@ -1168,7 +1279,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         if (
           (el.kind === 'image' ||
             el.kind === 'image-replacement' ||
-            el.kind === 'shape-replacement') &&
+            el.kind === 'shape-replacement' ||
+            el.kind === 'shape' ||
+            el.kind === 'path') &&
           nextTier > 1
         ) {
           (patch as Partial<ImageAddElement>).behindContent = false;
@@ -1191,7 +1304,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       if (
         el.kind === 'image' ||
         el.kind === 'image-replacement' ||
-        el.kind === 'shape-replacement'
+        el.kind === 'shape-replacement' ||
+        el.kind === 'shape' ||
+        el.kind === 'path'
       ) {
         (patch as Partial<ImageAddElement>).behindContent = prevTier === 1;
       }
@@ -1924,6 +2039,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       activePageId: sanitized.activePageId,
       selectedElementIds: sanitized.selectedElementIds,
       editingTextElementId: null,
+      editingPathElementId: null,
       past: nextPast,
       future: nextFuture,
       transactionBaseline: null,
@@ -1963,6 +2079,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       activePageId: sanitized.activePageId,
       selectedElementIds: sanitized.selectedElementIds,
       editingTextElementId: null,
+      editingPathElementId: null,
       past: nextPast,
       future: nextFuture,
       transactionBaseline: null,
@@ -1978,6 +2095,215 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
   },
 
+  joinVectorPaths: (ids) => {
+    const state = get();
+    const candidates = state.elements.filter(
+      (el): el is VectorPathElement => el.kind === 'path' && ids.includes(el.id),
+    );
+    if (candidates.length < 2) return null;
+
+    const targetPageId = candidates[0].pageId;
+    const samePage = candidates.filter((el) => el.pageId === targetPageId);
+    if (samePage.length < 2) return null;
+
+    const chains = samePage.map((el) => denormalizePathPoints(el));
+    let mergedPts = mergeMultiplePointChains(chains);
+    let closed = samePage.some((el) => el.closed);
+    if (!closed && mergedPts.length >= 4) {
+      const dLoop = Math.hypot(
+        mergedPts[0].x - mergedPts[mergedPts.length - 1].x,
+        mergedPts[0].y - mergedPts[mergedPts.length - 1].y,
+      );
+      if (dLoop <= 2.5) {
+        closed = true;
+        mergedPts = mergedPts.slice(0, -1);
+      }
+    }
+
+    const { rect, points } = normalizeAbsolutePoints(mergedPts);
+    const primary = samePage[0];
+    const joinedEl: VectorPathElement = {
+      id: createId('path'),
+      pageId: targetPageId,
+      kind: 'path',
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+      rotation: 0,
+      opacity: primary.opacity,
+      zIndex: Math.max(...samePage.map((e) => e.zIndex)),
+      points,
+      closed,
+      smooth: primary.smooth,
+      fillColor: primary.fillColor,
+      strokeColor: primary.strokeColor,
+      strokeWidth: primary.strokeWidth,
+      strokeDash: primary.strokeDash,
+      behindContent: primary.behindContent,
+      layerOverride: primary.layerOverride,
+    };
+
+    const removeSet = new Set(samePage.map((e) => e.id));
+    const snapshot = cloneSnapshot(state.pages, state.elements, state.pageNumbering);
+    const nextElements = [...state.elements.filter((el) => !removeSet.has(el.id)), joinedEl];
+    const nextPast = pushSnapshot(state.past, snapshot);
+    set({
+      elements: nextElements,
+      selectedElementIds: [joinedEl.id],
+      editingPathElementId: null,
+      past: nextPast,
+      future: [],
+      canUndo: nextPast.length > 0,
+      canRedo: false,
+    });
+    return joinedEl;
+  },
+
+  extendOrJoinPathWithSegment: (segmentPoints, pageId, startSnap, endSnap, style) => {
+    if (segmentPoints.length < 2) return null;
+    const state = get();
+    const startTarget =
+      startSnap
+        ? state.elements.find(
+            (el): el is VectorPathElement =>
+              el.kind === 'path' && el.id === startSnap.elementId && el.pageId === pageId,
+          )
+        : undefined;
+    const endTarget =
+      endSnap
+        ? state.elements.find(
+            (el): el is VectorPathElement =>
+              el.kind === 'path' && el.id === endSnap.elementId && el.pageId === pageId,
+          )
+        : undefined;
+
+    if (!startTarget && !endTarget) {
+      const { rect, points } = normalizeAbsolutePoints(segmentPoints);
+      const created: VectorPathElement = {
+        id: createId('path'),
+        pageId,
+        kind: 'path',
+        x: rect.x,
+        y: rect.y,
+        width: rect.width,
+        height: rect.height,
+        rotation: 0,
+        opacity: style.opacity,
+        zIndex: 0,
+        points,
+        closed: Boolean(style.closed),
+        smooth: style.smooth,
+        fillColor: style.fillColor,
+        strokeColor: style.strokeColor,
+        strokeWidth: style.strokeWidth,
+        strokeDash: style.strokeDash,
+      };
+      state.addElement(created, true);
+      return created;
+    }
+
+    const snapshot = cloneSnapshot(state.pages, state.elements, state.pageNumbering);
+    const removeIds = new Set<string>();
+    let combined = [...segmentPoints];
+    let closed = Boolean(style.closed);
+    const primary = startTarget ?? endTarget!;
+
+    if (startTarget && endTarget && startTarget.id === endTarget.id) {
+      const baseChain = denormalizePathPoints(startTarget);
+      // Connecting opposite ends of the same open path closes it into a polygon
+      const forwardChain = mergeTwoPointChains(baseChain, segmentPoints);
+      combined = forwardChain;
+      if (forwardChain.length >= 4) {
+        const dLoop = Math.hypot(
+          forwardChain[0].x - forwardChain[forwardChain.length - 1].x,
+          forwardChain[0].y - forwardChain[forwardChain.length - 1].y,
+        );
+        if (dLoop <= 2.5) {
+          closed = true;
+          combined = forwardChain.slice(0, -1);
+        }
+      }
+      removeIds.add(startTarget.id);
+    } else {
+      if (startTarget) {
+        combined = mergeTwoPointChains(denormalizePathPoints(startTarget), combined);
+        removeIds.add(startTarget.id);
+      }
+      if (endTarget) {
+        combined = mergeTwoPointChains(combined, denormalizePathPoints(endTarget));
+        removeIds.add(endTarget.id);
+      }
+      if (!closed && combined.length >= 4) {
+        const dLoop = Math.hypot(
+          combined[0].x - combined[combined.length - 1].x,
+          combined[0].y - combined[combined.length - 1].y,
+        );
+        if (dLoop <= 2.5) {
+          closed = true;
+          combined = combined.slice(0, -1);
+        }
+      }
+    }
+
+    const { rect, points } = normalizeAbsolutePoints(combined);
+    const mergedEl: VectorPathElement = {
+      ...primary,
+      id: primary.id,
+      x: rect.x,
+      y: rect.y,
+      width: rect.width,
+      height: rect.height,
+      rotation: 0,
+      points,
+      closed,
+    };
+
+    const nextElements = state.elements.flatMap((el) => {
+      if (el.id === mergedEl.id) return [mergedEl];
+      if (removeIds.has(el.id)) return [];
+      return [el];
+    });
+    const nextPast = pushSnapshot(state.past, snapshot);
+    set({
+      elements: nextElements,
+      selectedElementIds: [mergedEl.id],
+      activePageId: pageId,
+      editingPathElementId: null,
+      past: nextPast,
+      future: [],
+      canUndo: nextPast.length > 0,
+      canRedo: false,
+    });
+    return mergedEl;
+  },
+
+  updatePathPoints: (id, absPoints, options = {}) => {
+    const state = get();
+    const target = state.elements.find(
+      (el): el is VectorPathElement => el.kind === 'path' && el.id === id,
+    );
+    if (!target || absPoints.length < 2) return;
+    const { rect, points } = normalizeAbsolutePoints(absPoints);
+    state.updateElements(
+      [
+        {
+          id,
+          patch: {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+            rotation: 0,
+            points,
+            ...(options.closed !== undefined ? { closed: options.closed } : {}),
+          },
+        },
+      ],
+      options.recordHistory ?? false,
+    );
+  },
+
   clearHistory: () => set({ past: [], future: [], canUndo: false, canRedo: false }),
 }));
 
@@ -1986,6 +2312,8 @@ export type {
   TextAddElement,
   ImageAddElement,
   ImageReplacementElement,
+  VectorShapeElement,
+  VectorPathElement,
   SignatureElement,
   StrokeElement,
   HighlightElement,
