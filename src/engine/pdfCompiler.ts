@@ -1,8 +1,14 @@
 import fontkit from '@pdf-lib/fontkit';
 import JSZip from 'jszip';
 import {
+  appendBezierCurve,
+  clip,
+  closePath,
   degrees,
+  endPath,
   LineCapStyle,
+  lineTo,
+  moveTo,
   PDFArray,
   PDFDocument,
   PDFName,
@@ -23,6 +29,8 @@ import {
   getElementLayerTier,
   type CanvasElement,
   type HighlightElement,
+  type ImageAddElement,
+  type ImageReplacementElement,
   type ShapeReplacementElement,
   type SignatureElement,
   type StrokeElement,
@@ -62,6 +70,12 @@ import {
 } from './fonts';
 import { computePageNumberLayout } from './pageNumbers';
 import { buildWrappedRichLines, ensureRunsFromElement } from './richText';
+import {
+  elementLocalToPage,
+  flipSvgPath,
+  parseSvgPathCommands,
+  scaleSvgPath as scaleSvgPathCommands,
+} from './imageMask';
 import { pathPointsToSvgPath, shapeToSvgPath, strokeDashToArray } from './vectorShapes';
 
 type PdfLibDrawPlacement = ReturnType<typeof computePdfLibDrawPlacement>;
@@ -887,10 +901,14 @@ function drawVectorElementOnPage(
   pageMeta: PageMeta,
   el: Extract<CanvasElement, { kind: 'shape' | 'path' }>,
 ): void {
-  const svgPath =
+  const rawSvgPath =
     el.kind === 'shape'
       ? shapeToSvgPath(el.shapeType, el.width, el.height, el.borderRadius ?? 0)
       : pathPointsToSvgPath(el.points, el.width, el.height, el.closed, el.smooth);
+  const svgPath =
+    el.kind === 'shape' && (el.flipX || el.flipY)
+      ? flipSvgPath(rawSvgPath, el.width, el.height, el.flipX, el.flipY, 3)
+      : rawSvgPath;
   const fillColor = el.kind === 'shape' || el.closed ? el.fillColor : 'transparent';
   drawSvgBoxOnPage(
     pdfPage,
@@ -996,6 +1014,153 @@ function drawPlacedImage(
     rotate: degrees(placement.rotateDegCCW),
     opacity,
   });
+}
+
+function appendSvgClipOperators(
+  ops: PDFOperator[],
+  svgPath: string,
+  mapLocalToPdf: (lx: number, ly: number) => { x: number; y: number },
+): void {
+  const cmds = parseSvgPathCommands(svgPath);
+  let curPdf = { x: 0, y: 0 };
+  let startPdf = { x: 0, y: 0 };
+  let emittedPath = false;
+
+  for (const c of cmds) {
+    if (c.cmd === 'M' && c.nums.length >= 2) {
+      curPdf = mapLocalToPdf(c.nums[0], c.nums[1]);
+      startPdf = curPdf;
+      ops.push(moveTo(curPdf.x, curPdf.y));
+      emittedPath = true;
+      for (let i = 2; i + 1 < c.nums.length; i += 2) {
+        curPdf = mapLocalToPdf(c.nums[i], c.nums[i + 1]);
+        ops.push(lineTo(curPdf.x, curPdf.y));
+      }
+    } else if (c.cmd === 'L') {
+      for (let i = 0; i + 1 < c.nums.length; i += 2) {
+        curPdf = mapLocalToPdf(c.nums[i], c.nums[i + 1]);
+        ops.push(lineTo(curPdf.x, curPdf.y));
+        emittedPath = true;
+      }
+    } else if (c.cmd === 'Q') {
+      for (let i = 0; i + 3 < c.nums.length; i += 4) {
+        const pCp = mapLocalToPdf(c.nums[i], c.nums[i + 1]);
+        const pEnd = mapLocalToPdf(c.nums[i + 2], c.nums[i + 3]);
+        const c1 = {
+          x: curPdf.x + (2 / 3) * (pCp.x - curPdf.x),
+          y: curPdf.y + (2 / 3) * (pCp.y - curPdf.y),
+        };
+        const c2 = {
+          x: pEnd.x + (2 / 3) * (pCp.x - pEnd.x),
+          y: pEnd.y + (2 / 3) * (pCp.y - pEnd.y),
+        };
+        ops.push(appendBezierCurve(c1.x, c1.y, c2.x, c2.y, pEnd.x, pEnd.y));
+        curPdf = pEnd;
+        emittedPath = true;
+      }
+    } else if (c.cmd === 'C') {
+      for (let i = 0; i + 5 < c.nums.length; i += 6) {
+        const pC1 = mapLocalToPdf(c.nums[i], c.nums[i + 1]);
+        const pC2 = mapLocalToPdf(c.nums[i + 2], c.nums[i + 3]);
+        const pEnd = mapLocalToPdf(c.nums[i + 4], c.nums[i + 5]);
+        ops.push(appendBezierCurve(pC1.x, pC1.y, pC2.x, pC2.y, pEnd.x, pEnd.y));
+        curPdf = pEnd;
+        emittedPath = true;
+      }
+    } else if (c.cmd === 'Z') {
+      ops.push(closePath());
+      curPdf = startPdf;
+    }
+  }
+
+  if (emittedPath) {
+    ops.push(clip(), endPath());
+  }
+}
+
+function drawImageElementOnPage(
+  pdfPage: PDFPage,
+  pageMeta: PageMeta,
+  img: PDFImage,
+  el: ImageAddElement | ImageReplacementElement,
+): void {
+  const hasCropOrMask = Boolean(el.cropRect || el.clipMask?.unitSvgPath);
+  if (!hasCropOrMask) {
+    const placement = computePdfLibDrawPlacement(
+      { x: el.x, y: el.y, width: el.width, height: el.height },
+      el.rotation,
+      pageMeta,
+    );
+    drawPlacedImage(pdfPage, img, placement, el.opacity, el.flipX, el.flipY);
+    return;
+  }
+
+  const mapLocalToPdf = (lx: number, ly: number) => {
+    const visPt = elementLocalToPage(lx, ly, el, el.rotation);
+    return pointBaseVisualToPdfUserSpace(
+      visPt.x,
+      visPt.y,
+      pageMeta.cropBox,
+      pageMeta.intrinsicRotation,
+    );
+  };
+
+  pdfPage.pushOperators(pushGraphicsState());
+
+  // 1. Intersect with exact element box [0..el.width] x [0..el.height] (crop window)
+  const p0 = mapLocalToPdf(0, 0);
+  const p1 = mapLocalToPdf(el.width, 0);
+  const p2 = mapLocalToPdf(el.width, el.height);
+  const p3 = mapLocalToPdf(0, el.height);
+  pdfPage.pushOperators(
+    moveTo(p0.x, p0.y),
+    lineTo(p1.x, p1.y),
+    lineTo(p2.x, p2.y),
+    lineTo(p3.x, p3.y),
+    closePath(),
+    clip(),
+    endPath(),
+  );
+
+  // 2. Apply Illustrator vector clipping mask path inside screen coordinates if present
+  if (el.clipMask?.unitSvgPath) {
+    const scaled = scaleSvgPathCommands(
+      el.clipMask.unitSvgPath,
+      Math.max(1, el.width),
+      Math.max(1, el.height),
+      4,
+    );
+    const screenD = flipSvgPath(scaled, el.width, el.height, el.flipX, el.flipY, 4);
+    const clipOps: PDFOperator[] = [];
+    appendSvgClipOperators(clipOps, screenD, mapLocalToPdf);
+    if (clipOps.length > 0) {
+      pdfPage.pushOperators(...clipOps);
+    }
+  }
+
+  // 3. Draw underlying image aligned so `cropRect` fills [0..el.width] x [0..el.height]
+  const crop = el.cropRect ?? { x: 0, y: 0, width: 1, height: 1 };
+  const lw = el.width / Math.max(0.02, crop.width);
+  const lh = el.height / Math.max(0.02, crop.height);
+  const lx = -(crop.x / Math.max(0.02, crop.width)) * el.width;
+  const ly = -(crop.y / Math.max(0.02, crop.height)) * el.height;
+  const effLx = el.flipX ? el.width - (lx + lw) : lx;
+  const effLy = el.flipY ? el.height - (ly + lh) : ly;
+
+  const imgCenterVis = elementLocalToPage(effLx + lw / 2, effLy + lh / 2, el, el.rotation);
+  const placement = computePdfLibDrawPlacement(
+    {
+      x: imgCenterVis.x - lw / 2,
+      y: imgCenterVis.y - lh / 2,
+      width: lw,
+      height: lh,
+    },
+    el.rotation,
+    pageMeta,
+  );
+  drawPlacedImage(pdfPage, img, placement, el.opacity, el.flipX, el.flipY);
+
+  pdfPage.pushOperators(popGraphicsState());
 }
 
 function mapDisplayRotatedPointToBaseVisual(
@@ -1300,12 +1465,7 @@ export async function compilePdfDocument(
       for (const el of behindEls) {
         if (el.kind === 'image' || el.kind === 'image-replacement') {
           const img = await embedImageBytes(el.bytes, el.mimeType);
-          const placement = computePdfLibDrawPlacement(
-            { x: el.x, y: el.y, width: el.width, height: el.height },
-            el.rotation,
-            pageMeta,
-          );
-          drawPlacedImage(pdfPage, img, placement, el.opacity, el.flipX, el.flipY);
+          drawImageElementOnPage(pdfPage, pageMeta, img, el);
         } else if (el.kind === 'shape-replacement') {
           drawRectShapeOnPage(
             pdfPage,
@@ -1357,12 +1517,7 @@ export async function compilePdfDocument(
         case 'image-replacement': {
           if (el.kind === 'image-replacement' && el.deleted) break;
           const img = await embedImageBytes(el.bytes, el.mimeType);
-          const placement = computePdfLibDrawPlacement(
-            { x: el.x, y: el.y, width: el.width, height: el.height },
-            el.rotation,
-            pageMeta,
-          );
-          drawPlacedImage(pdfPage, img, placement, el.opacity, el.flipX, el.flipY);
+          drawImageElementOnPage(pdfPage, pageMeta, img, el);
           break;
         }
         case 'signature': {

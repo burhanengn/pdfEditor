@@ -1,4 +1,11 @@
-import { useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import {
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react';
 import { Check, Layers, X } from 'lucide-react';
 import {
   getElementLayerTier,
@@ -28,6 +35,7 @@ import {
   type SmartHitResult,
 } from '@/engine/coordinates';
 import { calibrateDomTextMetrics, resolveFontDisplayStatus } from '@/engine/fonts';
+import { getImageClipMaskSvgPath } from '@/engine/imageMask';
 import { computePageNumberLayout } from '@/engine/pageNumbers';
 import { pointsToSmoothSvgPath } from '@/engine/pdfCompiler';
 import { pdfjsService } from '@/engine/pdfjsService';
@@ -42,6 +50,7 @@ import {
 import { wasmWorkerClient } from '@/engine/wasmWorkerClient';
 import { useEditorStore } from '@/store/useEditorStore';
 import { createId } from '@/utils/id';
+import { ImageCropOverlay } from './ImageCropOverlay';
 import { InlineTextEditor } from './InlineTextEditor';
 import { PathNodeEditorOverlay } from './PathNodeEditorOverlay';
 import { SelectionOverlay } from './SelectionOverlay';
@@ -102,6 +111,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
   const editingTextElementId = useEditorStore((s) => s.editingTextElementId);
   const editingPathElementId = useEditorStore((s) => s.editingPathElementId);
+  const croppingImageElementId = useEditorStore((s) => s.croppingImageElementId);
   const extraction = useEditorStore((s) => s.pageExtractions[page.id]);
 
   const drawColor = useEditorStore((s) => s.drawColor);
@@ -125,6 +135,9 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   const selectElements = useEditorStore((s) => s.selectElements);
   const setEditingTextElementId = useEditorStore((s) => s.setEditingTextElementId);
   const setEditingPathElementId = useEditorStore((s) => s.setEditingPathElementId);
+  const setCroppingImageElementId = useEditorStore((s) => s.setCroppingImageElementId);
+  const setContextMenu = useEditorStore((s) => s.setContextMenu);
+  const applyImageCrop = useEditorStore((s) => s.applyImageCrop);
   const setPageExtraction = useEditorStore((s) => s.setPageExtraction);
   const addElement = useEditorStore((s) => s.addElement);
   const extendOrJoinPathWithSegment = useEditorStore((s) => s.extendOrJoinPathWithSegment);
@@ -853,6 +866,77 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       return dispatchSmartHit(hit, false);
     }
     return false;
+  };
+
+  const handleLayerContextMenu = (e: ReactMouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setActivePage(page.id);
+    setBgLongPressPrompt(null);
+    const pt = getBasePointFromEvent(e.clientX, e.clientY);
+
+    // Preserve active multi-selection (e.g., Shift+clicked Shape + Image pairs) when
+    // right-clicking any selected member; for single selection, let smart hit-testing pick
+    // whichever topmost element sits directly beneath the cursor.
+    const hitsExistingSelection =
+      selectedElementIds.length > 1 &&
+      visibleElements.some(
+        (el) => selectedElementIds.includes(el.id) && pointInRotatedRect(pt.x, pt.y, el, el.rotation, 4),
+      );
+    if (!hitsExistingSelection) {
+      const hit = resolveSmartHitAtPoint({
+        point: pt,
+        zoom,
+        isCoarsePointer: false,
+        selectBackgroundMode,
+        altKey: e.altKey,
+        elements: visibleElements,
+        detectedTextBlocks: extraction?.textBlocks ?? [],
+        detectedImages: extraction?.images ?? [],
+        detectedShapes: extraction?.shapes ?? [],
+        replacedBlockIds: editedBlockIds,
+        replacedImageIds: promotedImageIds,
+        replacedShapeIds: promotedShapeIds,
+      });
+
+      if (!hit) {
+        selectElements([]);
+        setEditingTextElementId(null);
+      } else if (hit.kind === 'detected-text') {
+        const disp = axisAlignedRectBaseToDisplay(
+          {
+            x: hit.block.x,
+            y: hit.block.y,
+            width: hit.block.width,
+            height: hit.block.height,
+          },
+          page.baseWidth,
+          page.baseHeight,
+          page.userRotation,
+          zoom,
+        );
+        startEditDetectedText(hit.block, sampleCanvasBackgroundColor(disp));
+        // Promote cleanly so context actions work without trapping focus in an open textarea
+        setEditingTextElementId(null);
+      } else if (hit.kind === 'background-detected-image' || hit.kind === 'background-detected-shape') {
+        if (selectBackgroundMode || e.altKey) {
+          dispatchSmartHit(hit, true);
+        } else {
+          selectElements([]);
+          setEditingTextElementId(null);
+        }
+      } else {
+        dispatchSmartHit(hit, e.altKey);
+      }
+    }
+
+    setContextMenu({
+      pageId: page.id,
+      pageX: pt.x,
+      pageY: pt.y,
+      clientX: e.clientX,
+      clientY: e.clientY,
+    });
   };
 
   const handleLayerPointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
@@ -1673,6 +1757,52 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
                 />
               ))}
             </svg>
+          ) : (el.kind === 'image' || el.kind === 'image-replacement') &&
+            (el.cropRect || el.clipMask?.unitSvgPath) ? (
+            (() => {
+              const crop = el.cropRect ?? { x: 0, y: 0, width: 1, height: 1 };
+              const elW = Math.max(1, el.width);
+              const elH = Math.max(1, el.height);
+              const imgW = elW / Math.max(0.02, crop.width);
+              const imgH = elH / Math.max(0.02, crop.height);
+              const imgX = -(crop.x / Math.max(0.02, crop.width)) * elW;
+              const imgY = -(crop.y / Math.max(0.02, crop.height)) * elH;
+              const clipPathD = getImageClipMaskSvgPath(el.clipMask, elW, elH);
+              const clipId = `imgclip_${el.id}`;
+              const cx = elW / 2;
+              const cy = elH / 2;
+              const gTransform =
+                flipScaleX !== 1 || flipScaleY !== 1
+                  ? `translate(${cx} ${cy}) scale(${flipScaleX} ${flipScaleY}) translate(${-cx} ${-cy})`
+                  : undefined;
+
+              return (
+                <svg
+                  viewBox={`0 0 ${elW} ${elH}`}
+                  preserveAspectRatio="none"
+                  className="pointer-events-none h-full w-full overflow-hidden"
+                >
+                  {clipPathD && (
+                    <defs>
+                      <clipPath id={clipId}>
+                        <path d={clipPathD} />
+                      </clipPath>
+                    </defs>
+                  )}
+                  <g transform={gTransform}>
+                    <image
+                      href={el.previewUrl}
+                      x={imgX}
+                      y={imgY}
+                      width={imgW}
+                      height={imgH}
+                      preserveAspectRatio="none"
+                      clipPath={clipPathD ? `url(#${clipId})` : undefined}
+                    />
+                  </g>
+                </svg>
+              );
+            })()
           ) : (
             <img
               src={el.previewUrl}
@@ -1780,6 +1910,12 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
             ? 5
             : 12
           : getCssZIndexForElement(el);
+      const shapeFlipX = el.flipX ? -1 : 1;
+      const shapeFlipY = el.flipY ? -1 : 1;
+      const shapeFlipTransform =
+        shapeFlipX !== 1 || shapeFlipY !== 1
+          ? `scale(${shapeFlipX}, ${shapeFlipY})`
+          : undefined;
       return (
         <div
           key={el.id}
@@ -1802,6 +1938,11 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
           <svg
             viewBox={`0 0 ${Math.max(1, el.width)} ${Math.max(1, el.height)}`}
             preserveAspectRatio="none"
+            style={
+              shapeFlipTransform
+                ? { transform: shapeFlipTransform, transformOrigin: 'center center' }
+                : undefined
+            }
             className="h-full w-full overflow-visible"
           >
             <path
@@ -2455,6 +2596,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
         data-page-canvas-layer="true"
         data-testid={`pdf-page-${pageIndex + 1}`}
         onPointerDown={handleLayerPointerDown}
+        onContextMenu={handleLayerContextMenu}
         onPointerMove={(e) => {
           if (pendingSignaturePlacement) {
             setHoverBasePoint(getBasePointFromEvent(e.clientX, e.clientY));
@@ -2602,13 +2744,25 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
           </div>
         )}
 
-        {/* Active selection overlay(s) or direct vector path anchor editor */}
+        {/* Active selection overlay(s), image crop overlay, or direct vector path anchor editor */}
         {toolMode === 'select' &&
           !pendingSignaturePlacement &&
           visibleElements
             .filter((el) => selectedElementIds.includes(el.id) && editingTextElementId !== el.id)
             .map((sel) =>
-              sel.kind === 'path' && editingPathElementId === sel.id ? (
+              (sel.kind === 'image' || sel.kind === 'image-replacement') &&
+              croppingImageElementId === sel.id ? (
+                <ImageCropOverlay
+                  key={`crop-${sel.id}`}
+                  element={sel}
+                  baseWidth={page.baseWidth}
+                  baseHeight={page.baseHeight}
+                  userRotation={page.userRotation}
+                  zoom={zoom}
+                  onApplyCrop={(relCrop) => applyImageCrop(sel.id, relCrop)}
+                  onCancel={() => setCroppingImageElementId(null)}
+                />
+              ) : sel.kind === 'path' && editingPathElementId === sel.id ? (
                 <PathNodeEditorOverlay
                   key={`node-${sel.id}`}
                   element={sel}

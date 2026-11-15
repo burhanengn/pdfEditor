@@ -6,6 +6,7 @@ import {
   type ImageAddElement,
   type ImageReplacementElement,
   type LayerTier,
+  type RotateCopyPivot,
   type SavedSignature,
   type ShapeReplacementElement,
   type SignatureElement,
@@ -26,6 +27,7 @@ import type {
   PageMeta,
   PageNumberingConfig,
   Point,
+  RectBox,
   RotationAngle,
   SourceDocument,
   ThemeMode,
@@ -34,6 +36,17 @@ import type {
   ZoomMode,
 } from '@/types/pdf';
 import { normalizeRotation } from '@/engine/coordinates';
+import {
+  applyCropSubRectToElement,
+  buildClippingMaskFromElement,
+  flipOpenCutMaskSide,
+  getElementPivotOnPage,
+  isImageMaskTarget,
+  isVectorMaskCandidate,
+  normalizeAngle360,
+  resetImageCropGeometry,
+  rotateRectAroundPivot,
+} from '@/engine/imageMask';
 import {
   denormalizePathPoints,
   mergeMultiplePointChains,
@@ -83,6 +96,20 @@ export interface SignatureBatchScope {
 export type MobileSheetTab = 'none' | 'pages' | 'tools' | 'inspector' | 'export';
 export type MobileInspectorSnap = 'collapsed' | 'half';
 
+export interface CanvasContextMenuState {
+  pageId: string;
+  pageX: number;
+  pageY: number;
+  clientX: number;
+  clientY: number;
+}
+
+export interface LastRotateCopyConfig {
+  angleDeg: number;
+  copies: number;
+  pivot: RotateCopyPivot;
+}
+
 interface EditorState {
   documentName: string;
   sourceDocs: Record<string, SourceDocument>;
@@ -99,6 +126,10 @@ interface EditorState {
   selectedElementIds: string[];
   editingTextElementId: string | null;
   editingPathElementId: string | null;
+  croppingImageElementId: string | null;
+  contextMenu: CanvasContextMenuState | null;
+  rotateCopyDialogElementIds: string[] | null;
+  lastRotateCopyConfig: LastRotateCopyConfig | null;
   clipboard: CanvasElement[];
   pendingSignaturePlacement: PendingSignaturePlacement | null;
   pageNumbering: PageNumberingConfig | null;
@@ -206,6 +237,9 @@ interface EditorState {
   selectElements: (ids: string[]) => void;
   setEditingTextElementId: (id: string | null) => void;
   setEditingPathElementId: (id: string | null) => void;
+  setCroppingImageElementId: (id: string | null) => void;
+  setContextMenu: (menu: CanvasContextMenuState | null) => void;
+  openRotateCopyDialog: (ids: string[] | null) => void;
 
   // Vector path joining & node editing
   joinVectorPaths: (ids: string[]) => VectorPathElement | null;
@@ -252,7 +286,29 @@ interface EditorState {
   stepLayer: (ids: string[], direction: 'forward' | 'backward') => void;
   nudgeSelected: (dx: number, dy: number) => void;
   copySelected: () => void;
-  pasteClipboard: () => void;
+  pasteClipboard: (target?: { pageId: string; x: number; y: number }) => void;
+  duplicateElements: (ids: string[], offsetPt?: Point) => string[];
+  rotateElements: (
+    ids: string[],
+    deltaDeg: number,
+    pivot?: RotateCopyPivot | Point,
+  ) => void;
+  reflectElements: (ids: string[], axis: 'horizontal' | 'vertical') => void;
+  rotateAndDuplicateElements: (
+    ids: string[],
+    angleDeg: number,
+    copies?: number,
+    pivot?: RotateCopyPivot,
+  ) => string[];
+  applyImageCrop: (imageId: string, relCrop: RectBox) => void;
+  applyImageClippingMask: (
+    imageId: string,
+    maskId: string,
+    openCutSide?: 'a' | 'b',
+    consumeMask?: boolean,
+  ) => void;
+  flipImageClipMaskSide: (imageId: string) => void;
+  releaseImageCropAndMask: (imageId: string, restoreMaskShape?: boolean) => void;
 
   // Helpers for starting inline edit of detected PDF text or moving detected PDF image
   startEditDetectedText: (block: DetectedTextBlock, maskColor?: string) => TextEditElement;
@@ -381,6 +437,160 @@ function sanitizeSelectionAfterSnapshot(
   };
 }
 
+function cloneForCopy(
+  item: CanvasElement,
+  newId: string,
+  targetPageId: string,
+  nextZ: number,
+  dx: number,
+  dy: number,
+): CanvasElement {
+  if (item.kind === 'text-edit') {
+    const converted: TextAddElement = {
+      id: newId,
+      pageId: targetPageId,
+      kind: 'text-add',
+      x: item.x + dx,
+      y: item.y + dy,
+      width: item.width,
+      height: item.height,
+      rotation: item.rotation,
+      opacity: item.opacity,
+      zIndex: nextZ,
+      text: item.text,
+      runs: item.runs ? item.runs.map((r) => ({ ...r })) : undefined,
+      fontFamily: item.fontFamily,
+      fallbackFontFamily: item.fallbackFontFamily,
+      fontSource: item.fontSource,
+      rawFontName: item.rawFontName,
+      originalFontName: item.originalFontName,
+      isCustomFont: item.isCustomFont,
+      fontSize: item.fontSize,
+      color: item.color,
+      bold: item.bold,
+      italic: item.italic,
+      align: item.align,
+      lineHeight: item.lineHeight,
+      horizontalScale: item.horizontalScale,
+      letterSpacing: item.letterSpacing,
+    };
+    return converted;
+  }
+  if (item.kind === 'image-replacement') {
+    const bytesCopy = new Uint8Array(item.bytes);
+    const converted: ImageAddElement = {
+      id: newId,
+      pageId: targetPageId,
+      kind: 'image',
+      x: item.x + dx,
+      y: item.y + dy,
+      width: item.width,
+      height: item.height,
+      rotation: item.rotation,
+      opacity: item.opacity,
+      zIndex: nextZ,
+      name: item.name,
+      mimeType: item.mimeType,
+      bytes: bytesCopy,
+      previewUrl: blobRegistry.createUrlFromBytes(bytesCopy, item.mimeType, 'doc'),
+      naturalWidth: item.naturalWidth,
+      naturalHeight: item.naturalHeight,
+      aspectLocked: item.aspectLocked,
+      behindContent: item.behindContent,
+      flipX: item.flipX,
+      flipY: item.flipY,
+      cropRect: item.cropRect ? { ...item.cropRect } : undefined,
+      clipMask: item.clipMask
+        ? {
+            ...item.clipMask,
+            openCutPoints: item.clipMask.openCutPoints?.map((p) => ({ ...p })),
+            sourceElement: item.clipMask.sourceElement
+              ? {
+                  ...item.clipMask.sourceElement,
+                  points: item.clipMask.sourceElement.points?.map((p) => ({ ...p })),
+                }
+              : undefined,
+          }
+        : undefined,
+    };
+    return converted;
+  }
+  if (item.kind === 'shape-replacement') {
+    const converted: HighlightElement = {
+      id: newId,
+      pageId: targetPageId,
+      kind: 'highlight',
+      shape: 'rect',
+      x: item.x + dx,
+      y: item.y + dy,
+      width: item.width,
+      height: item.height,
+      rotation: item.rotation,
+      opacity: item.opacity,
+      zIndex: nextZ,
+      fillColor: item.fillColor,
+      strokeColor: item.strokeColor,
+      strokeWidth: item.strokeWidth,
+      layerOverride: item.behindContent ? 1 : 2,
+      isBackgroundLayer: item.isBackgroundLayer,
+    };
+    return converted;
+  }
+  if (item.kind === 'signature') {
+    const pngCopy = new Uint8Array(item.pngBytes);
+    const dup: SignatureElement = {
+      ...item,
+      id: newId,
+      pageId: targetPageId,
+      x: item.x + dx,
+      y: item.y + dy,
+      zIndex: nextZ,
+      pngBytes: pngCopy,
+      previewUrl: blobRegistry.createUrlFromBytes(pngCopy, 'image/png', 'doc'),
+      svgPaths: item.svgPaths ? item.svgPaths.map((p) => ({ ...p })) : undefined,
+    };
+    return dup;
+  }
+  const dup = {
+    ...item,
+    id: newId,
+    pageId: targetPageId,
+    x: item.x + dx,
+    y: item.y + dy,
+    zIndex: nextZ,
+    repeatGroupId: undefined,
+    repeatScope: undefined,
+    ...(item.kind === 'path' || item.kind === 'stroke'
+      ? { points: item.points.map((p) => ({ ...p })) }
+      : {}),
+    ...(item.kind === 'text-add' && item.runs
+      ? { runs: item.runs.map((r) => ({ ...r })) }
+      : {}),
+    ...(item.kind === 'image'
+      ? {
+          bytes: new Uint8Array(item.bytes),
+          cropRect: item.cropRect ? { ...item.cropRect } : undefined,
+          clipMask: item.clipMask
+            ? {
+                ...item.clipMask,
+                openCutPoints: item.clipMask.openCutPoints?.map((p) => ({ ...p })),
+                sourceElement: item.clipMask.sourceElement
+                  ? {
+                      ...item.clipMask.sourceElement,
+                      points: item.clipMask.sourceElement.points?.map((p) => ({ ...p })),
+                    }
+                  : undefined,
+              }
+            : undefined,
+        }
+      : {}),
+  } as CanvasElement;
+  if (dup.kind === 'image') {
+    dup.previewUrl = blobRegistry.createUrlFromBytes(dup.bytes, dup.mimeType, 'doc');
+  }
+  return dup;
+}
+
 function remapExtractionsAndElementsWithFonts(
   pages: PageMeta[],
   pageExtractions: Record<string, PageExtractionResult>,
@@ -489,6 +699,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   selectedElementIds: [],
   editingTextElementId: null,
   editingPathElementId: null,
+  croppingImageElementId: null,
+  contextMenu: null,
+  rotateCopyDialogElementIds: null,
+  lastRotateCopyConfig: null,
   clipboard: [],
   pendingSignaturePlacement: null,
   pageNumbering: null,
@@ -546,7 +760,13 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       toolMode,
       pendingSignaturePlacement: null,
       ...(toolMode !== 'select'
-        ? { selectedElementIds: [], editingTextElementId: null, editingPathElementId: null }
+        ? {
+            selectedElementIds: [],
+            editingTextElementId: null,
+            editingPathElementId: null,
+            croppingImageElementId: null,
+            contextMenu: null,
+          }
         : {}),
     }),
   setZoom: (zoom, mode = 'custom') =>
@@ -873,9 +1093,27 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         s.editingPathElementId && selectedElementIds.includes(s.editingPathElementId)
           ? s.editingPathElementId
           : null,
+      croppingImageElementId:
+        s.croppingImageElementId && selectedElementIds.includes(s.croppingImageElementId)
+          ? s.croppingImageElementId
+          : null,
     })),
   setEditingTextElementId: (editingTextElementId) => set({ editingTextElementId }),
-  setEditingPathElementId: (editingPathElementId) => set({ editingPathElementId }),
+  setEditingPathElementId: (editingPathElementId) =>
+    set({ editingPathElementId, croppingImageElementId: null }),
+  setCroppingImageElementId: (croppingImageElementId) =>
+    set((s) => ({
+      croppingImageElementId,
+      editingPathElementId: null,
+      editingTextElementId: null,
+      contextMenu: null,
+      ...(croppingImageElementId && s.mobileSheet === 'inspector'
+        ? { mobileInspectorSnap: 'collapsed' }
+        : {}),
+    })),
+  setContextMenu: (contextMenu) => set({ contextMenu }),
+  openRotateCopyDialog: (rotateCopyDialogElementIds) =>
+    set({ rotateCopyDialogElementIds, contextMenu: null }),
 
   reorderPages: (fromIndex, toIndex) => {
     const state = get();
@@ -1351,11 +1589,31 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }
   },
 
-  pasteClipboard: () => {
+  pasteClipboard: (target) => {
     const state = get();
     if (state.clipboard.length === 0) return;
-    const targetPageId = state.activePageId ?? state.pages[0]?.id;
+    const targetPageId = target?.pageId ?? state.activePageId ?? state.pages[0]?.id;
     if (!targetPageId) return;
+
+    let dx = 16;
+    let dy = 16;
+    if (target) {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const item of state.clipboard) {
+        if (item.x < minX) minX = item.x;
+        if (item.y < minY) minY = item.y;
+        if (item.x + item.width > maxX) maxX = item.x + item.width;
+        if (item.y + item.height > maxY) maxY = item.y + item.height;
+      }
+      if (Number.isFinite(minX)) {
+        dx = target.x - (minX + maxX) / 2;
+        dy = target.y - (minY + maxY) / 2;
+      }
+    }
+
     const snapshot = cloneSnapshot(state.pages, state.elements, state.pageNumbering);
     const pastedIds: string[] = [];
     const additions: CanvasElement[] = [];
@@ -1365,111 +1623,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       pastedIds.push(id);
       const itemTier = getElementLayerTier(item);
       const nextZ = getNextZIndexForTier([...state.elements, ...additions], targetPageId, itemTier);
-
-      if (item.kind === 'text-edit') {
-        const converted: TextAddElement = {
-          id,
-          pageId: targetPageId,
-          kind: 'text-add',
-          x: item.x + 16,
-          y: item.y + 16,
-          width: item.width,
-          height: item.height,
-          rotation: item.rotation,
-          opacity: item.opacity,
-          zIndex: nextZ,
-          text: item.text,
-          runs: item.runs ? item.runs.map((r) => ({ ...r })) : undefined,
-          fontFamily: item.fontFamily,
-          fallbackFontFamily: item.fallbackFontFamily,
-          fontSource: item.fontSource,
-          rawFontName: item.rawFontName,
-          originalFontName: item.originalFontName,
-          isCustomFont: item.isCustomFont,
-          fontSize: item.fontSize,
-          color: item.color,
-          bold: item.bold,
-          italic: item.italic,
-          align: item.align,
-          lineHeight: item.lineHeight,
-          horizontalScale: item.horizontalScale,
-          letterSpacing: item.letterSpacing,
-        };
-        additions.push(converted);
-      } else if (item.kind === 'image-replacement') {
-        const converted: ImageAddElement = {
-          id,
-          pageId: targetPageId,
-          kind: 'image',
-          x: item.x + 16,
-          y: item.y + 16,
-          width: item.width,
-          height: item.height,
-          rotation: item.rotation,
-          opacity: item.opacity,
-          zIndex: nextZ,
-          name: item.name,
-          mimeType: item.mimeType,
-          bytes: item.bytes,
-          previewUrl: blobRegistry.createUrlFromBytes(item.bytes, item.mimeType, 'doc'),
-          naturalWidth: item.naturalWidth,
-          naturalHeight: item.naturalHeight,
-          aspectLocked: item.aspectLocked,
-          behindContent: item.behindContent,
-          flipX: item.flipX,
-          flipY: item.flipY,
-        };
-        additions.push(converted);
-      } else if (item.kind === 'shape-replacement') {
-        const converted: HighlightElement = {
-          id,
-          pageId: targetPageId,
-          kind: 'highlight',
-          shape: 'rect',
-          x: item.x + 16,
-          y: item.y + 16,
-          width: item.width,
-          height: item.height,
-          rotation: item.rotation,
-          opacity: item.opacity,
-          zIndex: nextZ,
-          fillColor: item.fillColor,
-          strokeColor: item.strokeColor,
-          strokeWidth: item.strokeWidth,
-          layerOverride: item.behindContent ? 1 : 2,
-          isBackgroundLayer: item.isBackgroundLayer,
-        };
-        additions.push(converted);
-      } else if (item.kind === 'signature') {
-        const pngCopy = new Uint8Array(item.pngBytes);
-        const dup: SignatureElement = {
-          ...item,
-          id,
-          pageId: targetPageId,
-          x: item.x + 16,
-          y: item.y + 16,
-          zIndex: nextZ,
-          pngBytes: pngCopy,
-          previewUrl: blobRegistry.createUrlFromBytes(pngCopy, 'image/png', 'doc'),
-          svgPaths: item.svgPaths ? item.svgPaths.map((p) => ({ ...p })) : undefined,
-        };
-        additions.push(dup);
-      } else {
-        const dup = {
-          ...item,
-          id,
-          pageId: targetPageId,
-          x: item.x + 16,
-          y: item.y + 16,
-          zIndex: nextZ,
-          repeatGroupId: undefined,
-          repeatScope: undefined,
-        } as CanvasElement;
-        if ('bytes' in dup && dup.bytes && 'mimeType' in dup) {
-          dup.previewUrl = blobRegistry.createUrlFromBytes(dup.bytes, dup.mimeType, 'doc');
-        }
-        additions.push(dup);
-      }
+      additions.push(cloneForCopy(item, id, targetPageId, nextZ, dx, dy));
     }
 
     const nextElements = [...state.elements, ...additions];
@@ -1477,6 +1631,371 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     set({
       elements: nextElements,
       selectedElementIds: pastedIds,
+      past: nextPast,
+      future: [],
+      canUndo: nextPast.length > 0,
+      canRedo: false,
+    });
+  },
+
+  duplicateElements: (ids, offsetPt = { x: 16, y: 16 }) => {
+    const state = get();
+    if (ids.length === 0) return [];
+    const idSet = new Set(ids);
+    const sources = state.elements.filter(
+      (el) => idSet.has(el.id) && !('deleted' in el && el.deleted),
+    );
+    if (sources.length === 0) return [];
+
+    const snapshot = cloneSnapshot(state.pages, state.elements, state.pageNumbering);
+    const dupIds: string[] = [];
+    const additions: CanvasElement[] = [];
+
+    for (const src of sources) {
+      const id = createId('el');
+      dupIds.push(id);
+      const itemTier = getElementLayerTier(src);
+      const nextZ = getNextZIndexForTier([...state.elements, ...additions], src.pageId, itemTier);
+      additions.push(cloneForCopy(src, id, src.pageId, nextZ, offsetPt.x, offsetPt.y));
+    }
+
+    const nextElements = [...state.elements, ...additions];
+    const nextPast = pushSnapshot(state.past, snapshot);
+    set({
+      elements: nextElements,
+      selectedElementIds: dupIds,
+      past: nextPast,
+      future: [],
+      canUndo: nextPast.length > 0,
+      canRedo: false,
+    });
+    return dupIds;
+  },
+
+  rotateElements: (ids, deltaDeg, pivot = 'center') => {
+    const state = get();
+    if (ids.length === 0 || Math.abs(deltaDeg) < 1e-4) return;
+    const idSet = new Set(ids);
+    const targets = state.elements.filter(
+      (el) => idSet.has(el.id) && !el.locked && !('deleted' in el && el.deleted),
+    );
+    if (targets.length === 0) return;
+
+    let pivotPt: Point | null = null;
+    if (typeof pivot === 'object') {
+      pivotPt = pivot;
+    } else if (targets.length > 1) {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const el of targets) {
+        if (el.x < minX) minX = el.x;
+        if (el.y < minY) minY = el.y;
+        if (el.x + el.width > maxX) maxX = el.x + el.width;
+        if (el.y + el.height > maxY) maxY = el.y + el.height;
+      }
+      pivotPt = getElementPivotOnPage(
+        { x: minX, y: minY, width: maxX - minX, height: maxY - minY, rotation: 0 },
+        pivot,
+      );
+    }
+
+    const updates = targets.map((el) => {
+      const resolvedPivot = pivotPt ?? getElementPivotOnPage(el, pivot as RotateCopyPivot);
+      const rotated = rotateRectAroundPivot(el, el.rotation, deltaDeg, resolvedPivot);
+      return {
+        id: el.id,
+        patch: {
+          x: rotated.x,
+          y: rotated.y,
+          rotation: rotated.rotation,
+        } as Partial<CanvasElement>,
+      };
+    });
+    state.updateElements(updates, true);
+  },
+
+  reflectElements: (ids, axis) => {
+    const state = get();
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    const targets = state.elements.filter(
+      (el) => idSet.has(el.id) && !el.locked && !('deleted' in el && el.deleted),
+    );
+    if (targets.length === 0) return;
+
+    let groupCx = 0;
+    let groupCy = 0;
+    if (targets.length > 1) {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const el of targets) {
+        if (el.x < minX) minX = el.x;
+        if (el.y < minY) minY = el.y;
+        if (el.x + el.width > maxX) maxX = el.x + el.width;
+        if (el.y + el.height > maxY) maxY = el.y + el.height;
+      }
+      groupCx = (minX + maxX) / 2;
+      groupCy = (minY + maxY) / 2;
+    }
+
+    const updates = targets.map((el) => {
+      const cx = el.x + el.width / 2;
+      const cy = el.y + el.height / 2;
+      const nextCx = targets.length > 1 && axis === 'horizontal' ? 2 * groupCx - cx : cx;
+      const nextCy = targets.length > 1 && axis === 'vertical' ? 2 * groupCy - cy : cy;
+      const basePatch: Partial<CanvasElement> = {
+        x: nextCx - el.width / 2,
+        y: nextCy - el.height / 2,
+        rotation: normalizeAngle360(-el.rotation),
+      };
+
+      if (el.kind === 'path' || el.kind === 'stroke') {
+        return {
+          id: el.id,
+          patch: {
+            ...basePatch,
+            points: el.points.map((p) => ({
+              x: axis === 'horizontal' ? 1 - p.x : p.x,
+              y: axis === 'vertical' ? 1 - p.y : p.y,
+            })),
+          } as Partial<CanvasElement>,
+        };
+      }
+      if (el.kind === 'shape' || el.kind === 'image' || el.kind === 'image-replacement') {
+        return {
+          id: el.id,
+          patch: {
+            ...basePatch,
+            flipX: axis === 'horizontal' ? !el.flipX : el.flipX,
+            flipY: axis === 'vertical' ? !el.flipY : el.flipY,
+          } as Partial<CanvasElement>,
+        };
+      }
+      return { id: el.id, patch: basePatch };
+    });
+
+    state.updateElements(updates, true);
+  },
+
+  rotateAndDuplicateElements: (ids, angleDeg, copies = 1, pivot = 'center') => {
+    const state = get();
+    if (ids.length === 0) return [];
+    const safeCopies = Math.max(1, Math.min(24, Math.round(copies)));
+    const idSet = new Set(ids);
+    const sources = state.elements.filter(
+      (el) => idSet.has(el.id) && !('deleted' in el && el.deleted),
+    );
+    if (sources.length === 0) return [];
+
+    let sharedPivot: Point;
+    if (sources.length === 1) {
+      sharedPivot = getElementPivotOnPage(sources[0], pivot);
+    } else {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const el of sources) {
+        if (el.x < minX) minX = el.x;
+        if (el.y < minY) minY = el.y;
+        if (el.x + el.width > maxX) maxX = el.x + el.width;
+        if (el.y + el.height > maxY) maxY = el.y + el.height;
+      }
+      sharedPivot = getElementPivotOnPage(
+        { x: minX, y: minY, width: maxX - minX, height: maxY - minY, rotation: 0 },
+        pivot,
+      );
+    }
+
+    const snapshot = cloneSnapshot(state.pages, state.elements, state.pageNumbering);
+    const createdIds: string[] = [];
+    const additions: CanvasElement[] = [];
+
+    for (let step = 1; step <= safeCopies; step++) {
+      const stepDeg = angleDeg * step;
+      for (const src of sources) {
+        const id = createId('el');
+        createdIds.push(id);
+        const itemTier = getElementLayerTier(src);
+        const nextZ = getNextZIndexForTier(
+          [...state.elements, ...additions],
+          src.pageId,
+          itemTier,
+        );
+        const cloned = cloneForCopy(src, id, src.pageId, nextZ, 0, 0);
+        const rotGeom = rotateRectAroundPivot(src, src.rotation, stepDeg, sharedPivot);
+        additions.push({
+          ...cloned,
+          x: rotGeom.x,
+          y: rotGeom.y,
+          rotation: rotGeom.rotation,
+        } as CanvasElement);
+      }
+    }
+
+    const nextElements = [...state.elements, ...additions];
+    const nextPast = pushSnapshot(state.past, snapshot);
+    set({
+      elements: nextElements,
+      selectedElementIds: createdIds.slice(-sources.length),
+      lastRotateCopyConfig: { angleDeg, copies: safeCopies, pivot },
+      past: nextPast,
+      future: [],
+      canUndo: nextPast.length > 0,
+      canRedo: false,
+    });
+    return createdIds;
+  },
+
+  applyImageCrop: (imageId, relCrop) => {
+    const state = get();
+    const target = state.elements.find((el) => el.id === imageId);
+    if (!target || !isImageMaskTarget(target)) return;
+    const patch = applyCropSubRectToElement(target, relCrop, undefined);
+    state.updateElements([{ id: imageId, patch }], true);
+    set({ croppingImageElementId: null });
+  },
+
+  applyImageClippingMask: (imageId, maskId, openCutSide = 'a', consumeMask = true) => {
+    const state = get();
+    const imgEl = state.elements.find((el) => el.id === imageId);
+    const maskEl = state.elements.find((el) => el.id === maskId);
+    if (!imgEl || !maskEl || !isImageMaskTarget(imgEl) || !isVectorMaskCandidate(maskEl)) return;
+
+    const patch = buildClippingMaskFromElement(imgEl, maskEl, openCutSide);
+    const snapshot = cloneSnapshot(state.pages, state.elements, state.pageNumbering);
+
+    const nextElements: CanvasElement[] = [];
+    for (const el of state.elements) {
+      if (el.id === imgEl.id) {
+        nextElements.push({ ...el, ...patch } as CanvasElement);
+      } else if (consumeMask && el.id === maskEl.id) {
+        if (el.kind === 'shape-replacement') {
+          nextElements.push({ ...el, deleted: true });
+        }
+        // User-added shapes/paths are absorbed cleanly into the clipping mask snapshot
+      } else {
+        nextElements.push(el);
+      }
+    }
+
+    const nextPast = pushSnapshot(state.past, snapshot);
+    set({
+      elements: nextElements,
+      selectedElementIds: [imgEl.id],
+      croppingImageElementId: null,
+      contextMenu: null,
+      past: nextPast,
+      future: [],
+      canUndo: nextPast.length > 0,
+      canRedo: false,
+    });
+  },
+
+  flipImageClipMaskSide: (imageId) => {
+    const state = get();
+    const imgEl = state.elements.find((el) => el.id === imageId);
+    if (!imgEl || !isImageMaskTarget(imgEl)) return;
+    const flipped = flipOpenCutMaskSide(imgEl);
+    if (!flipped) return;
+    state.updateElements([{ id: imageId, patch: flipped }], true);
+  },
+
+  releaseImageCropAndMask: (imageId, restoreMaskShape = true) => {
+    const state = get();
+    const imgEl = state.elements.find((el) => el.id === imageId);
+    if (!imgEl || !isImageMaskTarget(imgEl)) return;
+    const origGeom = resetImageCropGeometry(imgEl);
+    const snapshot = cloneSnapshot(state.pages, state.elements, state.pageNumbering);
+
+    const nextElements: CanvasElement[] = state.elements.map((el) =>
+      el.id === imageId
+        ? ({
+            ...el,
+            x: origGeom.x,
+            y: origGeom.y,
+            width: origGeom.width,
+            height: origGeom.height,
+            cropRect: undefined,
+            clipMask: undefined,
+          } as CanvasElement)
+        : el,
+    );
+
+    const snap = imgEl.clipMask?.sourceElement;
+    if (restoreMaskShape && snap) {
+      const dx = snap.imageOrigin ? origGeom.x - snap.imageOrigin.x : 0;
+      const dy = snap.imageOrigin ? origGeom.y - snap.imageOrigin.y : 0;
+      const restoredId = createId(snap.kind === 'path' ? 'path' : 'shp');
+      const tier: LayerTier = snap.behindContent ? 1 : 4;
+      const nextZ = getNextZIndexForTier(nextElements, imgEl.pageId, tier);
+
+      if (snap.kind === 'shape') {
+        const restoredShape: VectorShapeElement = {
+          id: restoredId,
+          pageId: imgEl.pageId,
+          kind: 'shape',
+          x: snap.x + dx,
+          y: snap.y + dy,
+          width: snap.width,
+          height: snap.height,
+          rotation: snap.rotation,
+          opacity: snap.opacity,
+          zIndex: nextZ,
+          behindContent: snap.behindContent,
+          shapeType: snap.shapeType ?? 'rect',
+          borderRadius: snap.borderRadius,
+          fillColor: snap.fillColor,
+          strokeColor: snap.strokeColor ?? '#1e3a8a',
+          strokeWidth: snap.strokeWidth,
+          strokeDash: snap.strokeDash,
+          flipX: snap.flipX,
+          flipY: snap.flipY,
+        };
+        nextElements.push(restoredShape);
+      } else if (snap.kind === 'path' && snap.points) {
+        const restoredPath: VectorPathElement = {
+          id: restoredId,
+          pageId: imgEl.pageId,
+          kind: 'path',
+          x: snap.x + dx,
+          y: snap.y + dy,
+          width: snap.width,
+          height: snap.height,
+          rotation: snap.rotation,
+          opacity: snap.opacity,
+          zIndex: nextZ,
+          behindContent: snap.behindContent,
+          points: snap.points.map((p) => ({ ...p })),
+          closed: snap.closed ?? false,
+          smooth: snap.smooth,
+          fillColor: snap.fillColor,
+          strokeColor: snap.strokeColor ?? '#1e3a8a',
+          strokeWidth: snap.strokeWidth,
+          strokeDash: snap.strokeDash,
+        };
+        nextElements.push(restoredPath);
+      } else if (snap.kind === 'shape-replacement' && snap.originalShapeId) {
+        const idx = nextElements.findIndex(
+          (e) => e.kind === 'shape-replacement' && e.originalShapeId === snap.originalShapeId && e.pageId === imgEl.pageId,
+        );
+        if (idx >= 0) {
+          const existing = nextElements[idx] as ShapeReplacementElement;
+          nextElements[idx] = { ...existing, deleted: false, x: snap.x + dx, y: snap.y + dy };
+        }
+      }
+    }
+
+    const nextPast = pushSnapshot(state.past, snapshot);
+    set({
+      elements: nextElements,
+      selectedElementIds: [imageId],
+      croppingImageElementId: null,
+      contextMenu: null,
       past: nextPast,
       future: [],
       canUndo: nextPast.length > 0,

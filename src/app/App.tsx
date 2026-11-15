@@ -9,10 +9,12 @@ import { MobileToolsSheet } from '@/components/mobile/MobileToolsSheet';
 import { PageNumberingModal } from '@/components/modals/PageNumberingModal';
 import { PageOrganizeModal } from '@/components/modals/PageOrganizeModal';
 import { PasswordModal } from '@/components/modals/PasswordModal';
+import { RotateCopyModal } from '@/components/modals/RotateCopyModal';
 import { SignatureModal } from '@/components/modals/SignatureModal';
 import { SplitExtractModal } from '@/components/modals/SplitExtractModal';
 import { ThumbnailSidebar } from '@/components/sidebar/ThumbnailSidebar';
 import { TopToolbar } from '@/components/toolbar/TopToolbar';
+import { CanvasContextMenu } from '@/components/viewport/CanvasContextMenu';
 import {
   DocumentViewport,
   type DocumentViewportHandle,
@@ -137,6 +139,14 @@ export default function App() {
         return;
       }
 
+      if (mod && e.key.toLowerCase() === 'd') {
+        if (state.selectedElementIds.length > 0) {
+          e.preventDefault();
+          state.duplicateElements(state.selectedElementIds);
+        }
+        return;
+      }
+
       if (mod && e.key.toLowerCase() === 'v') {
         if (state.clipboard.length > 0) {
           e.preventDefault();
@@ -154,6 +164,18 @@ export default function App() {
       }
 
       if (e.key === 'Escape') {
+        if (state.contextMenu) {
+          state.setContextMenu(null);
+          return;
+        }
+        if (state.croppingImageElementId) {
+          state.setCroppingImageElementId(null);
+          return;
+        }
+        if (state.rotateCopyDialogElementIds) {
+          state.openRotateCopyDialog(null);
+          return;
+        }
         if (state.pendingSignaturePlacement) {
           state.cancelPendingSignaturePlacement();
           return;
@@ -222,7 +244,9 @@ export default function App() {
       {mobileSheet === 'tools' && <MobileToolsSheet />}
       {mobileSheet === 'export' && <MobileExportSheet />}
 
-      {/* Modals */}
+      {/* Modals & Context Menu */}
+      <CanvasContextMenu />
+      <RotateCopyModal />
       <PasswordModal />
       <SignatureModal />
       <SplitExtractModal />

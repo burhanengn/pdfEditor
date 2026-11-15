@@ -745,4 +745,327 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
       md.destroy();
     }
   });
+
+  test('custom right-click context menu transforms shapes (reflect, rotate & copy, duplicate, lock, delete)', async ({
+    page,
+  }) => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('/');
+    await page.getByTestId('welcome-sample-btn').click();
+    const pdfPage = page.getByTestId('pdf-page-1');
+    await expect(pdfPage).toBeVisible();
+    await page.getByRole('button', { name: 'Fit Page' }).click();
+
+    const pBox = (await pdfPage.boundingBox())!;
+
+    // 1. Right-click empty right margin -> verifies empty-canvas menu items & Escape dismissal
+    await page.mouse.click(pBox.x + pBox.width * 0.94, pBox.y + pBox.height * 0.5, {
+      button: 'right',
+    });
+    const ctxMenu = page.getByTestId('canvas-context-menu');
+    await expect(ctxMenu).toBeVisible();
+    await expect(page.getByTestId('ctx-add-text-here')).toBeVisible();
+    await expect(page.getByTestId('ctx-add-shape-here')).toBeVisible();
+    await page.keyboard.press('Escape');
+    await expect(ctxMenu).toBeHidden();
+
+    // 2. Draw an arrow shape in lower space
+    await page.getByTestId('tool-shape').click();
+    await page.getByTestId('shape-preset-arrow').click();
+    await page.mouse.move(pBox.x + pBox.width * 0.25, pBox.y + pBox.height * 0.62);
+    await page.mouse.down();
+    await page.mouse.move(pBox.x + pBox.width * 0.45, pBox.y + pBox.height * 0.69, { steps: 6 });
+    await page.mouse.up();
+    await page.getByTestId('tool-select').click();
+
+    const shapes = page.locator('[data-testid^="canvas-element-"]');
+    await expect(shapes).toHaveCount(1);
+    const arrowBox = (await shapes.first().boundingBox())!;
+
+    // 3. Right-click the arrow shape -> test Reflect X
+    await page.mouse.click(arrowBox.x + arrowBox.width / 2, arrowBox.y + arrowBox.height / 2, {
+      button: 'right',
+    });
+    await expect(ctxMenu).toBeVisible();
+    await expect(page.getByTestId('ctx-reflect-x')).toBeVisible();
+    await page.getByTestId('ctx-reflect-x').click();
+    await expect(ctxMenu).toBeHidden();
+
+    // 4. Right-click arrow shape -> Rotate & Copy (60 deg, 2 copies around bottom-center pivot)
+    await page.mouse.click(arrowBox.x + arrowBox.width / 2, arrowBox.y + arrowBox.height / 2, {
+      button: 'right',
+    });
+    await page.getByTestId('ctx-rotate-copy').click();
+    const rcModal = page.getByTestId('rotate-copy-modal');
+    await expect(rcModal).toBeVisible();
+    await page.getByTestId('rotate-copy-angle-input').fill('60');
+    await page.getByTestId('rotate-copy-count-input').fill('2');
+    await page.getByTestId('rotate-copy-pivot-bottom-center').click();
+    await page.getByTestId('rotate-copy-apply-btn').click();
+    await expect(rcModal).toBeHidden();
+    await expect(shapes).toHaveCount(3);
+
+    // 5. Right-click original shape -> Repeat Rotate & Copy (+1 more step = 4 elements)
+    const boxAfterRc = (await shapes.first().boundingBox())!;
+    await page.mouse.click(boxAfterRc.x + boxAfterRc.width / 2, boxAfterRc.y + boxAfterRc.height / 2, {
+      button: 'right',
+    });
+    await expect(page.getByTestId('ctx-repeat-rotate-copy')).toBeVisible();
+    await page.getByTestId('ctx-repeat-rotate-copy').click();
+    await expect(shapes).toHaveCount(4);
+
+    // 6. Right-click original shape -> Duplicate (4 -> 5), Delete unlocked copy (5 -> 4), and Lock toggle
+    await page.mouse.click(boxAfterRc.x + boxAfterRc.width / 2, boxAfterRc.y + boxAfterRc.height / 2, {
+      button: 'right',
+    });
+    await page.getByTestId('ctx-duplicate').click();
+    await expect(shapes).toHaveCount(5);
+
+    const lastBox = (await shapes.last().boundingBox())!;
+    await page.mouse.click(lastBox.x + lastBox.width / 2, lastBox.y + lastBox.height / 2, {
+      button: 'right',
+    });
+    await page.getByTestId('ctx-delete').click();
+    await expect(shapes).toHaveCount(4);
+
+    await page.mouse.click(boxAfterRc.x + boxAfterRc.width / 2, boxAfterRc.y + boxAfterRc.height / 2, {
+      button: 'right',
+    });
+    await page.getByTestId('ctx-lock-toggle').click();
+    await expect(page.locator('[data-testid^="locked-badge-"]')).toHaveCount(1);
+  });
+
+  test('image rectangular crop, Illustrator ellipse & open-line clipping masks, side flip, and MuPDF export', async ({
+    page,
+  }) => {
+    // Build a deterministic 160x160 RGB PNG (top=bright red, bottom=dark blue) with stored deflate
+    const buildTwoTonePng = (): Buffer => {
+      const w = 160;
+      const h = 160;
+      const rowLen = 1 + w * 3;
+      const raw = new Uint8Array(h * rowLen);
+      for (let y = 0; y < h; y++) {
+        const off = y * rowLen;
+        raw[off] = 0;
+        const rgb = y < h / 2 ? [239, 68, 68] : [30, 58, 138];
+        for (let x = 0; x < w; x++) {
+          raw[off + 1 + x * 3] = rgb[0];
+          raw[off + 2 + x * 3] = rgb[1];
+          raw[off + 3 + x * 3] = rgb[2];
+        }
+      }
+      const tbl = new Uint32Array(256);
+      for (let n = 0; n < 256; n++) {
+        let c = n;
+        for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+        tbl[n] = c >>> 0;
+      }
+      const crc32 = (buf: Uint8Array) => {
+        let c = 0xffffffff;
+        for (let i = 0; i < buf.length; i++) c = tbl[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+        return (c ^ 0xffffffff) >>> 0;
+      };
+      const chunk = (type: string, data: Uint8Array) => {
+        const out = new Uint8Array(12 + data.length);
+        const dv = new DataView(out.buffer);
+        dv.setUint32(0, data.length, false);
+        for (let i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+        out.set(data, 8);
+        dv.setUint32(8 + data.length, crc32(out.subarray(4, 8 + data.length)), false);
+        return out;
+      };
+      const ihdr = new Uint8Array(13);
+      const idv = new DataView(ihdr.buffer);
+      idv.setUint32(0, w, false);
+      idv.setUint32(4, h, false);
+      ihdr[8] = 8;
+      ihdr[9] = 2;
+
+      // Split raw scanlines into <= 65535-byte stored DEFLATE blocks (77,120 bytes -> 2 blocks)
+      const chunks: Uint8Array[] = [];
+      for (let offset = 0; offset < raw.length; offset += 60000) {
+        const slice = raw.subarray(offset, Math.min(raw.length, offset + 60000));
+        const isLast = offset + slice.length >= raw.length ? 1 : 0;
+        const nlen = ~slice.length & 0xffff;
+        const blk = new Uint8Array(5 + slice.length);
+        blk[0] = isLast;
+        blk[1] = slice.length & 0xff;
+        blk[2] = (slice.length >> 8) & 0xff;
+        blk[3] = nlen & 0xff;
+        blk[4] = (nlen >> 8) & 0xff;
+        blk.set(slice, 5);
+        chunks.push(blk);
+      }
+      let s1 = 1;
+      let s2 = 0;
+      for (let i = 0; i < raw.length; i++) {
+        s1 = (s1 + raw[i]) % 65521;
+        s2 = (s2 + s1) % 65521;
+      }
+      const adler = new Uint8Array(4);
+      new DataView(adler.buffer).setUint32(0, ((s2 << 16) | s1) >>> 0, false);
+      const zlibData = Buffer.concat([new Uint8Array([0x78, 0x01]), ...chunks, adler]);
+
+      return Buffer.concat([
+        new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]),
+        chunk('IHDR', ihdr),
+        chunk('IDAT', zlibData),
+        chunk('IEND', new Uint8Array(0)),
+      ]);
+    };
+
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto('/');
+    await page.getByTestId('welcome-sample-btn').click();
+    await expect(page.getByTestId('pdf-page-1')).toBeVisible();
+    await page.getByRole('button', { name: 'Fit Page' }).click();
+
+    await page.getByTestId('insert-image-input').setInputFiles({
+      name: 'two-tone.png',
+      mimeType: 'image/png',
+      buffer: buildTwoTonePng(),
+    });
+
+    const imgEl = page.locator('[data-testid^="canvas-element-img_"]').first();
+    await expect(imgEl).toBeVisible();
+    const origBox = (await imgEl.boundingBox())!;
+
+    // 1. Rectangular crop via context menu + reset
+    await page.mouse.click(origBox.x + origBox.width - 12, origBox.y + 12, {
+      button: 'right',
+    });
+    await page.getByTestId('ctx-crop-image').click();
+    await expect(page.getByTestId('image-crop-overlay')).toBeVisible();
+
+    const seHandle = (await page.getByTestId('crop-handle-se').boundingBox())!;
+    await page.mouse.move(seHandle.x + seHandle.width / 2, seHandle.y + seHandle.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(seHandle.x - 50, seHandle.y - 50, { steps: 6 });
+    await page.mouse.up();
+    await page.getByTestId('crop-apply-btn').click();
+    await expect(page.getByTestId('image-crop-overlay')).toBeHidden();
+
+    const croppedBox = (await imgEl.boundingBox())!;
+    expect(croppedBox.width).toBeLessThan(origBox.width - 25);
+    expect(croppedBox.height).toBeLessThan(origBox.height - 25);
+
+    // Release rectangular crop back to original dimensions
+    await page.mouse.click(croppedBox.x + croppedBox.width / 2, croppedBox.y + croppedBox.height / 2, {
+      button: 'right',
+    });
+    await page.getByTestId('ctx-release-mask').click();
+    const restoredBox = (await imgEl.boundingBox())!;
+    expect(Math.abs(restoredBox.width - origBox.width)).toBeLessThan(4);
+
+    // 2. Illustrator Shape Masking: open shape subtoolbar BEFORE measuring so layout doesn't jump mid-drag
+    await page.getByTestId('tool-shape').click();
+    await page.getByTestId('shape-preset-ellipse').click();
+    const imgBoxDuringShape = (await imgEl.boundingBox())!;
+    await page.mouse.move(imgBoxDuringShape.x + 25, imgBoxDuringShape.y + 25);
+    await page.mouse.down();
+    await page.mouse.move(
+      imgBoxDuringShape.x + imgBoxDuringShape.width - 25,
+      imgBoxDuringShape.y + imgBoxDuringShape.height - 25,
+      { steps: 6 },
+    );
+    await page.mouse.up();
+    await page.getByTestId('tool-select').click();
+
+    // Re-measure after subtoolbar closes, then right-click upper-right corner (outside inner ellipse & Sample PDF graphic)
+    const imgBoxAfterShape = (await imgEl.boundingBox())!;
+    await page.mouse.click(imgBoxAfterShape.x + imgBoxAfterShape.width - 8, imgBoxAfterShape.y + 8, {
+      button: 'right',
+    });
+    await expect(page.getByTestId('ctx-clip-by-shape')).toBeVisible();
+    await page.getByTestId('ctx-clip-by-shape').click();
+    await expect(imgEl.locator('svg image')).toHaveAttribute('clip-path', /url\(#imgclip_/);
+    await expect(page.locator('[data-testid^="canvas-element-shp"]')).toHaveCount(0);
+
+    // Release ellipse mask -> deletes restored ellipse cleanly afterward
+    const maskedBox = (await imgEl.boundingBox())!;
+    await page.mouse.click(maskedBox.x + maskedBox.width / 2, maskedBox.y + maskedBox.height / 2, {
+      button: 'right',
+    });
+    await page.getByTestId('ctx-release-mask').click();
+    const restoredEllipse = page.locator('[data-testid^="canvas-element-shp"]').first();
+    await expect(restoredEllipse).toBeVisible();
+    const ellBox = (await restoredEllipse.boundingBox())!;
+    await page.mouse.click(ellBox.x + ellBox.width / 2, ellBox.y + ellBox.height / 2, {
+      button: 'right',
+    });
+    await page.getByTestId('ctx-delete').click();
+    await expect(page.locator('[data-testid^="canvas-element-shp"]')).toHaveCount(0);
+
+    // 3. Open-line Illustrator Cut: open path subtoolbar BEFORE measuring, draw horizontal midline cut -> clip -> flip side -> export
+    await page.getByTestId('tool-path').click();
+    await page.getByTestId('path-mode-line').click();
+    const imgBoxDuringPath = (await imgEl.boundingBox())!;
+    await page.mouse.move(imgBoxDuringPath.x - 10, imgBoxDuringPath.y + imgBoxDuringPath.height * 0.5);
+    await page.mouse.down();
+    await page.mouse.move(
+      imgBoxDuringPath.x + imgBoxDuringPath.width + 10,
+      imgBoxDuringPath.y + imgBoxDuringPath.height * 0.5,
+      { steps: 6 },
+    );
+    await page.mouse.up();
+    await page.getByTestId('tool-select').click();
+
+    const imgBoxAfterPath = (await imgEl.boundingBox())!;
+    await page.mouse.click(
+      imgBoxAfterPath.x + imgBoxAfterPath.width - 14,
+      imgBoxAfterPath.y + imgBoxAfterPath.height * 0.25,
+      { button: 'right' },
+    );
+    await expect(page.getByTestId('ctx-clip-line-side-a')).toBeVisible();
+    await page.getByTestId('ctx-clip-line-side-a').click();
+    await expect(imgEl.locator('svg image')).toHaveAttribute('clip-path', /url\(#imgclip_/);
+
+    const cutBoxA = (await imgEl.boundingBox())!;
+    expect(cutBoxA.height).toBeLessThan(imgBoxAfterPath.height * 0.65);
+
+    // Flip cut side ('a' -> 'b') and verify vertical bounds switch halves
+    await page.mouse.click(cutBoxA.x + cutBoxA.width / 2, cutBoxA.y + cutBoxA.height / 2, {
+      button: 'right',
+    });
+    await expect(page.getByTestId('ctx-flip-mask-side')).toBeVisible();
+    await page.getByTestId('ctx-flip-mask-side').click();
+    const cutBoxB = (await imgEl.boundingBox())!;
+    expect(Math.abs(cutBoxB.y - cutBoxA.y)).toBeGreaterThan(20);
+
+    // Export PDF and inspect right half of inserted image box (x=295..385, y=316..476) in MuPDF
+    const [pdfDownload] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByTestId('export-pdf-btn').click(),
+    ]);
+    const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
+    const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
+    try {
+      const mp = md.loadPage(0);
+      const pm = mp.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
+      try {
+        const px = pm.getPixels();
+        const w = pm.getWidth();
+        const n = pm.getNumberOfComponents();
+        let redCount = 0;
+        let blueCount = 0;
+        for (let py = 318; py < 474; py++) {
+          for (let pxX = 296; pxX < 384; pxX++) {
+            const idx = (py * w + pxX) * n;
+            const r = px[idx];
+            const g = px[idx + 1];
+            const b = px[idx + 2];
+            if (r > 195 && g < 90 && b < 90) redCount++;
+            else if (b > 115 && r < 55 && b - r > 55) blueCount++;
+          }
+        }
+        // Only ONE half of the two-tone PNG remains in exported PDF!
+        expect((redCount > 500 && blueCount < 15) || (blueCount > 500 && redCount < 15)).toBe(true);
+      } finally {
+        pm.destroy();
+        mp.destroy();
+      }
+    } finally {
+      md.destroy();
+    }
+  });
 });

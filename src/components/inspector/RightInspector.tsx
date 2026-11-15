@@ -10,7 +10,10 @@ import {
   ArrowUpToLine,
   Bold,
   Copy,
+  Crop,
   Edit3,
+  FlipHorizontal2,
+  FlipVertical2,
   Hash,
   Image as ImageIcon,
   Italic,
@@ -19,9 +22,11 @@ import {
   Link2Off,
   Lock,
   Plus,
+  RefreshCw,
   Repeat,
   RotateCcw,
   RotateCw,
+  Scissors,
   Spline,
   Subscript,
   Superscript,
@@ -36,6 +41,12 @@ import {
   isBuiltinFontFamily,
   resolveFontDisplayStatus,
 } from '@/engine/fonts';
+import {
+  findOverlappingImagesForMask,
+  findOverlappingMasksForImage,
+  isImageMaskTarget,
+  isVectorMaskCandidate,
+} from '@/engine/imageMask';
 import { denormalizePathPoints } from '@/engine/vectorShapes';
 import { useEditorStore, type SignatureBatchScope } from '@/store/useEditorStore';
 import {
@@ -70,6 +81,14 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
   const stepLayer = useEditorStore((s) => s.stepLayer);
   const setEditingTextElementId = useEditorStore((s) => s.setEditingTextElementId);
   const setEditingPathElementId = useEditorStore((s) => s.setEditingPathElementId);
+  const setCroppingImageElementId = useEditorStore((s) => s.setCroppingImageElementId);
+  const openRotateCopyDialog = useEditorStore((s) => s.openRotateCopyDialog);
+  const duplicateElements = useEditorStore((s) => s.duplicateElements);
+  const rotateElements = useEditorStore((s) => s.rotateElements);
+  const reflectElements = useEditorStore((s) => s.reflectElements);
+  const applyImageClippingMask = useEditorStore((s) => s.applyImageClippingMask);
+  const flipImageClipMaskSide = useEditorStore((s) => s.flipImageClipMaskSide);
+  const releaseImageCropAndMask = useEditorStore((s) => s.releaseImageCropAndMask);
   const joinVectorPaths = useEditorStore((s) => s.joinVectorPaths);
 
   const rotatePages = useEditorStore((s) => s.rotatePages);
@@ -524,6 +543,171 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
       </div>
 
       <div className="space-y-5 p-4 text-xs">
+        {/* Multi-selection Image + Shape Clipping Mask Bar */}
+        {selectedElementIds.length >= 2 &&
+          (() => {
+            const selObjs = elements.filter(
+              (el) => selectedElementIds.includes(el.id) && !('deleted' in el && el.deleted),
+            );
+            const imgs = selObjs.filter(isImageMaskTarget);
+            const masks = selObjs.filter(isVectorMaskCandidate);
+            if (imgs.length !== 1 || masks.length !== 1) return null;
+            const isOpenCut = masks[0].kind === 'path' && !masks[0].closed;
+            return (
+              <div className="space-y-2 rounded-xl border border-indigo-500/40 bg-indigo-50/70 p-2.5 dark:bg-indigo-950/30">
+                <div className="text-[11px] font-semibold text-indigo-700 dark:text-indigo-300">
+                  Görsel + Maske Seçildi
+                </div>
+                {isOpenCut ? (
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      data-testid="inspector-clip-pair-a"
+                      onClick={() => applyImageClippingMask(imgs[0].id, masks[0].id, 'a')}
+                      className="flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-indigo-500"
+                    >
+                      <Scissors className="h-3 w-3" />
+                      1. Tarafı Kırp
+                    </button>
+                    <button
+                      type="button"
+                      data-testid="inspector-clip-pair-b"
+                      onClick={() => applyImageClippingMask(imgs[0].id, masks[0].id, 'b')}
+                      className="flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-indigo-500"
+                    >
+                      <Scissors className="h-3 w-3" />
+                      2. Tarafı Kırp
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    data-testid="inspector-clip-pair-btn"
+                    onClick={() => applyImageClippingMask(imgs[0].id, masks[0].id, 'a')}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500"
+                  >
+                    <Scissors className="h-3.5 w-3.5" />
+                    Şekille Görseli Kırp (Maskele)
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+
+        {/* Quick Transform & Copy Actions (Shape / Path / Image) */}
+        {(selectedEl.kind === 'shape' ||
+          selectedEl.kind === 'path' ||
+          selectedEl.kind === 'image' ||
+          selectedEl.kind === 'image-replacement') && (
+          <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-2.5 dark:border-slate-800 dark:bg-slate-900/60">
+            <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              <span>Dönüştür &amp; Kopyala</span>
+              <button
+                type="button"
+                data-testid="inspector-duplicate-btn"
+                onClick={() => duplicateElements(selectedElementIds)}
+                className="inline-flex items-center gap-1 rounded bg-white px-2 py-0.5 text-[10px] font-medium normal-case text-slate-700 shadow-sm hover:text-blue-600 dark:bg-slate-800 dark:text-slate-200"
+              >
+                <Copy className="h-3 w-3" />
+                Çoğalt
+              </button>
+            </div>
+            <div className="grid grid-cols-2 gap-1.5">
+              <button
+                type="button"
+                data-testid="inspector-reflect-x-btn"
+                onClick={() => reflectElements(selectedElementIds, 'horizontal')}
+                className="inline-flex items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:border-blue-400 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+              >
+                <FlipHorizontal2 className="h-3.5 w-3.5" />
+                Yatay Yansıt
+              </button>
+              <button
+                type="button"
+                data-testid="inspector-reflect-y-btn"
+                onClick={() => reflectElements(selectedElementIds, 'vertical')}
+                className="inline-flex items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:border-blue-400 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+              >
+                <FlipVertical2 className="h-3.5 w-3.5" />
+                Dikey Yansıt
+              </button>
+            </div>
+            <div className="grid grid-cols-3 gap-1.5">
+              <button
+                type="button"
+                data-testid="inspector-rotate-n90-btn"
+                onClick={() => rotateElements(selectedElementIds, -90)}
+                className="inline-flex items-center justify-center gap-1 rounded-md border border-slate-200 bg-white py-1 text-[11px] font-medium text-slate-700 hover:border-blue-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+              >
+                <RotateCcw className="h-3 w-3" />
+                -90°
+              </button>
+              <button
+                type="button"
+                data-testid="inspector-rotate-90-btn"
+                onClick={() => rotateElements(selectedElementIds, 90)}
+                className="inline-flex items-center justify-center gap-1 rounded-md border border-slate-200 bg-white py-1 text-[11px] font-medium text-slate-700 hover:border-blue-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+              >
+                <RotateCw className="h-3 w-3" />
+                +90°
+              </button>
+              <button
+                type="button"
+                data-testid="inspector-rotate-copy-btn"
+                onClick={() => openRotateCopyDialog(selectedElementIds)}
+                className="inline-flex items-center justify-center gap-1 rounded-md bg-blue-600 py-1 text-[11px] font-semibold text-white hover:bg-blue-500"
+              >
+                Döndür &amp; Kopyala
+              </button>
+            </div>
+          </div>
+        )}
+
+        {/* Shape / Path over Image -> Illustrator Mask Suggestion */}
+        {isVectorMaskCandidate(selectedEl) &&
+          (() => {
+            const matches = findOverlappingImagesForMask(selectedEl, elements);
+            if (matches.length === 0) return null;
+            const m = matches[0];
+            return (
+              <div className="space-y-1.5 rounded-xl border border-indigo-500/40 bg-indigo-50/70 p-2.5 dark:bg-indigo-950/30">
+                <div className="text-[11px] font-semibold text-indigo-700 dark:text-indigo-300">
+                  Alttaki Görseli Kırp (Illustrator Maske)
+                </div>
+                {m.isOpenLineCut ? (
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => applyImageClippingMask(m.image.id, selectedEl.id, 'a')}
+                      className="inline-flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-500"
+                    >
+                      <Scissors className="h-3 w-3" />
+                      1. Taraf
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => applyImageClippingMask(m.image.id, selectedEl.id, 'b')}
+                      className="inline-flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-500"
+                    >
+                      <Scissors className="h-3 w-3" />
+                      2. Taraf
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    data-testid="inspector-mask-underlying-image-btn"
+                    onClick={() => applyImageClippingMask(m.image.id, selectedEl.id, 'a')}
+                    className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500"
+                  >
+                    <Scissors className="h-3.5 w-3.5" />
+                    Alttaki Görseli Kırp
+                  </button>
+                )}
+              </div>
+            );
+          })()}
+
         {/* Multi-selection Vector Path Join Bar */}
         {selectedElementIds.length >= 2 &&
           (() => {
@@ -1537,6 +1721,84 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                 )}
               </button>
             </div>
+
+            {isImageMaskTarget(selectedEl) &&
+              (() => {
+                const overlapMasks = findOverlappingMasksForImage(selectedEl, elements);
+                return (
+                  <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5 dark:border-slate-800 dark:bg-slate-900">
+                    <div className="text-[11px] font-medium text-slate-700 dark:text-slate-200">
+                      Görsel Kırpma &amp; Maskeleme
+                    </div>
+                    <button
+                      type="button"
+                      data-testid="inspector-crop-image-btn"
+                      onClick={() => setCroppingImageElementId(selectedEl.id)}
+                      className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-cyan-600 px-3 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-cyan-500"
+                    >
+                      <Crop className="h-3.5 w-3.5" />
+                      Görseli Kırp (Dikdörtgen)
+                    </button>
+
+                    {overlapMasks.slice(0, 1).map((m) =>
+                      m.isOpenLineCut ? (
+                        <div key={m.mask.id} className="grid grid-cols-2 gap-1.5">
+                          <button
+                            type="button"
+                            onClick={() => applyImageClippingMask(selectedEl.id, m.mask.id, 'a')}
+                            className="inline-flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-500"
+                          >
+                            <Scissors className="h-3 w-3" />
+                            Çizgiyle Kırp 1
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => applyImageClippingMask(selectedEl.id, m.mask.id, 'b')}
+                            className="inline-flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-500"
+                          >
+                            <Scissors className="h-3 w-3" />
+                            Çizgiyle Kırp 2
+                          </button>
+                        </div>
+                      ) : (
+                        <button
+                          key={m.mask.id}
+                          type="button"
+                          data-testid="inspector-clip-overlapping-shape-btn"
+                          onClick={() => applyImageClippingMask(selectedEl.id, m.mask.id, 'a')}
+                          className="flex w-full items-center justify-center gap-1.5 rounded-lg bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500"
+                        >
+                          <Scissors className="h-3.5 w-3.5" />
+                          Üzerindeki Şekille Kırp
+                        </button>
+                      ),
+                    )}
+
+                    {selectedEl.clipMask?.openCutPoints && (
+                      <button
+                        type="button"
+                        data-testid="inspector-flip-cut-side-btn"
+                        onClick={() => flipImageClipMaskSide(selectedEl.id)}
+                        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-indigo-400/50 bg-indigo-50 px-2.5 py-1 text-[11px] font-medium text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-500/15 dark:text-indigo-300"
+                      >
+                        <RefreshCw className="h-3 w-3" />
+                        Diğer Tarafı Tut
+                      </button>
+                    )}
+
+                    {(selectedEl.cropRect || selectedEl.clipMask) && (
+                      <button
+                        type="button"
+                        data-testid="inspector-release-mask-btn"
+                        onClick={() => releaseImageCropAndMask(selectedEl.id, true)}
+                        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-amber-400/60 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-800 hover:bg-amber-100 dark:bg-amber-500/15 dark:text-amber-300"
+                      >
+                        Kırpmayı / Maskeyi Çöz
+                      </button>
+                    )}
+                  </div>
+                );
+              })()}
 
             {(selectedEl.kind === 'image' || selectedEl.kind === 'image-replacement') &&
               pages.length > 1 && (

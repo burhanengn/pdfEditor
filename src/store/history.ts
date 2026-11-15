@@ -30,10 +30,40 @@ export function cloneElement(el: CanvasElement): CanvasElement {
         ...el,
         runs: el.runs ? el.runs.map((r) => ({ ...r })) : undefined,
       };
+    case 'image':
+      return {
+        ...el,
+        cropRect: el.cropRect ? { ...el.cropRect } : undefined,
+        clipMask: el.clipMask
+          ? {
+              ...el.clipMask,
+              openCutPoints: el.clipMask.openCutPoints?.map((p) => ({ ...p })),
+              sourceElement: el.clipMask.sourceElement
+                ? {
+                    ...el.clipMask.sourceElement,
+                    points: el.clipMask.sourceElement.points?.map((p) => ({ ...p })),
+                  }
+                : undefined,
+            }
+          : undefined,
+      };
     case 'image-replacement':
       return {
         ...el,
         originalRect: { ...el.originalRect },
+        cropRect: el.cropRect ? { ...el.cropRect } : undefined,
+        clipMask: el.clipMask
+          ? {
+              ...el.clipMask,
+              openCutPoints: el.clipMask.openCutPoints?.map((p) => ({ ...p })),
+              sourceElement: el.clipMask.sourceElement
+                ? {
+                    ...el.clipMask.sourceElement,
+                    points: el.clipMask.sourceElement.points?.map((p) => ({ ...p })),
+                  }
+                : undefined,
+            }
+          : undefined,
       };
     case 'shape-replacement':
       return {
