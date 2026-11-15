@@ -1,4 +1,8 @@
 import type { SavedSignature } from '@/types/elements';
+import {
+  extractSignatureFromRgba,
+  type SignatureExtractParams,
+} from './signatureExtractor';
 
 const STORAGE_KEY = 'aetherpdf_signature_vault_v1';
 
@@ -38,14 +42,11 @@ export function dataUrlToUint8Array(dataUrl: string): Uint8Array {
   return bytes;
 }
 
-/**
- * Strips light/white background pixels from an uploaded signature image
- * so signatures appear cleanly transparent on PDF pages.
- */
-export async function processUploadedSignatureImage(
-  file: File,
-  removeWhiteBg: boolean,
-): Promise<{ dataUrl: string; width: number; height: number }> {
+export async function decodeImageFileToRgba(file: File): Promise<{
+  data: Uint8ClampedArray;
+  width: number;
+  height: number;
+}> {
   const objectUrl = URL.createObjectURL(file);
   try {
     const img = await new Promise<HTMLImageElement>((resolve, reject) => {
@@ -55,7 +56,7 @@ export async function processUploadedSignatureImage(
       el.src = objectUrl;
     });
 
-    const maxDim = 900;
+    const maxDim = 1200;
     const scale = Math.min(1, maxDim / Math.max(img.naturalWidth, img.naturalHeight, 1));
     const width = Math.max(1, Math.round(img.naturalWidth * scale));
     const height = Math.max(1, Math.round(img.naturalHeight * scale));
@@ -66,29 +67,53 @@ export async function processUploadedSignatureImage(
     const ctx = canvas.getContext('2d');
     if (!ctx) throw new Error('Canvas 2D context unavailable.');
     ctx.drawImage(img, 0, 0, width, height);
-
-    if (removeWhiteBg) {
-      const imageData = ctx.getImageData(0, 0, width, height);
-      const d = imageData.data;
-      for (let i = 0; i < d.length; i += 4) {
-        const lum = 0.299 * d[i] + 0.587 * d[i + 1] + 0.114 * d[i + 2];
-        if (lum > 225) {
-          d[i + 3] = 0;
-        } else if (lum > 185) {
-          d[i + 3] = Math.round(((225 - lum) / 40) * d[i + 3]);
-        }
-      }
-      ctx.putImageData(imageData, 0, 0);
-    }
-
+    const imgData = ctx.getImageData(0, 0, width, height);
     return {
-      dataUrl: canvas.toDataURL('image/png'),
+      data: imgData.data,
       width,
       height,
     };
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
+}
+
+export function renderExtractedSignaturePng(
+  srcRgba: Uint8ClampedArray,
+  srcWidth: number,
+  srcHeight: number,
+  params: SignatureExtractParams = {},
+): { dataUrl: string; width: number; height: number } {
+  const extracted = extractSignatureFromRgba(srcRgba, srcWidth, srcHeight, params);
+  const canvas = document.createElement('canvas');
+  canvas.width = extracted.width;
+  canvas.height = extracted.height;
+  const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas 2D context unavailable.');
+  const outImgData = ctx.createImageData(extracted.width, extracted.height);
+  outImgData.data.set(extracted.data);
+  ctx.putImageData(outImgData, 0, 0);
+  return {
+    dataUrl: canvas.toDataURL('image/png'),
+    width: extracted.width,
+    height: extracted.height,
+  };
+}
+
+/**
+ * Extracts a crisp transparent signature PNG from an uploaded image or paper photograph
+ * using adaptive local paper-illumination modeling, shadow removal, and auto-crop.
+ */
+export async function processUploadedSignatureImage(
+  file: File,
+  options: boolean | SignatureExtractParams = true,
+): Promise<{ dataUrl: string; width: number; height: number }> {
+  const decoded = await decodeImageFileToRgba(file);
+  const params: SignatureExtractParams =
+    typeof options === 'boolean'
+      ? { mode: options ? 'smart' : 'none', autoCrop: options }
+      : options;
+  return renderExtractedSignaturePng(decoded.data, decoded.width, decoded.height, params);
 }
 
 export const TYPED_SIGNATURE_STYLES = [

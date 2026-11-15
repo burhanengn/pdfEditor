@@ -15,10 +15,12 @@ import {
   renderRealisticInkToCanvas,
   type InkTimedPoint,
 } from '@/utils/realisticInk';
+import type { SignatureExtractionMode } from '@/utils/signatureExtractor';
 import {
+  decodeImageFileToRgba,
   loadSavedSignatures,
   persistSavedSignatures,
-  processUploadedSignatureImage,
+  renderExtractedSignaturePng,
   renderTypedSignatureToPng,
   TYPED_SIGNATURE_STYLES,
 } from '@/utils/signatureStorage';
@@ -90,7 +92,15 @@ export function SignatureModal() {
     width: number;
     height: number;
   } | null>(null);
-  const [removeWhiteBg, setRemoveWhiteBg] = useState(true);
+  const [rawUploadedRgba, setRawUploadedRgba] = useState<{
+    data: Uint8ClampedArray;
+    width: number;
+    height: number;
+  } | null>(null);
+  const [uploadExtractMode, setUploadExtractMode] = useState<SignatureExtractionMode>('smart');
+  const [uploadSensitivity, setUploadSensitivity] = useState(0.55);
+  const [uploadInkTint, setUploadInkTint] = useState<string | 'original'>('original');
+  const [uploadAutoCrop, setUploadAutoCrop] = useState(true);
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [uploadError, setUploadError] = useState<string | null>(null);
 
@@ -103,24 +113,49 @@ export function SignatureModal() {
   }, [savedSignatures]);
 
   useEffect(() => {
-    if (!uploadedFile) return;
+    if (!uploadedFile) {
+      setRawUploadedRgba(null);
+      return;
+    }
     let cancelled = false;
-    processUploadedSignatureImage(uploadedFile, removeWhiteBg)
+    decodeImageFileToRgba(uploadedFile)
       .then((res) => {
         if (!cancelled) {
-          setUploadedPreview(res);
+          setRawUploadedRgba(res);
           setUploadError(null);
         }
       })
       .catch((err) => {
         if (!cancelled) {
+          setRawUploadedRgba(null);
           setUploadError(err instanceof Error ? err.message : 'Upload processing error');
         }
       });
     return () => {
       cancelled = true;
     };
-  }, [uploadedFile, removeWhiteBg]);
+  }, [uploadedFile]);
+
+  useEffect(() => {
+    if (!rawUploadedRgba) return;
+    try {
+      const rendered = renderExtractedSignaturePng(
+        rawUploadedRgba.data,
+        rawUploadedRgba.width,
+        rawUploadedRgba.height,
+        {
+          mode: uploadExtractMode,
+          sensitivity: uploadSensitivity,
+          inkTintColor: uploadInkTint,
+          autoCrop: uploadAutoCrop,
+        },
+      );
+      setUploadedPreview(rendered);
+      setUploadError(null);
+    } catch (err) {
+      setUploadError(err instanceof Error ? err.message : 'Extraction processing error');
+    }
+  }, [rawUploadedRgba, uploadExtractMode, uploadSensitivity, uploadInkTint, uploadAutoCrop]);
 
   if (!open) return null;
 
@@ -329,14 +364,18 @@ export function SignatureModal() {
     }
 
     if (tab === 'upload' && uploadedPreview) {
-      const finalDataUrl = realisticInk
-        ? await applyOrganicInkFilterToDataUrl(
-            uploadedPreview.dataUrl,
-            inkColor,
-            uploadedPreview.width,
-            uploadedPreview.height,
-          )
-        : uploadedPreview.dataUrl;
+      const resolvedUploadTint = uploadInkTint !== 'original' ? uploadInkTint : null;
+      // Preserve authentic extracted ink hues when user selects 'original'; only
+      // apply organic ink tinting when a target ink color is explicitly chosen.
+      const finalDataUrl =
+        realisticInk && resolvedUploadTint && uploadExtractMode !== 'none'
+          ? await applyOrganicInkFilterToDataUrl(
+              uploadedPreview.dataUrl,
+              resolvedUploadTint,
+              uploadedPreview.width,
+              uploadedPreview.height,
+            )
+          : uploadedPreview.dataUrl;
       return {
         id: createId('sig'),
         templateId,
@@ -348,6 +387,7 @@ export function SignatureModal() {
         width: uploadedPreview.width,
         height: uploadedPreview.height,
         realisticInk,
+        inkColor: resolvedUploadTint ?? undefined,
       };
     }
 
@@ -639,14 +679,18 @@ export function SignatureModal() {
 
             {tab === 'upload' && (
               <div className="space-y-3">
-                <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-300 p-6 text-center hover:border-blue-500 dark:border-slate-700">
-                  <Upload className="mb-2 h-6 w-6 text-slate-400" />
+                <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-300 p-5 text-center hover:border-blue-500 dark:border-slate-700">
+                  <Upload className="mb-1.5 h-6 w-6 text-slate-400" />
                   <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
-                    Click to select signature image (PNG, JPG, WebP)
+                    Kağıda atılmış imza fotoğrafı veya görsel seçin (PNG, JPG, WebP)
+                  </span>
+                  <span className="mt-0.5 text-[10px] text-slate-400">
+                    Gölge, kağıt dokusu ve sarı/gri arka planı akıllıca temizler
                   </span>
                   <input
                     type="file"
                     accept="image/png,image/jpeg,image/webp"
+                    data-testid="signature-upload-input"
                     className="hidden"
                     onChange={(e) => {
                       const f = e.target.files?.[0];
@@ -655,25 +699,117 @@ export function SignatureModal() {
                   />
                 </label>
 
-                <label className="flex items-center gap-2 text-xs text-slate-600 dark:text-slate-300">
-                  <input
-                    type="checkbox"
-                    checked={removeWhiteBg}
-                    onChange={(e) => setRemoveWhiteBg(e.target.checked)}
-                    className="rounded accent-blue-600"
-                  />
-                  Auto-remove white background (transparent PNG)
-                </label>
+                <div className="grid grid-cols-1 gap-2 rounded-xl border border-slate-200 bg-slate-50/80 p-3 text-xs dark:border-slate-800 dark:bg-slate-950/60 sm:grid-cols-2">
+                  <div>
+                    <span className="mb-1 block text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                      Arka Plan Temizleme Modu
+                    </span>
+                    <div className="flex flex-wrap gap-1">
+                      {(
+                        [
+                          { id: 'smart', label: 'Akıllı (Fotoğraf)' },
+                          { id: 'white', label: 'Basit Beyaz' },
+                          { id: 'none', label: 'Ham' },
+                        ] as Array<{ id: SignatureExtractionMode; label: string }>
+                      ).map((opt) => (
+                        <button
+                          key={opt.id}
+                          type="button"
+                          data-testid={`signature-extract-mode-${opt.id}`}
+                          onClick={() => setUploadExtractMode(opt.id)}
+                          className={`rounded-md border px-2 py-1 text-[11px] font-medium transition ${
+                            uploadExtractMode === opt.id
+                              ? 'border-blue-500 bg-blue-600 text-white'
+                              : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'
+                          }`}
+                        >
+                          {opt.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {uploadExtractMode === 'smart' && (
+                    <div>
+                      <div className="mb-1 flex items-center justify-between text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                        <span>Mürekkep Hassasiyeti</span>
+                        <span>{Math.round(uploadSensitivity * 100)}%</span>
+                      </div>
+                      <input
+                        type="range"
+                        min={0.1}
+                        max={0.95}
+                        step={0.05}
+                        value={uploadSensitivity}
+                        data-testid="signature-extract-sensitivity"
+                        onChange={(e) => setUploadSensitivity(Number(e.target.value))}
+                        className="w-full accent-blue-600"
+                      />
+                    </div>
+                  )}
+
+                  {uploadExtractMode !== 'none' && (
+                    <div className="flex flex-wrap items-center justify-between gap-2 sm:col-span-2">
+                      <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                          Mürekkep Rengi:
+                        </span>
+                        <button
+                          type="button"
+                          data-testid="signature-extract-tint-original"
+                          onClick={() => setUploadInkTint('original')}
+                          className={`rounded-full border px-2 py-0.5 text-[10px] font-medium transition ${
+                            uploadInkTint === 'original'
+                              ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                              : 'border-slate-200 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'
+                          }`}
+                        >
+                          Orijinal Renk
+                        </button>
+                        {INK_COLORS.map((c) => (
+                          <button
+                            key={c}
+                            type="button"
+                            data-testid={`signature-extract-tint-${c}`}
+                            onClick={() => setUploadInkTint(c)}
+                            style={{ backgroundColor: c }}
+                            className={`h-5 w-5 rounded-full border-2 transition ${
+                              uploadInkTint === c
+                                ? 'scale-110 border-blue-500 ring-2 ring-blue-500/30'
+                                : 'border-slate-300 dark:border-slate-600'
+                            }`}
+                            aria-label={`Recolor extracted signature ${c}`}
+                          />
+                        ))}
+                      </div>
+
+                      <label className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-300">
+                        <input
+                          type="checkbox"
+                          checked={uploadAutoCrop}
+                          data-testid="signature-extract-autocrop"
+                          onChange={(e) => setUploadAutoCrop(e.target.checked)}
+                          className="rounded accent-blue-600"
+                        />
+                        Kenar boşluklarını kırp
+                      </label>
+                    </div>
+                  )}
+                </div>
 
                 {uploadError && <p className="text-xs text-red-500">{uploadError}</p>}
 
                 {uploadedPreview && (
-                  <div className="checkerboard-bg flex h-28 items-center justify-center rounded-lg border border-slate-200 p-2 dark:border-slate-700">
+                  <div className="checkerboard-bg relative flex h-32 items-center justify-center rounded-lg border border-slate-200 p-2 dark:border-slate-700">
                     <img
                       src={uploadedPreview.dataUrl}
                       alt="Uploaded signature preview"
-                      className="max-h-24 object-contain"
+                      data-testid="signature-upload-preview"
+                      className="max-h-28 object-contain"
                     />
+                    <span className="absolute bottom-1.5 right-2 rounded bg-slate-900/75 px-1.5 py-0.5 text-[9px] font-medium text-white">
+                      {uploadedPreview.width}×{uploadedPreview.height}px
+                    </span>
                   </div>
                 )}
               </div>

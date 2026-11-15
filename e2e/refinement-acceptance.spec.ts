@@ -555,4 +555,194 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
       md.destroy();
     }
   });
+
+  test('Smart Signature Photo Extractor removes shadowed tinted paper, keeps blue ink crisp, auto-crops & exports cleanly to PDF', async ({
+    page,
+  }) => {
+    // Build a challenging shaded-paper + warm-tint + blue-pen signature photo (280x150)
+    const imgW = 280;
+    const imgH = 150;
+    const photoPixmap = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, imgW, imgH], false);
+    let photoPng: Uint8Array;
+    try {
+      const samples = photoPixmap.getPixels();
+      for (let y = 0; y < imgH; y++) {
+        for (let x = 0; x < imgW; x++) {
+          // Left bright cream paper (~245 lum) -> right deep hand shadow (~118 lum)
+          const t = Math.max(0, Math.min(1, (x - 95) / 60));
+          const illum = 1 - t * 0.52;
+          const idx = (y * imgW + x) * 3;
+          samples[idx] = Math.round(246 * illum);
+          samples[idx + 1] = Math.round(236 * illum);
+          samples[idx + 2] = Math.round(212 * illum);
+        }
+      }
+      // Draw bold blue pen curve spanning bright half & dark shadow half (y ~ 55..95)
+      for (let s = 0; s <= 240; s++) {
+        const cx = 42 + (s / 240) * 195;
+        const cy = 75 + Math.sin((s / 240) * Math.PI * 2.2) * 18;
+        for (let dy = -2; dy <= 2; dy++) {
+          for (let dx = -2; dx <= 2; dx++) {
+            if (dx * dx + dy * dy > 5) continue;
+            const px = Math.round(cx + dx);
+            const py = Math.round(cy + dy);
+            if (px < 0 || px >= imgW || py < 0 || py >= imgH) continue;
+            const o = (py * imgW + px) * 3;
+            const shadowScale = 1 - Math.max(0, Math.min(1, (px - 95) / 60)) * 0.45;
+            samples[o] = Math.round(20 * shadowScale);
+            samples[o + 1] = Math.round(58 * shadowScale);
+            samples[o + 2] = Math.round(196 * shadowScale);
+          }
+        }
+      }
+      photoPng = new Uint8Array(photoPixmap.asPNG());
+    } finally {
+      photoPixmap.destroy();
+    }
+
+    await page.goto('/');
+    await page.getByTestId('welcome-sample-btn').click();
+    const page1 = page.getByTestId('pdf-page-1');
+    await expect(page1.locator('canvas')).toBeVisible();
+    await expect
+      .poll(async () => page1.locator('canvas').evaluate((c: HTMLCanvasElement) => c.width))
+      .toBeGreaterThan(200);
+
+    await page.getByTestId('tool-signature').click();
+    await page.getByRole('button', { name: 'Upload', exact: true }).click();
+
+    await expect(page.getByTestId('signature-extract-mode-smart')).toBeVisible();
+    await page.getByTestId('signature-upload-input').setInputFiles({
+      name: 'shaded-blue-sig.png',
+      mimeType: 'image/png',
+      buffer: Buffer.from(photoPng),
+    });
+
+    const previewImg = page.getByTestId('signature-upload-preview');
+    await expect(previewImg).toBeVisible();
+
+    // Verify smart extraction auto-cropped margins, removed shaded paper to alpha=0, and kept blue ink
+    await expect
+      .poll(async () =>
+        previewImg.evaluate((img: HTMLImageElement) => {
+          if (!img.complete || img.naturalWidth === 0) return null;
+          const c = document.createElement('canvas');
+          c.width = img.naturalWidth;
+          c.height = img.naturalHeight;
+          const ctx = c.getContext('2d')!;
+          ctx.drawImage(img, 0, 0);
+          const d = ctx.getImageData(0, 0, c.width, c.height).data;
+          let opaqueCount = 0;
+          let blueInkCount = 0;
+          for (let i = 0; i < d.length; i += 4) {
+            if (d[i + 3] > 180) {
+              opaqueCount++;
+              if (d[i + 2] > d[i] + 60) blueInkCount++;
+            }
+          }
+          const topLeftAlpha = d[3];
+          const bottomRightAlpha = d[d.length - 1];
+          return {
+            w: c.width,
+            h: c.height,
+            topLeftAlpha,
+            bottomRightAlpha,
+            opaqueCount,
+            blueInkCount,
+          };
+        }),
+      )
+      .toMatchObject({
+        topLeftAlpha: 0,
+        bottomRightAlpha: 0,
+      });
+
+    const stats = await previewImg.evaluate((img: HTMLImageElement) => {
+      const c = document.createElement('canvas');
+      c.width = img.naturalWidth;
+      c.height = img.naturalHeight;
+      const ctx = c.getContext('2d')!;
+      ctx.drawImage(img, 0, 0);
+      const d = ctx.getImageData(0, 0, c.width, c.height).data;
+      let opaqueCount = 0;
+      let blueInkCount = 0;
+      for (let i = 0; i < d.length; i += 4) {
+        if (d[i + 3] > 180) {
+          opaqueCount++;
+          if (d[i + 2] > d[i] + 60) blueInkCount++;
+        }
+      }
+      return { w: c.width, h: c.height, opaqueCount, blueInkCount };
+    });
+    expect(stats.w).toBeLessThan(imgW);
+    expect(stats.h).toBeLessThan(imgH);
+    expect(stats.blueInkCount).toBeGreaterThan(200);
+    // Ink covers only the strokes (< 25% of cropped box), proving shadow background is transparent
+    expect(stats.opaqueCount).toBeLessThan(stats.w * stats.h * 0.25);
+
+    // Adjust sensitivity slider to verify reactive synchronous re-extraction works cleanly
+    const sensSlider = page.getByTestId('signature-extract-sensitivity');
+    await sensSlider.fill('0.68');
+    await sensSlider.dispatchEvent('change');
+    await expect(previewImg).toBeVisible();
+
+    // Place onto clean lower region of Page 1 & verify exported PDF has transparent paper + crisp blue strokes
+    await page.getByTestId('signature-place-btn').click();
+    await expect(page.getByRole('dialog')).toBeHidden();
+
+    const pBox = (await page1.boundingBox())!;
+    const placeX = pBox.x + pBox.width * 0.5;
+    const placeY = pBox.y + pBox.height * 0.72;
+    await page.mouse.move(placeX, placeY);
+    await page.mouse.click(placeX, placeY);
+
+    const placedSig = page1.locator('[data-testid^="canvas-element-sigel_"]').first();
+    await expect(placedSig).toBeVisible();
+
+    const [pdfDownload] = await Promise.all([
+      page.waitForEvent('download'),
+      page.getByTestId('export-pdf-btn').click(),
+    ]);
+    const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
+    const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
+    try {
+      const mp = md.loadPage(0);
+      const pm = mp.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
+      try {
+        const px = pm.getPixels();
+        const w = pm.getWidth();
+        const h = pm.getHeight();
+        const n = pm.getNumberOfComponents();
+        // Scan around y = 0.62..0.84 * h where the placed signature sits
+        let blueInkPixels = 0;
+        let warmShadowPaperPixels = 0;
+        let opaqueBackdropPixels = 0;
+        for (let py = Math.floor(h * 0.62); py < Math.floor(h * 0.84); py++) {
+          for (let pxX = Math.floor(w * 0.25); pxX < Math.floor(w * 0.75); pxX++) {
+            const idx = (py * w + pxX) * n;
+            const r = px[idx];
+            const g = px[idx + 1];
+            const b = px[idx + 2];
+            if (b > r + 40 && b > 110) {
+              blueInkPixels++;
+            } else if (r < 238 && r > 95 && r - b >= 12) {
+              warmShadowPaperPixels++;
+            } else if (r < 225 && g < 220 && b < 210 && Math.abs(r - g) < 20) {
+              opaqueBackdropPixels++;
+            }
+          }
+        }
+        expect(blueInkPixels).toBeGreaterThan(80);
+        // Warm cream / shaded paper backdrop pixels (R - B >= 12) must not appear on the PDF
+        expect(warmShadowPaperPixels).toBeLessThan(25);
+        // No large opaque gray rectangle (~4,000+ px) was stamped onto the PDF page
+        expect(opaqueBackdropPixels).toBeLessThan(500);
+      } finally {
+        pm.destroy();
+        mp.destroy();
+      }
+    } finally {
+      md.destroy();
+    }
+  });
 });
