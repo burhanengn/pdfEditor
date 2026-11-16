@@ -2,6 +2,7 @@
 /* eslint-disable */
 export const memory: WebAssembly.Memory;
 export const __wbg_wasmsession_free: (a: number, b: number) => void;
+export const apply_pdf_clip_masks: (a: number, b: number, c: number, d: any) => void;
 export const build_detected_text_blocks: (a: number, b: any, c: number, d: number, e: any) => void;
 export const build_page_offset_index: (a: number, b: any, c: number, d: any) => void;
 export const build_wrapped_rich_lines: (a: number, b: any, c: number, d: any, e: number, f: number, g: number, h: any) => void;
@@ -9,10 +10,16 @@ export const compute_page_number_layout: (a: number, b: number, c: number, d: nu
 export const compute_rotated_resize_rect: (a: number, b: any) => void;
 export const compute_snap_position: (a: number, b: any, c: number, d: number, e: any, f: number) => void;
 export const core_version: (a: number) => void;
+export const create_blank_pdf_bytes: (a: number, b: number, c: number, d: number) => void;
+export const create_reference_pdf_bytes: (a: number, b: number, c: number, d: number, e: number) => void;
+export const create_sample_pdf_bytes: (a: number, b: number, c: number, d: number, e: number) => void;
 export const ensure_runs_from_element: (a: number, b: number, c: number, d: any, e: number, f: number) => void;
+export const extract_embedded_fonts_from_pdf: (a: number, b: number, c: number, d: number, e: number) => void;
 export const flip_svg_path: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
 export const format_page_number_label: (a: number, b: number, c: number, d: any) => void;
 export const get_rotated_bounding_box: (a: number, b: any, c: number) => void;
+export const inspect_pdf_bytes: (a: number, b: number, c: number, d: number, e: number) => void;
+export const inspect_ttf_font: (a: number, b: number, c: number) => void;
 export const normalize_absolute_points: (a: number, b: any) => void;
 export const normalize_font_match_key: (a: number, b: number, c: number) => void;
 export const normalize_for_turkish_search: (a: number, b: number, c: number, d: number) => void;
@@ -22,9 +29,12 @@ export const parse_page_range_expression: (a: number, b: number, c: number, d: n
 export const parse_pdf_font_metadata: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
 export const path_points_to_svg_path: (a: number, b: any, c: number, d: number, e: number, f: number) => void;
 export const point_in_rotated_rect: (a: number, b: number, c: number, d: any, e: number, f: number) => void;
+export const prepare_clean_page_preview_bytes: (a: number, b: number, c: number, d: number, e: any, f: any, g: any) => void;
+export const redact_pdf_bytes: (a: number, b: number, c: number, d: any, e: any, f: number) => void;
 export const sanitize_for_winansi: (a: number, b: number, c: number) => void;
 export const scale_svg_path: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
 export const shape_to_svg_path: (a: number, b: any, c: number, d: number, e: number) => void;
+export const strip_pdf_elements_bytes: (a: number, b: number, c: number, d: any, e: any, f: any) => void;
 export const to_roman_numeral: (a: number, b: number, c: number) => void;
 export const wasmsession_apply_command_json: (a: number, b: number, c: number, d: number) => void;
 export const wasmsession_can_redo: (a: number) => number;

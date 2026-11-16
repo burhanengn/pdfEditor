@@ -6,9 +6,13 @@ export type GpWasmModule = typeof gpWasm;
 let readyPromise: Promise<GpWasmModule> | null = null;
 let initialized = false;
 
+function isNodeRuntime(): boolean {
+  return typeof process !== 'undefined' && Boolean(process.versions?.node);
+}
+
 /**
- * Initializes the compiled Rust/Wasm core (`gp-wasm`) inside browser or Web Worker contexts.
- * Idempotent and safe to call repeatedly across concurrent workers.
+ * Initializes the compiled Rust/Wasm core (`gp-wasm`) inside browser, Web Worker,
+ * or Node/Vitest environments transparently.
  */
 export async function ensureRustCoreReady(): Promise<GpWasmModule> {
   if (initialized) {
@@ -16,6 +20,22 @@ export async function ensureRustCoreReady(): Promise<GpWasmModule> {
   }
   if (!readyPromise) {
     readyPromise = (async () => {
+      if (isNodeRuntime()) {
+        const [{ default: fs }, { default: path }] = await Promise.all([
+          import('node:fs'),
+          import('node:path'),
+        ]);
+        const candidatePaths = [
+          path.resolve(process.cwd(), 'src/engine/wasm-core/gp_wasm_bg.wasm'),
+        ];
+        for (const p of candidatePaths) {
+          if (fs.existsSync(p)) {
+            gpWasm.initSync({ module: fs.readFileSync(p) });
+            initialized = true;
+            return gpWasm;
+          }
+        }
+      }
       await initWasm({ module_or_path: wasmUrl });
       initialized = true;
       return gpWasm;

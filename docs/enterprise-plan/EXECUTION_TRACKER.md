@@ -45,10 +45,10 @@
 
 ## Faz F3 — Rust Çekirdek B (`gp-pdf-pdfium`, `gp-redact`) & MuPDF/AGPL Sökülmesi
 
-- [ ] **F3.1** **D3 Teknik Doğrulama (Spike):** PDFium nesne düzeyinde kaldırma + kısmi glif yeniden yazımı VE `lopdf` tabanlı Rust içerik akışı yeniden yazıcı; her redaksiyon sonrası `FPDFText_*` ile metnin sıfır kaldığını kanıtlayan otomatik assertion testleri
-- [ ] **F3.2** `gp-pdf-pdfium`: `PdfBackend` uygulaması (karo/thumbnail raster, metin/span, arama, outline, bağlantılar, nesne çıkarımı, metin/görsel/yol ekleme + font gömme, sayfa içe aktarma/silme/döndürme, `FPDF_SaveAsCopy`)
-- [ ] **F3.3** `gp-engine`: Session cephesi (tek PDFium thread'i + öncelik kuyruğu/iptal, sayfa LRU, `trim()`, ilerleme/iptal destekli derleme)
-- [ ] **F3.4** Web sürümünün tamamen `core/bindings/wasm` + PDFium'a geçirilmesi; `mupdf`, `pdfjs-dist`, `pdf-lib`, `@pdf-lib/fontkit` bağımlılıklarının tamamen sökülmesi (AGPL bağımlılığı = 0) ve regresyon doğrulaması
+- [x] **F3.1** **D3 Teknik Doğrulama (Spike):** PDFium nesne düzeyinde kaldırma + kısmi glif yeniden yazımı VE `lopdf` tabanlı Rust içerik akışı yeniden yazıcı; her redaksiyon sonrası `FPDFText_*` ile metnin sıfır kaldığını kanıtlayan otomatik assertion testleri
+- [x] **F3.2** `gp-pdf-pdfium`: `PdfBackend` uygulaması (karo/thumbnail raster, metin/span, arama, outline, bağlantılar, nesne çıkarımı, metin/görsel/yol ekleme + font gömme, sayfa içe aktarma/silme/döndürme, `FPDF_SaveAsCopy`)
+- [x] **F3.3** `gp-engine`: Session cephesi (tek PDFium thread'i + öncelik kuyruğu/iptal, sayfa LRU, `trim()`, ilerleme/iptal destekli derleme)
+- [x] **F3.4** Web sürümünün tamamen `core/bindings/wasm` + PDFium'a geçirilmesi; `mupdf`, `pdfjs-dist`, `pdf-lib`, `@pdf-lib/fontkit` bağımlılıklarının tamamen sökülmesi (AGPL bağımlılığı = 0) ve regresyon doğrulaması (`23/23` Cargo, `108/108` Vitest, `22/22` Playwright E2E)
 
 ---
 

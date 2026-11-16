@@ -1,23 +1,21 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import * as mupdf from 'mupdf';
 import {
-  decodePDFRawStream,
-  PDFArray,
-  PDFDocument,
-  PDFRawStream,
-  StandardFonts,
-  rgb,
-  degrees,
-} from 'pdf-lib';
+  buildTestPdfWithPdfium,
+  createSolidPngBytes,
+  extractPdfCharsWithPdfium,
+  extractPdfTextWithPdfium,
+  getPdfPageImageBoxesWithPdfium,
+  renderPdfPageRgbaWithPdfium,
+} from '../pdfium/__tests__/pdfTestHelpers';
 import {
   compilePdfDocument,
   inspectPdfDocument,
   prepareCleanPreviewPagePdf,
   splitPdfToZip,
 } from '../pdfCompiler';
-import { extractTextBlocksFromMuPdfPage } from '../textExtractor';
+import { extractTextBlocksFromPdfBytes } from '../textExtractor';
 import { normalizeUnicodeForPdf } from '../fonts';
 import type { PageMeta } from '@/types/pdf';
 import type {
@@ -107,88 +105,47 @@ function loadNodeUnicodeFontPack(): FontAssetPayload[] {
   ];
 }
 
-// Minimal valid 2x2 red PNG image bytes
 function createSamplePngBytes(): Uint8Array {
-  const pixmap = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, 20, 20], false);
-  try {
-    pixmap.clear(220);
-    return new Uint8Array(pixmap.asPNG());
-  } finally {
-    pixmap.destroy();
-  }
+  return createSolidPngBytes(20, 20, [220, 220, 220, 255]);
 }
 
 async function createSamplePdf(): Promise<Uint8Array> {
-  const doc = await PDFDocument.create();
-  const font = await doc.embedFont(StandardFonts.Helvetica);
-
-  // Page 1: portrait with target text + keep text + embedded PNG image
-  const p1 = doc.addPage([612, 792]);
-  p1.drawText('REPLACE_ME_HEADER', { x: 72, y: 720, size: 18, font, color: rgb(0, 0, 0) });
-  p1.drawText('KEEP_THIS_LINE_INTACT', { x: 72, y: 660, size: 14, font, color: rgb(0.1, 0.2, 0.5) });
-
-  const png = await doc.embedPng(createSamplePngBytes());
-  p1.drawImage(png, { x: 72, y: 500, width: 100, height: 100 });
-
-  // Page 2: intrinsically rotated 90 deg
-  const p2 = doc.addPage([612, 792]);
-  p2.setRotation(degrees(90));
-  p2.drawText('ROTATED_PAGE_TEXT', { x: 100, y: 700, size: 16, font, color: rgb(0, 0, 0) });
-
-  return doc.save();
+  return buildTestPdfWithPdfium([
+    {
+      width: 612,
+      height: 792,
+      texts: [
+        { text: 'REPLACE_ME_HEADER', x: 72, yPdf: 720, fontSize: 18, color: [0, 0, 0] },
+        { text: 'KEEP_THIS_LINE_INTACT', x: 72, yPdf: 660, fontSize: 14, color: [26, 51, 128] },
+      ],
+      images: [
+        { pngBytes: createSamplePngBytes(), x: 72, yPdf: 500, width: 100, height: 100 },
+      ],
+    },
+    {
+      width: 612,
+      height: 792,
+      rotation: 90,
+      texts: [{ text: 'ROTATED_PAGE_TEXT', x: 100, yPdf: 700, fontSize: 16, color: [0, 0, 0] }],
+    },
+  ]);
 }
 
-function extractPagePlainText(bytes: Uint8Array, pageIndex: number): string {
-  const doc = mupdf.Document.openDocument(bytes, 'application/pdf');
-  try {
-    const page = doc.loadPage(pageIndex);
-    try {
-      const stext = page.toStructuredText('preserve-whitespace');
-      try {
-        return stext.asText();
-      } finally {
-        stext.destroy();
-      }
-    } finally {
-      page.destroy();
-    }
-  } finally {
-    doc.destroy();
-  }
+function extractPagePlainText(bytes: Uint8Array, pageIndex: number): Promise<string> {
+  return extractPdfTextWithPdfium(bytes, pageIndex);
 }
 
 function getPageImageBoxes(
   bytes: Uint8Array,
   pageIndex: number,
-): Array<[number, number, number, number]> {
-  const doc = mupdf.Document.openDocument(bytes, 'application/pdf');
-  try {
-    const page = doc.loadPage(pageIndex);
-    try {
-      const stext = page.toStructuredText('preserve-images');
-      try {
-        const boxes: Array<[number, number, number, number]> = [];
-        stext.walk({
-          onImageBlock(bbox) {
-            boxes.push([...bbox]);
-          },
-        });
-        return boxes;
-      } finally {
-        stext.destroy();
-      }
-    } finally {
-      page.destroy();
-    }
-  } finally {
-    doc.destroy();
-  }
+): Promise<Array<[number, number, number, number]>> {
+  return getPdfPageImageBoxesWithPdfium(bytes, pageIndex);
 }
 
 describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
   it('inspects multi-page PDF and detects intrinsic rotation', async () => {
     const bytes = await createSamplePdf();
-    const info = await inspectPdfDocument(mupdf, bytes);
+    const info = await inspectPdfDocument(bytes);
     expect(info.status).toBe('ok');
     expect(info.wasEncrypted).toBe(false);
     expect(info.pageCount).toBe(2);
@@ -201,28 +158,29 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
   });
 
   it('handles encrypted PDFs with password prompt and decryption', async () => {
-    const plainBytes = await createSamplePdf();
-    const mupdfDoc = mupdf.Document.openDocument(plainBytes, 'application/pdf');
-    let encryptedBytes: Uint8Array;
-    try {
-      const pdfDoc = mupdfDoc.asPDF()!;
-      const encBuf = pdfDoc.saveToBuffer('encrypt=aes-256,user-password=hunter2,owner-password=admin');
-      try {
-        encryptedBytes = new Uint8Array(encBuf.asUint8Array());
-      } finally {
-        encBuf.destroy();
-      }
-    } finally {
-      mupdfDoc.destroy();
-    }
+    const encryptedBytes = await buildTestPdfWithPdfium(
+      [
+        {
+          width: 612,
+          height: 792,
+          texts: [{ text: 'SECRET_1', x: 72, yPdf: 720, fontSize: 16 }],
+        },
+        {
+          width: 612,
+          height: 792,
+          texts: [{ text: 'SECRET_2', x: 72, yPdf: 720, fontSize: 16 }],
+        },
+      ],
+      { userPassword: 'hunter2', ownerPassword: 'admin' },
+    );
 
-    const noPw = await inspectPdfDocument(mupdf, encryptedBytes);
+    const noPw = await inspectPdfDocument(encryptedBytes);
     expect(noPw.status).toBe('needs-password');
 
-    const badPw = await inspectPdfDocument(mupdf, encryptedBytes, 'wrong');
+    const badPw = await inspectPdfDocument(encryptedBytes, 'wrong');
     expect(badPw.status).toBe('invalid-password');
 
-    const okPw = await inspectPdfDocument(mupdf, encryptedBytes, 'hunter2');
+    const okPw = await inspectPdfDocument(encryptedBytes, 'hunter2');
     expect(okPw.status).toBe('ok');
     expect(okPw.wasEncrypted).toBe(true);
     expect(okPw.decryptedBytes).toBeDefined();
@@ -231,7 +189,7 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
 
   it('strips original text stream operators via MuPDF Wasm and renders edited text cleanly', async () => {
     const bytes = await createSamplePdf();
-    const info = await inspectPdfDocument(mupdf, bytes);
+    const info = await inspectPdfDocument(bytes);
 
     const pages: PageMeta[] = info.pages.map((p, idx) => ({
       id: `page_${idx}`,
@@ -314,31 +272,31 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       aspectLocked: true,
     };
 
-    const compiled = await compilePdfDocument(mupdf, {
+    const compiled = await compilePdfDocument({
       sourceDocs: [{ id: 'src_1', bytes }],
       pages,
       elements: [textEdit, textAdd, imgReplace],
       optimizeWithMupdf: true,
     });
 
-    const p0Text = extractPagePlainText(compiled, 0);
+    const p0Text = await extractPagePlainText(compiled, 0);
     expect(p0Text).not.toContain('REPLACE_ME_HEADER');
     expect(p0Text).toContain('UPDATED_TITLE_WASM');
     expect(p0Text).toContain('KEEP_THIS_LINE_INTACT');
 
-    const p1Text = extractPagePlainText(compiled, 1);
+    const p1Text = await extractPagePlainText(compiled, 1);
     expect(p1Text).toContain('ROTATED_PAGE_TEXT');
     expect(p1Text).toContain('ADDED_ON_ROTATED_PAGE');
 
     // Original image was removed and re-embedded once at its moved/resized geometry
-    const imgBoxes = getPageImageBoxes(compiled, 0);
+    const imgBoxes = await getPageImageBoxes(compiled, 0);
     expect(imgBoxes).toHaveLength(1);
     expect(imgBoxes[0][0]).toBeGreaterThan(280);
   });
 
   it('splits pages into multiple PDFs bundled in a valid ZIP archive', async () => {
     const bytes = await createSamplePdf();
-    const info = await inspectPdfDocument(mupdf, bytes);
+    const info = await inspectPdfDocument(bytes);
     const pages: PageMeta[] = info.pages.map((p, idx) => ({
       id: `page_${idx}`,
       sourceDocId: 'src_1',
@@ -351,7 +309,7 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       cropBox: p.cropBox,
     }));
 
-    const zipBytes = await splitPdfToZip(mupdf, {
+    const zipBytes = await splitPdfToZip({
       sourceDocs: [{ id: 'src_1', bytes }],
       elements: [],
       jobs: [
@@ -367,17 +325,17 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
   });
 
   it('compiles 100-page document with strokes, highlights, black redaction, and vector signature', async () => {
-    const doc = await PDFDocument.create();
-    const font = await doc.embedFont(StandardFonts.Helvetica);
-    for (let i = 0; i < 100; i++) {
-      const p = doc.addPage([612, 792]);
-      p.drawText(`Page ${i + 1}`, { x: 50, y: 720, size: 12, font });
-      if (i === 0) {
-        p.drawText('CONFIDENTIAL_SECRET', { x: 50, y: 650, size: 14, font });
-      }
-    }
-    const rawBytes = await doc.save();
-    const info = await inspectPdfDocument(mupdf, rawBytes);
+    const rawBytes = await buildTestPdfWithPdfium(
+      Array.from({ length: 100 }, (_, i) => ({
+        width: 612,
+        height: 792,
+        texts: [
+          { text: `Page ${i + 1}`, x: 50, yPdf: 720, fontSize: 12 },
+          ...(i === 0 ? [{ text: 'CONFIDENTIAL_SECRET', x: 50, yPdf: 650, fontSize: 14 }] : []),
+        ],
+      })),
+    );
+    const info = await inspectPdfDocument(rawBytes);
     expect(info.pageCount).toBe(100);
 
     const pages: PageMeta[] = info.pages.map((p, idx) => ({
@@ -392,7 +350,7 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       cropBox: p.cropBox,
     }));
 
-    const out = await compilePdfDocument(mupdf, {
+    const out = await compilePdfDocument({
       sourceDocs: [{ id: 'big', bytes: rawBytes }],
       pages,
       elements: [
@@ -455,19 +413,19 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       optimizeWithMupdf: true,
     });
 
-    const p0Text = extractPagePlainText(out, 0);
+    const p0Text = await extractPagePlainText(out, 0);
     expect(p0Text).not.toContain('CONFIDENTIAL_SECRET');
     expect(p0Text).toContain('Page 1');
 
-    const check = await inspectPdfDocument(mupdf, out);
+    const check = await inspectPdfDocument(out);
     expect(check.pageCount).toBe(100);
   });
 
   it('completely removes deleted embedded image XObject operators on export', async () => {
     const bytes = await createSamplePdf();
-    expect(getPageImageBoxes(bytes, 0)).toHaveLength(1);
+    expect(await getPageImageBoxes(bytes, 0)).toHaveLength(1);
 
-    const info = await inspectPdfDocument(mupdf, bytes);
+    const info = await inspectPdfDocument(bytes);
     const pages: PageMeta[] = info.pages.map((p, idx) => ({
       id: `page_${idx}`,
       sourceDocId: 'src_1',
@@ -504,20 +462,20 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       aspectLocked: true,
     };
 
-    const compiled = await compilePdfDocument(mupdf, {
+    const compiled = await compilePdfDocument({
       sourceDocs: [{ id: 'src_1', bytes }],
       pages,
       elements: [deletedImg],
       optimizeWithMupdf: true,
     });
 
-    expect(getPageImageBoxes(compiled, 0)).toHaveLength(0);
-    expect(extractPagePlainText(compiled, 0)).toContain('REPLACE_ME_HEADER');
+    expect(await getPageImageBoxes(compiled, 0)).toHaveLength(0);
+    expect(await extractPagePlainText(compiled, 0)).toContain('REPLACE_ME_HEADER');
   });
 
   it('embeds full Turkish & Unicode glyphs cleanly without question-mark fallback', async () => {
     const bytes = await createSamplePdf();
-    const info = await inspectPdfDocument(mupdf, bytes);
+    const info = await inspectPdfDocument(bytes);
     const pages: PageMeta[] = info.pages.map((p, idx) => ({
       id: `page_${idx}`,
       sourceDocId: 'src_1',
@@ -551,7 +509,7 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       lineHeight: 1.25,
     };
 
-    const compiled = await compilePdfDocument(mupdf, {
+    const compiled = await compilePdfDocument({
       sourceDocs: [{ id: 'src_1', bytes }],
       pages,
       elements: [turkishText],
@@ -559,7 +517,7 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       optimizeWithMupdf: true,
     });
 
-    const outText = extractPagePlainText(compiled, 0);
+    const outText = await extractPagePlainText(compiled, 0);
     expect(outText).not.toContain('?');
     expect(outText).toContain('ÖĞRENCİ');
     expect(outText).toContain('öğrenciyle');
@@ -568,40 +526,32 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
   });
 
   it('prepareCleanPreviewPagePdf removes overlapping background image while preserving table text', async () => {
-    const doc = await PDFDocument.create();
-    const font = await doc.embedFont(StandardFonts.Helvetica);
-    const p = doc.addPage([612, 792]);
-    const bgPng = await doc.embedPng(createSamplePngBytes());
-    // Huge background image behind the form
-    p.drawImage(bgPng, { x: 40, y: 120, width: 520, height: 600 });
-    // Table lines & text drawn over the background image
-    p.drawLine({ start: { x: 40, y: 650 }, end: { x: 560, y: 650 }, thickness: 2, color: rgb(0, 0, 0) });
-    p.drawText('OVERLAID_TABLE_CELL', { x: 60, y: 660, size: 12, font, color: rgb(0, 0, 0) });
-    const bytes = await doc.save();
+    const bytes = await buildTestPdfWithPdfium([
+      {
+        width: 612,
+        height: 792,
+        images: [{ pngBytes: createSamplePngBytes(), x: 40, yPdf: 120, width: 520, height: 600 }],
+        lines: [{ x1: 40, y1Pdf: 650, x2: 560, y2Pdf: 650, stroke: [0, 0, 0], strokeWidth: 2 }],
+        texts: [{ text: 'OVERLAID_TABLE_CELL', x: 60, yPdf: 660, fontSize: 12 }],
+      },
+    ]);
 
-    expect(getPageImageBoxes(bytes, 0)).toHaveLength(1);
+    expect(await getPageImageBoxes(bytes, 0)).toHaveLength(1);
 
-    const mdoc = mupdf.Document.openDocument(bytes, 'application/pdf');
-    let cleanBytes: Uint8Array;
-    try {
-      cleanBytes = prepareCleanPreviewPagePdf(
-        mupdf,
-        mdoc.asPDF()!,
-        0,
-        [],
-        [{ x: 40, y: 72, width: 520, height: 600 }],
-      );
-    } finally {
-      mdoc.destroy();
-    }
+    const cleanBytes = await prepareCleanPreviewPagePdf(
+      bytes,
+      0,
+      [],
+      [{ x: 40, y: 72, width: 520, height: 600 }],
+    );
 
-    expect(getPageImageBoxes(cleanBytes, 0)).toHaveLength(0);
-    expect(extractPagePlainText(cleanBytes, 0)).toContain('OVERLAID_TABLE_CELL');
+    expect(await getPageImageBoxes(cleanBytes, 0)).toHaveLength(0);
+    expect(await extractPagePlainText(cleanBytes, 0)).toContain('OVERLAID_TABLE_CELL');
   });
 
   it('exports Calibri metric font cleanly with Turkish characters and currency fallback', async () => {
     const bytes = await createSamplePdf();
-    const info = await inspectPdfDocument(mupdf, bytes);
+    const info = await inspectPdfDocument(bytes);
     const pages: PageMeta[] = info.pages.map((p, idx) => ({
       id: `page_${idx}`,
       sourceDocId: 'src_1',
@@ -635,7 +585,7 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       lineHeight: 1.25,
     };
 
-    const compiled = await compilePdfDocument(mupdf, {
+    const compiled = await compilePdfDocument({
       sourceDocs: [{ id: 'src_1', bytes }],
       pages,
       elements: [calibriText],
@@ -643,7 +593,7 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       optimizeWithMupdf: true,
     });
 
-    const outText = extractPagePlainText(compiled, 0);
+    const outText = await extractPagePlainText(compiled, 0);
     expect(outText).toContain('Calibri Metrik Doğrulaması');
     expect(outText).toContain('şğüöçıİŞĞÜÖÇ');
     expect(outText).toContain('₺2.500');
@@ -651,7 +601,7 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
 
   it('justifies soft-wrapped lines flush to both edges while keeping final line left-aligned', async () => {
     const bytes = await createSamplePdf();
-    const info = await inspectPdfDocument(mupdf, bytes);
+    const info = await inspectPdfDocument(bytes);
     const pages: PageMeta[] = [info.pages[0]].map((p) => ({
       id: 'page_0',
       sourceDocId: 'src_1',
@@ -687,7 +637,7 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       lineHeight: 1.3,
     };
 
-    const compiled = await compilePdfDocument(mupdf, {
+    const compiled = await compilePdfDocument({
       sourceDocs: [{ id: 'src_1', bytes }],
       pages,
       elements: [justifiedEl],
@@ -695,62 +645,38 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       optimizeWithMupdf: true,
     });
 
-    const md = mupdf.Document.openDocument(compiled, 'application/pdf');
-    try {
-      const mp = md.loadPage(0);
-      try {
-        const st = mp.toStructuredText('preserve-whitespace');
-        try {
-          // Group all non-whitespace glyphs belonging to the same visual row (originY within 2.5pt),
-          // because justified inter-word gaps can make MuPDF split sub-runs across beginLine calls.
-          const rowMap: Array<{ y: number; x0: number; x1: number; text: string }> = [];
-          st.walk({
-            onChar(c, origin, _font, _size, quad) {
-              if (!c.trim()) return;
-              if (origin[1] < 215 || origin[1] > 360) return;
-              const charX0 = Math.min(quad[0], quad[4]);
-              const charX1 = Math.max(quad[2], quad[6]);
-              const existing = rowMap.find((r) => Math.abs(r.y - origin[1]) <= 2.5);
-              if (existing) {
-                existing.x0 = Math.min(existing.x0, charX0);
-                existing.x1 = Math.max(existing.x1, charX1);
-                existing.text += c;
-              } else {
-                rowMap.push({ y: origin[1], x0: charX0, x1: charX1, text: c });
-              }
-            },
-          });
-          rowMap.sort((a, b) => a.y - b.y);
-
-          expect(rowMap.length).toBeGreaterThanOrEqual(3);
-          // First wrapped line should start near boxX and stretch nearly to boxX + boxWidth
-          expect(rowMap[0].x0).toBeCloseTo(boxX, 0);
-          expect(rowMap[0].x1).toBeGreaterThan(boxX + boxWidth - 8);
-          // Second wrapped line should also stretch near boxX + boxWidth
-          expect(rowMap[1].x1).toBeGreaterThan(boxX + boxWidth - 8);
-          // Final line should NOT stretch to the right margin
-          const last = rowMap[rowMap.length - 1];
-          expect(last.x1).toBeLessThan(boxX + boxWidth - 20);
-        } finally {
-          st.destroy();
-        }
-
-        // Also confirm round-trip extraction detects align === 'justify' cleanly
-        const blocks = extractTextBlocksFromMuPdfPage(mp, 'page_0');
-        const roundTripped = blocks.find((b) => b.text.includes('iki yana yaslı'));
-        expect(roundTripped).toBeDefined();
-        expect(roundTripped!.align).toBe('justify');
-      } finally {
-        mp.destroy();
+    const chars = await extractPdfCharsWithPdfium(compiled, 0);
+    const rowMap: Array<{ y: number; x0: number; x1: number; text: string }> = [];
+    for (const ch of chars) {
+      if (!ch.ch.trim()) continue;
+      if (ch.originY < 215 || ch.originY > 360) continue;
+      const existing = rowMap.find((r) => Math.abs(r.y - ch.originY) <= 2.5);
+      if (existing) {
+        existing.x0 = Math.min(existing.x0, ch.x0);
+        existing.x1 = Math.max(existing.x1, ch.x1);
+        existing.text += ch.ch;
+      } else {
+        rowMap.push({ y: ch.originY, x0: ch.x0, x1: ch.x1, text: ch.ch });
       }
-    } finally {
-      md.destroy();
     }
+    rowMap.sort((a, b) => a.y - b.y);
+
+    expect(rowMap.length).toBeGreaterThanOrEqual(3);
+    expect(rowMap[0].x0).toBeCloseTo(boxX, 0);
+    expect(rowMap[0].x1).toBeGreaterThan(boxX + boxWidth - 8);
+    expect(rowMap[1].x1).toBeGreaterThan(boxX + boxWidth - 8);
+    const last = rowMap[rowMap.length - 1];
+    expect(last.x1).toBeLessThan(boxX + boxWidth - 20);
+
+    const blocks = await extractTextBlocksFromPdfBytes(compiled, 0, 'page_0');
+    const roundTripped = blocks.find((b) => b.text.includes('iki yana yaslı'));
+    expect(roundTripped).toBeDefined();
+    expect(roundTripped!.align).toBe('justify');
   });
 
   it('exports superscript and subscript runs with raised and lowered baseline coordinates', async () => {
     const bytes = await createSamplePdf();
-    const info = await inspectPdfDocument(mupdf, bytes);
+    const info = await inspectPdfDocument(bytes);
     const pages: PageMeta[] = [info.pages[0]].map((p) => ({
       id: 'page_0',
       sourceDocId: 'src_1',
@@ -791,7 +717,7 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       lineHeight: 1.3,
     };
 
-    const compiled = await compilePdfDocument(mupdf, {
+    const compiled = await compilePdfDocument({
       sourceDocs: [{ id: 'src_1', bytes }],
       pages,
       elements: [richEl],
@@ -799,63 +725,35 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       optimizeWithMupdf: true,
     });
 
-    const md = mupdf.Document.openDocument(compiled, 'application/pdf');
-    try {
-      const mp = md.loadPage(0);
-      try {
-        const st = mp.toStructuredText('preserve-whitespace');
-        try {
-          const glyphs: Array<{ ch: string; originY: number; size: number }> = [];
-          st.walk({
-            onChar(c, origin, _font, size) {
-              if (origin[1] >= 350 && origin[1] <= 410) {
-                glyphs.push({ ch: c, originY: origin[1], size });
-              }
-            },
-          });
+    const glyphs = (await extractPdfCharsWithPdfium(compiled, 0)).filter(
+      (g) => g.originY >= 350 && g.originY <= 410,
+    );
 
-          const baseH = glyphs.find((g) => g.ch === 'H');
-          const superX = glyphs.find((g) => g.ch === 'X');
-          const subY = glyphs.find((g) => g.ch === 'Y');
+    const baseH = glyphs.find((g) => g.ch === 'H');
+    const superX = glyphs.find((g) => g.ch === 'X');
+    const subY = glyphs.find((g) => g.ch === 'Y');
 
-          expect(baseH).toBeDefined();
-          expect(superX).toBeDefined();
-          expect(subY).toBeDefined();
-          // MuPDF originY is top-down: superscript has smaller Y (higher on page) and smaller font size
-          expect(superX!.originY).toBeLessThan(baseH!.originY - 2.5);
-          expect(superX!.size).toBeLessThan(baseH!.size - 2);
-          // Subscript has larger Y (lower on page) and smaller font size
-          expect(subY!.originY).toBeGreaterThan(baseH!.originY + 1.5);
-          expect(subY!.size).toBeLessThan(baseH!.size - 2);
-        } finally {
-          st.destroy();
-        }
-      } finally {
-        mp.destroy();
-      }
-    } finally {
-      md.destroy();
-    }
+    expect(baseH).toBeDefined();
+    expect(superX).toBeDefined();
+    expect(subY).toBeDefined();
+    expect(superX!.originY).toBeLessThan(baseH!.originY - 2.5);
+    expect(superX!.size).toBeLessThan(baseH!.size - 2);
+    expect(subY!.originY).toBeGreaterThan(baseH!.originY + 1.5);
+    expect(subY!.size).toBeLessThan(baseH!.size - 2);
   });
 
   it('keeps moved behindContent watermark behind dark table lines and text on export', async () => {
-    const doc = await PDFDocument.create();
-    const font = await doc.embedFont(StandardFonts.Helvetica);
-    const p = doc.addPage([612, 792]);
-    // Light watermark image placed under a dark black table line + text
-    const bgPng = await doc.embedPng(createSamplePngBytes());
-    p.drawImage(bgPng, { x: 100, y: 400, width: 200, height: 200, opacity: 0.45 });
-    // Black border crossing right across y=500 (top-down y=292)
-    p.drawLine({
-      start: { x: 80, y: 500 },
-      end: { x: 400, y: 500 },
-      thickness: 4,
-      color: rgb(0, 0, 0),
-    });
-    p.drawText('TABLE_TEXT_IN_FRONT', { x: 120, y: 515, size: 12, font, color: rgb(0, 0, 0) });
-    const bytes = await doc.save();
+    const bytes = await buildTestPdfWithPdfium([
+      {
+        width: 612,
+        height: 792,
+        images: [{ pngBytes: createSamplePngBytes(), x: 100, yPdf: 400, width: 200, height: 200 }],
+        lines: [{ x1: 80, y1Pdf: 500, x2: 400, y2Pdf: 500, stroke: [0, 0, 0], strokeWidth: 4 }],
+        texts: [{ text: 'TABLE_TEXT_IN_FRONT', x: 120, yPdf: 515, fontSize: 12 }],
+      },
+    ]);
 
-    const info = await inspectPdfDocument(mupdf, bytes);
+    const info = await inspectPdfDocument(bytes);
     const pages: PageMeta[] = [info.pages[0]].map((pm) => ({
       id: 'page_0',
       sourceDocId: 'src_1',
@@ -893,7 +791,7 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       aspectLocked: true,
     };
 
-    const compiled = await compilePdfDocument(mupdf, {
+    const compiled = await compilePdfDocument({
       sourceDocs: [{ id: 'src_1', bytes }],
       pages,
       elements: [movedWatermark],
@@ -901,39 +799,22 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       optimizeWithMupdf: true,
     });
 
-    // Rasterize exported PDF via MuPDF Pixmap and inspect dark ink line at y=292 (PDF y=500)
-    const md = mupdf.Document.openDocument(compiled, 'application/pdf');
-    try {
-      const mp = md.loadPage(0);
-      try {
-        const pixmap = mp.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
-        try {
-          const w = pixmap.getWidth();
-          const n = pixmap.getNumberOfComponents();
-          const px = pixmap.getPixels();
-          // Sample middle of black line at (x=200, y=292) inside moved watermark [120..320, 192..392]
-          let minLuma = 255;
-          for (let dy = -2; dy <= 2; dy++) {
-            const idx = ((292 + dy) * w + 200) * n;
-            const luma = 0.2126 * px[idx] + 0.7152 * px[idx + 1] + 0.0722 * px[idx + 2];
-            minLuma = Math.min(minLuma, luma);
-          }
-          // Dark border line MUST remain black in front of moved watermark!
-          expect(minLuma).toBeLessThan(40);
-        } finally {
-          pixmap.destroy();
-        }
-      } finally {
-        mp.destroy();
-      }
-    } finally {
-      md.destroy();
+    const { data: px, width: w } = await renderPdfPageRgbaWithPdfium(compiled, 0, 1);
+    const n = 4;
+    // Sample middle of black line at (x=200, y=292) inside moved watermark [120..320, 192..392]
+    let minLuma = 255;
+    for (let dy = -2; dy <= 2; dy++) {
+      const idx = ((292 + dy) * w + 200) * n;
+      const luma = 0.2126 * px[idx] + 0.7152 * px[idx + 1] + 0.0722 * px[idx + 2];
+      minLuma = Math.min(minLuma, luma);
     }
+    // Dark border line MUST remain black in front of moved watermark!
+    expect(minLuma).toBeLessThan(40);
   });
 
   it('keeps single-line Turkish text on 1 line and emits PDF Tz scaling when slightly wider than box', async () => {
     const bytes = await createSamplePdf();
-    const info = await inspectPdfDocument(mupdf, bytes);
+    const info = await inspectPdfDocument(bytes);
     const pages: PageMeta[] = [info.pages[0]].map((p) => ({
       id: 'page_0',
       sourceDocId: 'src_1',
@@ -973,7 +854,7 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       widthResizedByUser: false,
     };
 
-    const compiled = await compilePdfDocument(mupdf, {
+    const compiled = await compilePdfDocument({
       sourceDocs: [{ id: 'src_1', bytes }],
       pages,
       elements: [singleLineEl],
@@ -981,60 +862,30 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       optimizeWithMupdf: false,
     });
 
-    const loadedPdf = await PDFDocument.load(compiled);
-    const contents = loadedPdf.getPage(0).node.Contents();
-    const contentRefs =
-      contents instanceof PDFArray
-        ? Array.from({ length: contents.size() }, (_, idx) => loadedPdf.context.lookup(contents.get(idx)))
-        : [loadedPdf.context.lookup(contents)];
-    const streamText = contentRefs
-      .filter((s): s is PDFRawStream => s instanceof PDFRawStream)
-      .map((s) => Buffer.from(decodePDFRawStream(s).decode()).toString('latin1'))
-      .join('\n');
-    expect(streamText).toMatch(/\d+(?:\.\d+)?\s+Tz\b/);
-
-    const md = mupdf.Document.openDocument(compiled, 'application/pdf');
-    try {
-      const mp = md.loadPage(0);
-      try {
-        const st = mp.toStructuredText('preserve-whitespace');
-        try {
-          const rows: Array<{ y: number; x0: number; x1: number; text: string }> = [];
-          st.walk({
-            onChar(c, origin, _font, _size, quad) {
-              if (!c.trim()) return;
-              if (origin[1] < 255 || origin[1] > 310) return;
-              const charX0 = Math.min(quad[0], quad[4]);
-              const charX1 = Math.max(quad[2], quad[6]);
-              const existing = rows.find((r) => Math.abs(r.y - origin[1]) <= 2.5);
-              if (existing) {
-                existing.x0 = Math.min(existing.x0, charX0);
-                existing.x1 = Math.max(existing.x1, charX1);
-                existing.text += c;
-              } else {
-                rows.push({ y: origin[1], x0: charX0, x1: charX1, text: c });
-              }
-            },
-          });
-          expect(rows).toHaveLength(1);
-          expect(rows[0].text).toContain('TekSatırTest');
-          expect(rows[0].x1).toBeLessThanOrEqual(boxX + boxWidth + 2);
-        } finally {
-          st.destroy();
-        }
-      } finally {
-        mp.destroy();
+    const chars = await extractPdfCharsWithPdfium(compiled, 0);
+    const rows: Array<{ y: number; x0: number; x1: number; text: string }> = [];
+    for (const ch of chars) {
+      if (!ch.ch.trim()) continue;
+      if (ch.originY < 255 || ch.originY > 310) continue;
+      const existing = rows.find((r) => Math.abs(r.y - ch.originY) <= 2.5);
+      if (existing) {
+        existing.x0 = Math.min(existing.x0, ch.x0);
+        existing.x1 = Math.max(existing.x1, ch.x1);
+        existing.text += ch.ch;
+      } else {
+        rows.push({ y: ch.originY, x0: ch.x0, x1: ch.x1, text: ch.ch });
       }
-    } finally {
-      md.destroy();
     }
+    expect(rows).toHaveLength(1);
+    expect(rows[0].text).toContain('TekSatırTest');
+    expect(rows[0].x1).toBeLessThanOrEqual(boxX + boxWidth + 2);
   });
 
   it('composes decomposed Turkish combining dot (I\\u0307 -> İ) cleanly during normalization & PDF export', async () => {
     expect(normalizeUnicodeForPdf('I\u0307stanbul i\u0307lk')).toBe('\u0130stanbul ilk');
 
     const bytes = await createSamplePdf();
-    const info = await inspectPdfDocument(mupdf, bytes);
+    const info = await inspectPdfDocument(bytes);
     const pages: PageMeta[] = [info.pages[0]].map((p) => ({
       id: 'page_0',
       sourceDocId: 'src_1',
@@ -1069,7 +920,7 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       renderedLineCount: 1,
     };
 
-    const compiled = await compilePdfDocument(mupdf, {
+    const compiled = await compilePdfDocument({
       sourceDocs: [{ id: 'src_1', bytes }],
       pages,
       elements: [decomposedEl],
@@ -1077,68 +928,45 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       optimizeWithMupdf: true,
     });
 
-    const outText = extractPagePlainText(compiled, 0);
+    const outText = await extractPagePlainText(compiled, 0);
     expect(outText).toContain('İSTANBUL');
     expect(outText).toContain('izmir ğüşöç');
   });
 
   it('strips and re-colors a behind-content vector header banner while preserving white title text', async () => {
-    const doc = await PDFDocument.create();
-    const fontBold = await doc.embedFont(StandardFonts.HelveticaBold);
-    const page = doc.addPage([612, 792]);
-    // Dark navy header banner (visual top-down: x:48, y:38, width:516, height:54)
-    page.drawRectangle({ x: 48, y: 700, width: 516, height: 54, color: rgb(0.08, 0.14, 0.28) });
-    // Overlapping white title inside banner
-    page.drawText('Q4 Product Architecture Brief', {
-      x: 64,
-      y: 720,
-      size: 22,
-      font: fontBold,
-      color: rgb(1, 1, 1),
-    });
-    // Nearby hairline rule outside banner (visual y ~ 101)
-    page.drawRectangle({ x: 48, y: 690, width: 516, height: 1, color: rgb(0.5, 0.5, 0.5) });
-    const bytes = await doc.save();
+    const bytes = await buildTestPdfWithPdfium([
+      {
+        width: 612,
+        height: 792,
+        rects: [
+          { x: 48, yPdf: 700, width: 516, height: 54, fill: [20, 36, 71] },
+          { x: 48, yPdf: 690, width: 516, height: 1, fill: [128, 128, 128] },
+        ],
+        texts: [
+          { text: 'Q4 Product Architecture Brief', x: 64, yPdf: 720, fontSize: 22, color: [255, 255, 255] },
+        ],
+      },
+    ]);
 
     // 1. Clean preview strips only the banner vector shape while keeping overlapping white title
-    const srcMupdfDoc = mupdf.Document.openDocument(bytes.slice(), 'application/pdf').asPDF()!;
-    try {
-      const cleanBytes = prepareCleanPreviewPagePdf(
-        mupdf,
-        srcMupdfDoc,
-        0,
-        [],
-        [],
-        [{ x: 47.5, y: 37.5, width: 517, height: 55 }],
-      );
-      expect(extractPagePlainText(cleanBytes, 0)).toContain('Q4 Product Architecture Brief');
+    const cleanBytes = await prepareCleanPreviewPagePdf(
+      bytes,
+      0,
+      [],
+      [],
+      [{ x: 47.5, y: 37.5, width: 517, height: 55 }],
+    );
+    expect(await extractPagePlainText(cleanBytes, 0)).toContain('Q4 Product Architecture Brief');
 
-      const cleanDoc = mupdf.Document.openDocument(cleanBytes, 'application/pdf');
-      try {
-        const cp = cleanDoc.loadPage(0);
-        const pm = cp.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
-        try {
-          const px = pm.getPixels();
-          const w = pm.getWidth();
-          const n = pm.getNumberOfComponents();
-          const idx = (65 * w + 520) * n;
-          // Banner fill removed cleanly -> white paper pixel
-          expect(px[idx]).toBeGreaterThan(240);
-          expect(px[idx + 1]).toBeGreaterThan(240);
-          expect(px[idx + 2]).toBeGreaterThan(240);
-          cp.destroy();
-        } finally {
-          pm.destroy();
-        }
-      } finally {
-        cleanDoc.destroy();
-      }
-    } finally {
-      srcMupdfDoc.destroy();
-    }
+    const { data: cpx, width: cw } = await renderPdfPageRgbaWithPdfium(cleanBytes, 0, 1);
+    const idx = (65 * cw + 520) * 4;
+    // Banner fill removed cleanly -> white paper pixel
+    expect(cpx[idx]).toBeGreaterThan(240);
+    expect(cpx[idx + 1]).toBeGreaterThan(240);
+    expect(cpx[idx + 2]).toBeGreaterThan(240);
 
     // 2. Full export replaces behind-content banner with solid red (#dc2626) behind original white title
-    const info = await inspectPdfDocument(mupdf, bytes);
+    const info = await inspectPdfDocument(bytes);
     const pages: PageMeta[] = [info.pages[0]].map((p) => ({
       id: 'page_0',
       sourceDocId: 'src_banner',
@@ -1171,60 +999,45 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       isBackgroundLayer: true,
     };
 
-    const compiled = await compilePdfDocument(mupdf, {
+    const compiled = await compilePdfDocument({
       sourceDocs: [{ id: 'src_banner', bytes }],
       pages,
       elements: [shapeEdit],
       optimizeWithMupdf: true,
     });
 
-    expect(extractPagePlainText(compiled, 0)).toContain('Q4 Product Architecture Brief');
+    expect(await extractPagePlainText(compiled, 0)).toContain('Q4 Product Architecture Brief');
 
-    const md = mupdf.Document.openDocument(compiled, 'application/pdf');
-    try {
-      const mp = md.loadPage(0);
-      const pm = mp.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
-      try {
-        const px = pm.getPixels();
-        const w = pm.getWidth();
-        const n = pm.getNumberOfComponents();
-        // Open right side of banner is now red (#dc2626)
-        const bannerIdx = (65 * w + 520) * n;
-        expect(px[bannerIdx]).toBeGreaterThan(190);
-        expect(px[bannerIdx + 1]).toBeLessThan(65);
-        expect(px[bannerIdx + 2]).toBeLessThan(65);
+    const { data: px, width: w } = await renderPdfPageRgbaWithPdfium(compiled, 0, 1);
+    const n = 4;
+    // Open right side of banner is now red (#dc2626)
+    const bannerIdx = (65 * w + 520) * n;
+    expect(px[bannerIdx]).toBeGreaterThan(190);
+    expect(px[bannerIdx + 1]).toBeLessThan(65);
+    expect(px[bannerIdx + 2]).toBeLessThan(65);
 
-        // Scan title text box (x:62..360, y:50..78) and verify white glyph pixels render ON TOP of red banner
-        let foundWhiteTextOverRed = false;
-        for (let py = 50; py <= 78; py++) {
-          for (let pxX = 62; pxX <= 360; pxX++) {
-            const pIdx = (py * w + pxX) * n;
-            if (px[pIdx] > 230 && px[pIdx + 1] > 230 && px[pIdx + 2] > 230) {
-              foundWhiteTextOverRed = true;
-              break;
-            }
-          }
-          if (foundWhiteTextOverRed) break;
+    // Scan title text box (x:62..360, y:50..78) and verify white glyph pixels render ON TOP of red banner
+    let foundWhiteTextOverRed = false;
+    for (let py = 50; py <= 78; py++) {
+      for (let pxX = 62; pxX <= 360; pxX++) {
+        const pIdx = (py * w + pxX) * n;
+        if (px[pIdx] > 230 && px[pIdx + 1] > 230 && px[pIdx + 2] > 230) {
+          foundWhiteTextOverRed = true;
+          break;
         }
-        expect(foundWhiteTextOverRed).toBe(true);
-
-        // Hairline rule at y=101 remained untouched
-        const ruleIdx = (101 * w + 100) * n;
-        expect(px[ruleIdx]).toBeLessThan(170);
-      } finally {
-        pm.destroy();
-        mp.destroy();
       }
-    } finally {
-      md.destroy();
+      if (foundWhiteTextOverRed) break;
     }
+    expect(foundWhiteTextOverRed).toBe(true);
+
+    // Hairline rule at y=101 remained untouched
+    const ruleIdx = (101 * w + 100) * n;
+    expect(px[ruleIdx]).toBeLessThan(170);
   });
 
-  it('exports vector rounded rectangles, circles, and closed joined paths crisply via pdf-lib', async () => {
-    const blankDoc = await PDFDocument.create();
-    blankDoc.addPage([400, 400]);
-    const bytes = new Uint8Array(await blankDoc.save());
-    const info = await inspectPdfDocument(mupdf, bytes);
+  it('exports vector rounded rectangles, circles, and closed joined paths crisply via PDFium', async () => {
+    const bytes = await buildTestPdfWithPdfium([{ width: 400, height: 400 }]);
+    const info = await inspectPdfDocument(bytes);
     const pages: PageMeta[] = [info.pages[0]].map((p) => ({
       id: 'p_vec',
       sourceDocId: 'src_vec',
@@ -1237,7 +1050,7 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       cropBox: p.cropBox,
     }));
 
-    const out = await compilePdfDocument(mupdf, {
+    const out = await compilePdfDocument({
       sourceDocs: [{ id: 'src_vec', bytes }],
       pages,
       elements: [
@@ -1303,43 +1116,30 @@ describe('pdfCompiler with real MuPDF Wasm + pdf-lib', () => {
       optimizeWithMupdf: true,
     });
 
-    const md = mupdf.Document.openDocument(out, 'application/pdf');
-    try {
-      const mp = md.loadPage(0);
-      const pm = mp.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
-      try {
-        const px = pm.getPixels();
-        const w = pm.getWidth();
-        const n = pm.getNumberOfComponents();
+    const { data: px, width: w } = await renderPdfPageRgbaWithPdfium(out, 0, 1);
+    const n = 4;
 
-        // Rounded rect center (100, 100) is blue (#2563eb)
-        const rectCenter = (100 * w + 100) * n;
-        expect(px[rectCenter]).toBeLessThan(80);
-        expect(px[rectCenter + 2]).toBeGreaterThan(190);
+    // Rounded rect center (100, 100) is blue (#2563eb)
+    const rectCenter = (100 * w + 100) * n;
+    expect(px[rectCenter]).toBeLessThan(80);
+    expect(px[rectCenter + 2]).toBeGreaterThan(190);
 
-        // Very outer bounding corner (41, 41) outside radius=30 curve stays crisp white!
-        const outerCorner = (41 * w + 41) * n;
-        expect(px[outerCorner]).toBeGreaterThan(240);
-        expect(px[outerCorner + 1]).toBeGreaterThan(240);
-        expect(px[outerCorner + 2]).toBeGreaterThan(240);
+    // Very outer bounding corner (41, 41) outside radius=30 curve stays crisp white!
+    const outerCorner = (41 * w + 41) * n;
+    expect(px[outerCorner]).toBeGreaterThan(240);
+    expect(px[outerCorner + 1]).toBeGreaterThan(240);
+    expect(px[outerCorner + 2]).toBeGreaterThan(240);
 
-        // Circle center (270, 90) is red (#dc2626); outer bbox corner (222, 42) stays white!
-        const circleCenter = (90 * w + 270) * n;
-        expect(px[circleCenter]).toBeGreaterThan(190);
-        expect(px[circleCenter + 1]).toBeLessThan(65);
-        const circleCorner = (42 * w + 222) * n;
-        expect(px[circleCorner]).toBeGreaterThan(240);
+    // Circle center (270, 90) is red (#dc2626); outer bbox corner (222, 42) stays white!
+    const circleCenter = (90 * w + 270) * n;
+    expect(px[circleCenter]).toBeGreaterThan(190);
+    expect(px[circleCenter + 1]).toBeLessThan(65);
+    const circleCorner = (42 * w + 222) * n;
+    expect(px[circleCorner]).toBeGreaterThan(240);
 
-        // Closed triangle interior centroid (120, 290) is green (#16a34a)
-        const triCenter = (290 * w + 120) * n;
-        expect(px[triCenter + 1]).toBeGreaterThan(140);
-        expect(px[triCenter]).toBeLessThan(60);
-      } finally {
-        pm.destroy();
-        mp.destroy();
-      }
-    } finally {
-      md.destroy();
-    }
+    // Closed triangle interior centroid (120, 290) is green (#16a34a)
+    const triCenter = (290 * w + 120) * n;
+    expect(px[triCenter + 1]).toBeGreaterThan(140);
+    expect(px[triCenter]).toBeLessThan(60);
   });
 });

@@ -1,3 +1,4 @@
+pub mod font_parse;
 pub mod fonts;
 pub mod layout;
 pub mod page_numbers;
@@ -5,6 +6,7 @@ pub mod page_range;
 pub mod rich_text;
 pub mod turkish;
 
+pub use font_parse::{inspect_ttf_font, TtfFontMetadata};
 pub use fonts::{
     font_family_label, is_builtin_font_family, normalize_font_match_key,
     parse_pdf_font_metadata, FontStyleVariant, NormalizedFontKey, ParsedPdfFontInfo,

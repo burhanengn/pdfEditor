@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
-import * as mupdf from 'mupdf';
 import { perfMetrics } from '../perfMetrics';
 import { generateReferencePdf } from '../referencePdfSet';
+import {
+  getPdfPageCountWithPdfium,
+  renderPdfPageRgbaWithPdfium,
+} from '../pdfium/__tests__/pdfTestHelpers';
 
 describe('F0.1 performance baseline & reference PDF suite', () => {
   it('generates all reference PDF documents and measures parse/render timings', async () => {
@@ -18,29 +21,18 @@ describe('F0.1 performance baseline & reference PDF suite', () => {
     expect(vectorBytes.byteLength).toBeGreaterThan(10_000);
 
     perfMetrics.markDocOpenStart('text-120p');
-    const doc = mupdf.Document.openDocument(text120Bytes, 'application/pdf');
-    try {
-      expect(doc.countPages()).toBe(120);
-      const p0 = doc.loadPage(0);
-      try {
-        const pix = p0.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
-        pix.destroy();
-        const ttfp = perfMetrics.recordFirstPagePainted();
-        expect(ttfp).not.toBeNull();
-        expect(ttfp!).toBeGreaterThanOrEqual(0);
-      } finally {
-        p0.destroy();
-      }
-    } finally {
-      doc.destroy();
-    }
+    const textPages = await getPdfPageCountWithPdfium(text120Bytes);
+    expect(textPages).toBe(120);
 
-    const scannedDoc = mupdf.Document.openDocument(scanned300Bytes, 'application/pdf');
-    try {
-      expect(scannedDoc.countPages()).toBe(300);
-    } finally {
-      scannedDoc.destroy();
-    }
+    const rendered = await renderPdfPageRgbaWithPdfium(text120Bytes, 0, 1);
+    expect(rendered.width).toBeGreaterThan(100);
+    expect(rendered.height).toBeGreaterThan(100);
+    const ttfp = perfMetrics.recordFirstPagePainted();
+    expect(ttfp).not.toBeNull();
+    expect(ttfp!).toBeGreaterThanOrEqual(0);
+
+    const scannedPages = await getPdfPageCountWithPdfium(scanned300Bytes);
+    expect(scannedPages).toBe(300);
 
     const report = perfMetrics.getReport();
     expect(report.ttfpMs).not.toBeNull();

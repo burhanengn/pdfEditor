@@ -1,11 +1,11 @@
 import { expect, test } from '@playwright/test';
-import { generateReferencePdf } from '../src/engine/referencePdfSet';
+import { generateE2eReferencePdf } from './helpers/pdfiumTestHelper';
 
 test.describe('Performance Baseline & Regression Gates', () => {
   test('measures TTFP, long tasks, worker byte copies, and heap on 120-page reference PDF', async ({
     page,
   }) => {
-    const pdf120 = await generateReferencePdf('text-120p', { pageCount: 120 });
+    const pdf120 = await generateE2eReferencePdf('text-120p', { pageCount: 120 });
 
     await page.goto('/');
     await page.evaluate(() => {

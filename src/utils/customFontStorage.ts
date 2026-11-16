@@ -252,10 +252,17 @@ export async function importUserCustomFontFiles(
       input instanceof File ? new Uint8Array(await input.arrayBuffer()) : input.bytes;
     const sfntBytes = await normalizeUploadedFontBytes(rawBytes);
 
-    const { default: fontkit } = await import('@pdf-lib/fontkit');
-    let fkFont: ReturnType<typeof fontkit.create>;
+    const { ensureRustCoreReady } = await import('@/engine/rustCoreBridge');
+    const wasm = await ensureRustCoreReady();
+    let fkFont: {
+      familyName: string;
+      subfamilyName: string;
+      fullName: string;
+      postscriptName: string;
+      supportedCodePoints: number[];
+    };
     try {
-      fkFont = fontkit.create(sfntBytes);
+      fkFont = wasm.inspect_ttf_font(sfntBytes);
     } catch {
       throw new Error(`Could not parse font "${fileName}". Ensure it is a valid TTF, OTF, or WOFF file.`);
     }
@@ -280,7 +287,6 @@ export async function importUserCustomFontFiles(
     const italic =
       fullNorm.italic ||
       fileNorm.italic ||
-      Boolean(fkFont.head?.macStyle?.italic) ||
       sub.includes('italic') ||
       sub.includes('oblique');
     const variant: FontStyleVariant =
@@ -289,14 +295,11 @@ export async function importUserCustomFontFiles(
     const baseKey = famNorm.baseKey || fullNorm.baseKey || fileNorm.baseKey;
     const id = `user:${baseKey}`;
     const cssFamily = `user_custom_${baseKey.replace(/[^a-z0-9]/g, '_')}`;
-    const parsedMeta = parsePdfFontMetadata(fullCandidate, {
-      isMono: Boolean(fkFont.post?.isFixedPitch),
-      isSerif: typeof fkFont['OS/2']?.sFamilyClass === 'number' && ((fkFont['OS/2'].sFamilyClass >> 8) >= 1 && (fkFont['OS/2'].sFamilyClass >> 8) <= 7),
-    });
+    const parsedMeta = parsePdfFontMetadata(fullCandidate);
 
     const cpSet = new Set<number>(
-      Array.isArray(fkFont.characterSet)
-        ? fkFont.characterSet.filter((cp) => cp > 0 && cp <= 0x10ffff)
+      Array.isArray(fkFont.supportedCodePoints)
+        ? fkFont.supportedCodePoints.filter((cp) => cp > 0 && cp <= 0x10ffff)
         : [],
     );
 

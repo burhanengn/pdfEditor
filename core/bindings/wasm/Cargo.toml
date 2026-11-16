@@ -11,6 +11,8 @@ crate-type = ["cdylib", "rlib"]
 gp-engine = { path = "../../crates/gp-engine" }
 gp-geom = { path = "../../crates/gp-geom" }
 gp-model = { path = "../../crates/gp-model" }
+gp-pdf = { path = "../../crates/gp-pdf" }
+gp-redact = { path = "../../crates/gp-redact" }
 gp-text = { path = "../../crates/gp-text" }
 serde = { workspace = true }
 serde_json = { workspace = true }

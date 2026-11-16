@@ -1,9 +1,12 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import fontkit from '@pdf-lib/fontkit';
-import * as mupdf from 'mupdf';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
 import { describe, expect, it } from 'vitest';
+import {
+  buildTestPdfWithPdfium,
+  createSolidPngBytes,
+  extractPdfTextWithPdfium,
+  patchTtfFontForTest,
+} from '../pdfium/__tests__/pdfTestHelpers';
 import {
   clearExtractedFontsForDoc,
   extractEmbeddedFontsFromPdfBytes,
@@ -23,7 +26,7 @@ import {
   toRomanNumeral,
 } from '../pageNumbers';
 import { compilePdfDocument } from '../pdfCompiler';
-import { extractTextBlocksFromMuPdfPage } from '../textExtractor';
+import { extractTextBlocksFromPdfBytes } from '../textExtractor';
 import {
   deleteUserCustomFont,
   getUserFontAssetPayloads,
@@ -49,48 +52,33 @@ describe('upgraded PDF engine modules', () => {
   });
 
   it('prevents table column text blocks from merging across vertical vector rules or wide gutters', async () => {
-    const doc = await PDFDocument.create();
-    const helv = await doc.embedFont(StandardFonts.Helvetica);
-    const p = doc.addPage([595, 842]);
+    const bytes = await buildTestPdfWithPdfium([
+      {
+        width: 595,
+        height: 842,
+        lines: [{ x1: 220, y1Pdf: 690, x2: 220, y2Pdf: 740, stroke: [0, 0, 0], strokeWidth: 1.5 }],
+        texts: [
+          { text: 'Column Alpha', x: 70, yPdf: 710, fontSize: 11 },
+          { text: 'Column Beta', x: 232, yPdf: 710, fontSize: 11 },
+          { text: 'Left Key Label', x: 70, yPdf: 650, fontSize: 11 },
+          { text: 'Right Value Entry', x: 260, yPdf: 650, fontSize: 11 },
+        ],
+      },
+    ]);
 
-    // Vertical rule dividing column A and column B
-    p.drawLine({
-      start: { x: 220, y: 690 },
-      end: { x: 220, y: 740 },
-      thickness: 1.5,
-      color: rgb(0, 0, 0),
+    const blocks = await extractTextBlocksFromPdfBytes(bytes, 0, 'p_tbl', {
+      verticalRules: [{ x: 220, y0: 842 - 740, y1: 842 - 690 }],
+      horizontalRules: [],
+      cellRects: [
+        { x: 65, y: 842 - 740, width: 155, height: 50 },
+        { x: 220, y: 842 - 740, width: 160, height: 50 },
+      ],
     });
-    p.drawText('Column Alpha', { x: 70, y: 710, size: 11, font: helv });
-    p.drawText('Column Beta', { x: 232, y: 710, size: 11, font: helv });
-
-    // Borderless 2-column row separated by a clear cell gutter
-    p.drawText('Left Key Label', { x: 70, y: 650, size: 11, font: helv });
-    p.drawText('Right Value Entry', { x: 260, y: 650, size: 11, font: helv });
-
-    const bytes = await doc.save();
-    const md = mupdf.Document.openDocument(bytes, 'application/pdf');
-    try {
-      const mp = md.loadPage(0);
-      try {
-        const blocks = extractTextBlocksFromMuPdfPage(mp, 'p_tbl', {
-          verticalRules: [{ x: 220, y0: 842 - 740, y1: 842 - 690 }],
-          horizontalRules: [],
-          cellRects: [
-            { x: 65, y: 842 - 740, width: 155, height: 50 },
-            { x: 220, y: 842 - 740, width: 160, height: 50 },
-          ],
-        });
-        const texts = blocks.map((b) => b.text);
-        expect(texts.some((t) => t.includes('Column Alpha') && !t.includes('Column Beta'))).toBe(true);
-        expect(texts.some((t) => t.includes('Column Beta') && !t.includes('Column Alpha'))).toBe(true);
-        expect(texts.some((t) => t.includes('Left Key Label') && !t.includes('Right Value Entry'))).toBe(true);
-        expect(texts.some((t) => t.includes('Right Value Entry') && !t.includes('Left Key Label'))).toBe(true);
-      } finally {
-        mp.destroy();
-      }
-    } finally {
-      md.destroy();
-    }
+    const texts = blocks.map((b) => b.text);
+    expect(texts.some((t) => t.includes('Column Alpha') && !t.includes('Column Beta'))).toBe(true);
+    expect(texts.some((t) => t.includes('Column Beta') && !t.includes('Column Alpha'))).toBe(true);
+    expect(texts.some((t) => t.includes('Left Key Label') && !t.includes('Right Value Entry'))).toBe(true);
+    expect(texts.some((t) => t.includes('Right Value Entry') && !t.includes('Left Key Label'))).toBe(true);
   });
 
   it('modulates realistic ink nib width by stroke velocity', () => {
@@ -129,17 +117,14 @@ describe('upgraded PDF engine modules', () => {
     const layout = computePageNumberLayout(595, 842, 1, 4, cfg);
     expect(layout?.text).toBe('Sayfa 1 / 3');
 
-    const srcDoc = await PDFDocument.create();
-    srcDoc.registerFontkit(fontkit);
-    srcDoc.addPage([595, 842]);
-    srcDoc.addPage([595, 842]);
-    srcDoc.addPage([595, 842]);
-    srcDoc.addPage([595, 842]);
-    const srcBytes = new Uint8Array(await srcDoc.save());
+    const srcBytes = await buildTestPdfWithPdfium([
+      { width: 595, height: 842 },
+      { width: 595, height: 842 },
+      { width: 595, height: 842 },
+      { width: 595, height: 842 },
+    ]);
 
-    const tinyPix = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, 20, 20], false);
-    const pngBytes = new Uint8Array(tinyPix.asPNG());
-    tinyPix.destroy();
+    const pngBytes = createSolidPngBytes(20, 20, [200, 200, 200, 255]);
 
     const pages: PageMeta[] = [0, 1, 2, 3].map((idx) => ({
       id: `pg_${idx + 1}`,
@@ -175,31 +160,16 @@ describe('upgraded PDF engine modules', () => {
       zIndex: 1,
     };
 
-    const compiled = await compilePdfDocument(mupdf, {
+    const compiled = await compilePdfDocument({
       sourceDocs: [{ id: 'src_1', bytes: srcBytes }],
       pages,
       elements: [flippedImg],
       pageNumbering: cfg,
-      optimizeWithMupdf: true,
     });
 
-    const outDoc = mupdf.Document.openDocument(compiled, 'application/pdf');
-    try {
-      const p0 = outDoc.loadPage(0);
-      const p1 = outDoc.loadPage(1);
-      const p3 = outDoc.loadPage(3);
-      try {
-        expect(p0.toStructuredText('preserve-whitespace').asText().trim()).toBe('');
-        expect(p1.toStructuredText('preserve-whitespace').asText()).toContain('Sayfa 1 / 3');
-        expect(p3.toStructuredText('preserve-whitespace').asText()).toContain('Sayfa 3 / 3');
-      } finally {
-        p0.destroy();
-        p1.destroy();
-        p3.destroy();
-      }
-    } finally {
-      outDoc.destroy();
-    }
+    expect((await extractPdfTextWithPdfium(compiled, 0)).trim()).toBe('');
+    expect(await extractPdfTextWithPdfium(compiled, 1)).toContain('Sayfa 1 / 3');
+    expect(await extractPdfTextWithPdfium(compiled, 3)).toContain('Sayfa 3 / 3');
   });
 
   it('extracts embedded custom TTF fonts, auto-matches user uploads, and exports missing subset glyphs cleanly', async () => {
@@ -217,21 +187,29 @@ describe('upgraded PDF engine modules', () => {
     expect(FONT_OPTIONS.length).toBeGreaterThanOrEqual(16);
 
     // 1. Build a PDF embedding a custom-named subset font ("MyBrandCustom-Bold")
-    const srcDoc = await PDFDocument.create();
-    srcDoc.registerFontkit(fontkit);
-    const customFont = await srcDoc.embedFont(djBoldBytes, {
-      subset: true,
-      customName: 'MyBrandCustom-Bold',
+    const myBrandSubset = patchTtfFontForTest(djBoldBytes, {
+      postscriptName: 'MyBrandCustom-Bold',
+      subsetChars: 'CUSTOM BRAND HEADERABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ',
     });
-    const page = srcDoc.addPage([595, 842]);
-    page.drawText('CUSTOM BRAND HEADER', {
-      x: 60,
-      y: 740,
-      size: 16,
-      font: customFont,
-      color: rgb(0, 0, 0),
-    });
-    const srcBytes = new Uint8Array(await srcDoc.save());
+    const srcBytes = await buildTestPdfWithPdfium(
+      [
+        {
+          width: 595,
+          height: 842,
+          texts: [
+            {
+              text: 'CUSTOM BRAND HEADER',
+              x: 60,
+              yPdf: 740,
+              fontSize: 16,
+              color: [0, 0, 0],
+              fontKey: 'brand',
+            },
+          ],
+        },
+      ],
+      { customFonts: { brand: myBrandSubset } },
+    );
 
     // 2. Extract usable embedded SFNT fonts from the PDF
     const docId = 'doc_embedded_custom_test';
@@ -383,7 +361,7 @@ describe('upgraded PDF engine modules', () => {
         lineHeight: 1.2,
       };
 
-      const compiled = await compilePdfDocument(mupdf, {
+      const compiled = await compilePdfDocument({
         sourceDocs: [{ id: docId, bytes: srcBytes }],
         pages,
         elements: [editEl, addEl],
@@ -402,21 +380,11 @@ describe('upgraded PDF engine modules', () => {
         ],
       });
 
-      const outDoc = mupdf.Document.openDocument(compiled, 'application/pdf');
-      try {
-        const outPage = outDoc.loadPage(0);
-        try {
-          const outText = outPage.toStructuredText('preserve-whitespace').asText();
-          expect(outText).toContain('CUSTOM');
-          expect(outText).toContain('ŞİĞÜÖÇ');
-          expect(outText).toContain('HEADER');
-          expect(outText).toContain('Özel Yüklenen Font İle Metin');
-        } finally {
-          outPage.destroy();
-        }
-      } finally {
-        outDoc.destroy();
-      }
+      const outText = await extractPdfTextWithPdfium(compiled, 0);
+      expect(outText).toContain('CUSTOM');
+      expect(outText).toContain('ŞİĞÜÖÇ');
+      expect(outText).toContain('HEADER');
+      expect(outText).toContain('Özel Yüklenen Font İle Metin');
 
       // Cleanup uploaded user font
       if (uploadedLibSans) {

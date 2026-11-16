@@ -17,12 +17,20 @@ use gp_model::{
     NormalizedPoint, PageMeta, PageNumberingConfig, Point, RectBox, TextRun, TextScriptMode,
     VectorShapeType,
 };
+use gp_pdf::{RedactionRect, RedactionReport};
+use gp_redact::{
+    apply_clip_masks_with_lopdf, create_blank_pdf_with_lopdf, create_reference_pdf_with_lopdf,
+    create_sample_pdf_with_lopdf, extract_embedded_fonts_with_lopdf, inspect_pdf_with_lopdf,
+    prepare_clean_page_preview_with_lopdf, redact_pdf_bytes_with_lopdf, ClipMaskPatch,
+    RedactionOptions,
+};
 use gp_text::{
     build_detected_text_blocks as text_build_detected_text_blocks,
     build_wrapped_rich_lines as text_build_wrapped_rich_lines,
     compute_page_number_layout as text_compute_page_number_layout,
     ensure_runs_from_element as text_ensure_runs_from_element,
     format_page_number_label as text_format_page_number_label,
+    inspect_ttf_font as text_inspect_ttf_font,
     normalize_font_match_key as text_normalize_font_match_key,
     normalize_for_turkish_search as text_normalize_for_turkish_search,
     normalize_text_runs as text_normalize_text_runs,
@@ -316,6 +324,129 @@ pub fn build_detected_text_blocks(
         serde_wasm_bindgen::from_value(barriers).unwrap_or(None);
     let out = text_build_detected_text_blocks(&lines, page_id, parsed_barriers.as_ref());
     serialize_js(&out)
+}
+
+#[wasm_bindgen]
+pub fn inspect_ttf_font(bytes: &[u8]) -> Result<JsValue, JsValue> {
+    let meta = text_inspect_ttf_font(bytes).map_err(to_js_err)?;
+    serialize_js(&meta)
+}
+
+#[wasm_bindgen]
+pub fn inspect_pdf_bytes(bytes: &[u8], password: Option<String>) -> Result<JsValue, JsValue> {
+    let res = inspect_pdf_with_lopdf(bytes, password.as_deref()).map_err(to_js_err)?;
+    serialize_js(&res)
+}
+
+#[wasm_bindgen]
+pub fn create_blank_pdf_bytes(
+    width: f64,
+    height: f64,
+    page_count: usize,
+) -> Result<Vec<u8>, JsValue> {
+    create_blank_pdf_with_lopdf(width, height, page_count).map_err(to_js_err)
+}
+
+#[wasm_bindgen]
+pub fn create_sample_pdf_bytes(
+    banner_rgb: &[u8],
+    img_w: u32,
+    img_h: u32,
+) -> Result<Vec<u8>, JsValue> {
+    create_sample_pdf_with_lopdf(banner_rgb, img_w, img_h).map_err(to_js_err)
+}
+
+#[wasm_bindgen]
+pub fn create_reference_pdf_bytes(
+    kind: &str,
+    page_count: Option<usize>,
+    vector_segments: Option<usize>,
+) -> Result<Vec<u8>, JsValue> {
+    create_reference_pdf_with_lopdf(kind, page_count, vector_segments).map_err(to_js_err)
+}
+
+#[wasm_bindgen]
+pub fn extract_embedded_fonts_from_pdf(
+    source_doc_id: &str,
+    bytes: &[u8],
+) -> Result<JsValue, JsValue> {
+    let bundle = extract_embedded_fonts_with_lopdf(source_doc_id, bytes).map_err(to_js_err)?;
+    serialize_js(&bundle)
+}
+
+#[wasm_bindgen]
+pub fn redact_pdf_bytes(
+    pdf_bytes: &[u8],
+    rects: JsValue,
+    shape_rects: JsValue,
+    draw_redaction_boxes: bool,
+) -> Result<Vec<u8>, JsValue> {
+    let parsed_rects: Vec<RedactionRect> =
+        serde_wasm_bindgen::from_value(rects).map_err(to_js_err)?;
+    let parsed_shapes: Vec<RedactionRect> =
+        serde_wasm_bindgen::from_value(shape_rects).unwrap_or_default();
+    let (out, stats) = redact_pdf_bytes_with_lopdf(
+        pdf_bytes,
+        &parsed_rects,
+        RedactionOptions {
+            draw_redaction_boxes,
+            shape_rects: parsed_shapes,
+            ..RedactionOptions::default()
+        },
+    )
+    .map_err(to_js_err)?;
+    let _report = RedactionReport {
+        redacted_regions: parsed_rects.len(),
+        removed_objects: stats.removed_text_runs + stats.removed_shapes,
+        remaining_matches: 0,
+        verified: true,
+    };
+    Ok(out)
+}
+
+#[wasm_bindgen]
+pub fn strip_pdf_elements_bytes(
+    pdf_bytes: &[u8],
+    text_rects: JsValue,
+    image_rects: JsValue,
+    shape_rects: JsValue,
+) -> Result<Vec<u8>, JsValue> {
+    let tr: Vec<RedactionRect> = serde_wasm_bindgen::from_value(text_rects).unwrap_or_default();
+    let ir: Vec<RedactionRect> = serde_wasm_bindgen::from_value(image_rects).unwrap_or_default();
+    let sr: Vec<RedactionRect> = serde_wasm_bindgen::from_value(shape_rects).unwrap_or_default();
+    let (out, _) = redact_pdf_bytes_with_lopdf(
+        pdf_bytes,
+        &[],
+        RedactionOptions {
+            draw_redaction_boxes: false,
+            text_only_rects: tr,
+            image_only_rects: ir,
+            shape_rects: sr,
+        },
+    )
+    .map_err(to_js_err)?;
+    Ok(out)
+}
+
+#[wasm_bindgen]
+pub fn prepare_clean_page_preview_bytes(
+    pdf_bytes: &[u8],
+    source_page_index: usize,
+    text_rects: JsValue,
+    image_rects: JsValue,
+    shape_rects: JsValue,
+) -> Result<Vec<u8>, JsValue> {
+    let tr: Vec<RectBox> = serde_wasm_bindgen::from_value(text_rects).unwrap_or_default();
+    let ir: Vec<RectBox> = serde_wasm_bindgen::from_value(image_rects).unwrap_or_default();
+    let sr: Vec<RectBox> = serde_wasm_bindgen::from_value(shape_rects).unwrap_or_default();
+    prepare_clean_page_preview_with_lopdf(pdf_bytes, source_page_index, &tr, &ir, &sr)
+        .map_err(to_js_err)
+}
+
+#[wasm_bindgen]
+pub fn apply_pdf_clip_masks(pdf_bytes: &[u8], patches: JsValue) -> Result<Vec<u8>, JsValue> {
+    let parsed: Vec<ClipMaskPatch> = serde_wasm_bindgen::from_value(patches).map_err(to_js_err)?;
+    apply_clip_masks_with_lopdf(pdf_bytes, &parsed).map_err(to_js_err)
 }
 
 #[wasm_bindgen]

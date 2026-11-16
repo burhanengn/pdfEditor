@@ -1,7 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { describe, expect, it } from 'vitest';
-import * as mupdf from 'mupdf';
+import {
+  extractPdfTextWithPdfium,
+  getPdfPageCountWithPdfium,
+  renderPdfPageRgbaWithPdfium,
+} from '../pdfium/__tests__/pdfTestHelpers';
 import { BLANK_PAGE_PRESETS, generateBlankPdfBytes } from '../blankPdf';
 import { compilePdfDocument, inspectPdfDocument } from '../pdfCompiler';
 import type { TextAddElement, VectorShapeElement } from '@/types/elements';
@@ -39,7 +43,7 @@ describe('blankPdf engine', () => {
     expect(BLANK_PAGE_PRESETS['letter-landscape']).toMatchObject({ width: 792, height: 612 });
 
     const defaultBytes = await generateBlankPdfBytes();
-    const defaultInfo = await inspectPdfDocument(mupdf, defaultBytes);
+    const defaultInfo = await inspectPdfDocument(defaultBytes);
     expect(defaultInfo.status).toBe('ok');
     expect(defaultInfo.wasEncrypted).toBe(false);
     expect(defaultInfo.pageCount).toBe(1);
@@ -50,7 +54,7 @@ describe('blankPdf engine', () => {
       preset: 'a4-landscape',
       pageCount: 3,
     });
-    const landscapeInfo = await inspectPdfDocument(mupdf, landscapeBytes);
+    const landscapeInfo = await inspectPdfDocument(landscapeBytes);
     expect(landscapeInfo.status).toBe('ok');
     expect(landscapeInfo.pageCount).toBe(3);
     for (const p of landscapeInfo.pages) {
@@ -59,12 +63,12 @@ describe('blankPdf engine', () => {
     }
 
     const letterBytes = await generateBlankPdfBytes({ preset: 'letter-portrait' });
-    const letterInfo = await inspectPdfDocument(mupdf, letterBytes);
+    const letterInfo = await inspectPdfDocument(letterBytes);
     expect(letterInfo.pages[0].baseWidth).toBe(612);
     expect(letterInfo.pages[0].baseHeight).toBe(792);
 
     const customBytes = await generateBlankPdfBytes({ width: 500, height: 700, pageCount: 2 });
-    const customInfo = await inspectPdfDocument(mupdf, customBytes);
+    const customInfo = await inspectPdfDocument(customBytes);
     expect(customInfo.pageCount).toBe(2);
     expect(customInfo.pages[0].baseWidth).toBe(500);
     expect(customInfo.pages[0].baseHeight).toBe(700);
@@ -72,7 +76,7 @@ describe('blankPdf engine', () => {
 
   it('supports adding Turkish text and rounded shapes onto a blank PDF and compiling with MuPDF', async () => {
     const blankBytes = await generateBlankPdfBytes({ preset: 'a4-portrait' });
-    const info = await inspectPdfDocument(mupdf, blankBytes);
+    const info = await inspectPdfDocument(blankBytes);
     const p = info.pages[0];
     const pages: PageMeta[] = [
       {
@@ -127,48 +131,26 @@ describe('blankPdf engine', () => {
       lineHeight: 1.3,
     };
 
-    const compiled = await compilePdfDocument(mupdf, {
+    const compiled = await compilePdfDocument({
       sourceDocs: [{ id: 'src_blank', bytes: blankBytes }],
       pages,
       elements: [roundedShape, turkishText],
       fonts: loadMinimalUnicodeSansFonts(),
-      optimizeWithMupdf: true,
     });
 
-    const md = mupdf.Document.openDocument(compiled, 'application/pdf');
-    try {
-      expect(md.countPages()).toBe(1);
-      const mp = md.loadPage(0);
-      try {
-        const st = mp.toStructuredText('preserve-whitespace');
-        try {
-          expect(st.asText()).toContain('Boş Sayfa Şablonu');
-        } finally {
-          st.destroy();
-        }
+    expect(await getPdfPageCountWithPdfium(compiled)).toBe(1);
+    expect(await extractPdfTextWithPdfium(compiled, 0)).toContain('Boş Sayfa Şablonu');
 
-        const pm = mp.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
-        try {
-          const px = pm.getPixels();
-          const w = pm.getWidth();
-          const n = pm.getNumberOfComponents();
-          // Blank background spot (20, 20) stays pure white
-          const bgIdx = (20 * w + 20) * n;
-          expect(px[bgIdx]).toBeGreaterThan(245);
-          expect(px[bgIdx + 1]).toBeGreaterThan(245);
-          expect(px[bgIdx + 2]).toBeGreaterThan(245);
-          // Green fill inside rounded shape (130, 120)
-          const shapeIdx = (120 * w + 130) * n;
-          expect(px[shapeIdx + 1]).toBeGreaterThan(150);
-          expect(px[shapeIdx]).toBeLessThan(60);
-        } finally {
-          pm.destroy();
-        }
-      } finally {
-        mp.destroy();
-      }
-    } finally {
-      md.destroy();
-    }
+    const { data: px, width: w } = await renderPdfPageRgbaWithPdfium(compiled, 0, 1);
+    const n = 4;
+    // Blank background spot (20, 20) stays pure white
+    const bgIdx = (20 * w + 20) * n;
+    expect(px[bgIdx]).toBeGreaterThan(245);
+    expect(px[bgIdx + 1]).toBeGreaterThan(245);
+    expect(px[bgIdx + 2]).toBeGreaterThan(245);
+    // Green fill inside rounded shape (130, 120)
+    const shapeIdx = (120 * w + 130) * n;
+    expect(px[shapeIdx + 1]).toBeGreaterThan(150);
+    expect(px[shapeIdx]).toBeLessThan(60);
   });
 });

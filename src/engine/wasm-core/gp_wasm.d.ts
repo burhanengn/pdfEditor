@@ -16,6 +16,8 @@ export class WasmSession {
     undo(): boolean;
 }
 
+export function apply_pdf_clip_masks(pdf_bytes: Uint8Array | number[], patches: any): Uint8Array;
+
 export function build_detected_text_blocks(raw_lines: any, page_id: string, barriers: any): any;
 
 export function build_page_offset_index(pages: any, zoom: number, metrics: any): any;
@@ -34,13 +36,25 @@ export function compute_snap_position(moving_rect: any, page_width: number, page
 
 export function core_version(): string;
 
+export function create_blank_pdf_bytes(width: number, height: number, page_count: number): Uint8Array;
+
+export function create_reference_pdf_bytes(kind: string, page_count?: number | null, vector_segments?: number | null): Uint8Array;
+
+export function create_sample_pdf_bytes(banner_rgb: Uint8Array | number[], img_w: number, img_h: number): Uint8Array;
+
 export function ensure_runs_from_element(text: string, runs: any, base_bold: boolean, base_italic: boolean): any;
+
+export function extract_embedded_fonts_from_pdf(source_doc_id: string, bytes: Uint8Array | number[]): any;
 
 export function flip_svg_path(d: string, width: number, height: number, flip_x: boolean, flip_y: boolean, decimals: number): string;
 
 export function format_page_number_label(page_index_zero_based: number, total_pages: number, config: any): string | undefined;
 
 export function get_rotated_bounding_box(rect: any, rotation_deg: number): any;
+
+export function inspect_pdf_bytes(bytes: Uint8Array | number[], password?: string | null): any;
+
+export function inspect_ttf_font(bytes: Uint8Array | number[]): any;
 
 export function normalize_absolute_points(abs_points: any): any;
 
@@ -60,11 +74,17 @@ export function path_points_to_svg_path(points: any, width: number, height: numb
 
 export function point_in_rotated_rect(px: number, py: number, rect: any, rotation_deg: number, pad: number): boolean;
 
+export function prepare_clean_page_preview_bytes(pdf_bytes: Uint8Array | number[], source_page_index: number, text_rects: any, image_rects: any, shape_rects: any): Uint8Array;
+
+export function redact_pdf_bytes(pdf_bytes: Uint8Array | number[], rects: any, shape_rects: any, draw_redaction_boxes: boolean): Uint8Array;
+
 export function sanitize_for_winansi(text: string): string;
 
 export function scale_svg_path(d: string, sx: number, sy: number, decimals: number): string;
 
 export function shape_to_svg_path(shape_type: any, width: number, height: number, border_radius: number): string;
+
+export function strip_pdf_elements_bytes(pdf_bytes: Uint8Array | number[], text_rects: any, image_rects: any, shape_rects: any): Uint8Array;
 
 export function to_roman_numeral(num: number, upper: boolean): string;
 
@@ -73,6 +93,7 @@ export type InitInput = RequestInfo | URL | Response | BufferSource | WebAssembl
 export interface InitOutput {
     readonly memory: WebAssembly.Memory;
     readonly __wbg_wasmsession_free: (a: number, b: number) => void;
+    readonly apply_pdf_clip_masks: (a: number, b: number, c: number, d: any) => void;
     readonly build_detected_text_blocks: (a: number, b: any, c: number, d: number, e: any) => void;
     readonly build_page_offset_index: (a: number, b: any, c: number, d: any) => void;
     readonly build_wrapped_rich_lines: (a: number, b: any, c: number, d: any, e: number, f: number, g: number, h: any) => void;
@@ -80,10 +101,16 @@ export interface InitOutput {
     readonly compute_rotated_resize_rect: (a: number, b: any) => void;
     readonly compute_snap_position: (a: number, b: any, c: number, d: number, e: any, f: number) => void;
     readonly core_version: (a: number) => void;
+    readonly create_blank_pdf_bytes: (a: number, b: number, c: number, d: number) => void;
+    readonly create_reference_pdf_bytes: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly create_sample_pdf_bytes: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly ensure_runs_from_element: (a: number, b: number, c: number, d: any, e: number, f: number) => void;
+    readonly extract_embedded_fonts_from_pdf: (a: number, b: number, c: number, d: number, e: number) => void;
     readonly flip_svg_path: (a: number, b: number, c: number, d: number, e: number, f: number, g: number, h: number) => void;
     readonly format_page_number_label: (a: number, b: number, c: number, d: any) => void;
     readonly get_rotated_bounding_box: (a: number, b: any, c: number) => void;
+    readonly inspect_pdf_bytes: (a: number, b: number, c: number, d: number, e: number) => void;
+    readonly inspect_ttf_font: (a: number, b: number, c: number) => void;
     readonly normalize_absolute_points: (a: number, b: any) => void;
     readonly normalize_font_match_key: (a: number, b: number, c: number) => void;
     readonly normalize_for_turkish_search: (a: number, b: number, c: number, d: number) => void;
@@ -93,9 +120,12 @@ export interface InitOutput {
     readonly parse_pdf_font_metadata: (a: number, b: number, c: number, d: number, e: number, f: number, g: number) => void;
     readonly path_points_to_svg_path: (a: number, b: any, c: number, d: number, e: number, f: number) => void;
     readonly point_in_rotated_rect: (a: number, b: number, c: number, d: any, e: number, f: number) => void;
+    readonly prepare_clean_page_preview_bytes: (a: number, b: number, c: number, d: number, e: any, f: any, g: any) => void;
+    readonly redact_pdf_bytes: (a: number, b: number, c: number, d: any, e: any, f: number) => void;
     readonly sanitize_for_winansi: (a: number, b: number, c: number) => void;
     readonly scale_svg_path: (a: number, b: number, c: number, d: number, e: number, f: number) => void;
     readonly shape_to_svg_path: (a: number, b: any, c: number, d: number, e: number) => void;
+    readonly strip_pdf_elements_bytes: (a: number, b: number, c: number, d: any, e: any, f: any) => void;
     readonly to_roman_numeral: (a: number, b: number, c: number) => void;
     readonly wasmsession_apply_command_json: (a: number, b: number, c: number, d: number) => void;
     readonly wasmsession_can_redo: (a: number) => number;

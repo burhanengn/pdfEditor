@@ -1,33 +1,29 @@
 import { expect, test } from '@playwright/test';
-import fontkit from '@pdf-lib/fontkit';
-import fs from 'node:fs';
-import path from 'node:path';
-import { PDFDocument, rgb } from 'pdf-lib';
-import { generateReferencePdf } from '../src/engine/referencePdfSet';
+import { buildE2ePdf, generateE2eReferencePdf } from './helpers/pdfiumTestHelper';
 
 async function createTurkishMultiPagePdf(): Promise<Buffer> {
-  const ttfDir = path.resolve(process.cwd(), 'node_modules/dejavu-fonts-ttf/ttf');
-  const regularBytes = fs.readFileSync(path.join(ttfDir, 'DejaVuSerif.ttf'));
-  const doc = await PDFDocument.create();
-  doc.registerFontkit(fontkit);
-  const font = await doc.embedFont(regularBytes, { subset: false });
-
   const lines = [
     'Öğrenim Görülecek Ülke: Türkiye Cumhuriyeti',
     'İstanbul Üniversitesi Çalışma Programı',
     'Üçüncü sayfa arşiv ve şifre doğrulama metni',
   ];
-  for (let i = 0; i < 3; i++) {
-    const p = doc.addPage([595, 842]);
-    p.drawText(`Sayfa ${i + 1}: ${lines[i]}`, {
-      x: 56,
-      y: 740,
-      size: 14,
-      font,
-      color: rgb(0.1, 0.12, 0.18),
-    });
-  }
-  return Buffer.from(await doc.save());
+  const bytes = await buildE2ePdf(
+    lines.map((line, i) => ({
+      width: 595,
+      height: 842,
+      texts: [
+        {
+          text: `Sayfa ${i + 1}: ${line}`,
+          x: 56,
+          yPdf: 740,
+          fontSize: 14,
+          color: [26, 31, 46],
+          useDejaVuSans: true,
+        },
+      ],
+    })),
+  );
+  return Buffer.from(bytes);
 }
 
 test.describe('Enterprise Viewer + Dual-Mode Editor Verification (F1)', () => {
@@ -137,7 +133,7 @@ test.describe('Enterprise Viewer + Dual-Mode Editor Verification (F1)', () => {
     });
     const page = await context.newPage();
 
-    const pdf = await generateReferencePdf('text-120p', { pageCount: 6 });
+    const pdf = await generateE2eReferencePdf('text-120p', { pageCount: 6 });
     await page.goto('/');
     await page.getByTestId('open-pdf-input').setInputFiles({
       name: 'mobile-audit.pdf',

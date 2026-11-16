@@ -1,4 +1,4 @@
-import { PDFDocument } from 'pdf-lib';
+import { ensureRustCoreReady } from './rustCoreBridge';
 
 export type BlankPagePreset =
   | 'a4-portrait'
@@ -53,7 +53,7 @@ export interface GenerateBlankPdfOptions {
 }
 
 /**
- * Creates a clean blank PDF byte buffer with one or more white pages of the chosen dimensions.
+ * Creates a clean blank PDF byte buffer via Rust/Wasm core without `pdf-lib`.
  */
 export async function generateBlankPdfBytes(
   options: GenerateBlankPdfOptions = {},
@@ -63,9 +63,6 @@ export async function generateBlankPdfBytes(
   const height = Math.max(72, Math.round(options.height ?? presetSpec.height));
   const pageCount = Math.max(1, Math.min(50, Math.round(options.pageCount ?? 1)));
 
-  const doc = await PDFDocument.create();
-  for (let i = 0; i < pageCount; i++) {
-    doc.addPage([width, height]);
-  }
-  return doc.save();
+  const wasm = await ensureRustCoreReady();
+  return wasm.create_blank_pdf_bytes(width, height, pageCount);
 }

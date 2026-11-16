@@ -2,7 +2,7 @@ import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import * as mupdf from 'mupdf';
+import { extractE2ePageText } from './helpers/pdfiumTestHelper';
 
 const DIST_DIR = path.resolve(process.cwd(), 'dist');
 
@@ -115,8 +115,8 @@ test.describe('gullacpdf Mobile, PWA & GitHub Pages Verification', () => {
           manStatus: manRes.status,
           manifest,
           swStatus: swRes.status,
-          hasMupdfWasmInSw: swText.includes('mupdf-wasm'),
-          hasPdfWorkerInSw: swText.includes('pdf.worker'),
+          hasGpWasmInSw: swText.includes('gp_wasm_bg'),
+          hasPdfiumWasmInSw: swText.includes('pdfium'),
           favStatus: favRes.status,
           hasFavSvg: favText.includes('<svg'),
           iconStatuses,
@@ -127,8 +127,8 @@ test.describe('gullacpdf Mobile, PWA & GitHub Pages Verification', () => {
       expect(pwaAudit.manifest.short_name).toBe('gullacpdf');
       expect(pwaAudit.manifest.display).toBe('standalone');
       expect(pwaAudit.swStatus).toBe(200);
-      expect(pwaAudit.hasMupdfWasmInSw).toBe(true);
-      expect(pwaAudit.hasPdfWorkerInSw).toBe(true);
+      expect(pwaAudit.hasGpWasmInSw).toBe(true);
+      expect(pwaAudit.hasPdfiumWasmInSw).toBe(true);
       expect(pwaAudit.favStatus).toBe(200);
       expect(pwaAudit.hasFavSvg).toBe(true);
       for (const ic of pwaAudit.iconStatuses) {
@@ -356,18 +356,8 @@ test.describe('gullacpdf Mobile, PWA & GitHub Pages Verification', () => {
         page.getByTestId('mobile-download-pdf-btn').click(),
       ]);
       const outBytes = await readDownloadBytes((await dl.createReadStream())!);
-      const outDoc = mupdf.Document.openDocument(outBytes, 'application/pdf');
-      try {
-        const p1 = outDoc.loadPage(0);
-        try {
-          const text = p1.toStructuredText('preserve-whitespace').asText().replace(/\s+/g, ' ');
-          expect(text).toContain('Mobil Test Türkçe ŞİĞÜ');
-        } finally {
-          p1.destroy();
-        }
-      } finally {
-        outDoc.destroy();
-      }
+      const outText = (await extractE2ePageText(outBytes, 0)).replace(/\s+/g, ' ');
+      expect(outText).toContain('Mobil Test Türkçe ŞİĞÜ');
 
       expect(consoleErrors).toEqual([]);
       expect(pageErrors).toEqual([]);

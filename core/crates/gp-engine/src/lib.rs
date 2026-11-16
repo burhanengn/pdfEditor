@@ -1,8 +1,10 @@
 pub mod queue;
+pub mod runtime;
 pub mod session;
 pub mod tile_cache;
 
 pub use queue::{EngineJobPayload, QueuedEngineTask, RenderPriority, RenderQueue};
+pub use runtime::{EngineRuntime, RuntimeStepOutcome};
 pub use session::{EngineError, EngineSession};
 pub use tile_cache::{TileCache, TileCacheKey};
 
@@ -130,5 +132,97 @@ mod tests {
         assert_eq!(session.store.snapshot.elements.len(), 0);
         assert!(session.redo().unwrap());
         assert_eq!(session.store.snapshot.elements.len(), 1);
+    }
+
+    #[test]
+    fn runtime_executes_priority_queue_caches_tiles_and_reports_progress() {
+        use gp_pdf::{
+            PdfBackend, PdfError, PdfLinkAnnotation, PdfOpenResult, PdfOpenStatus, PdfOutlineNode,
+            PdfPageSummary, PdfSearchHit, PdfTextCharBox, PdfTextSpan, RedactionRect,
+            RedactionReport,
+        };
+        use std::cell::Cell;
+
+        struct StubBackend {
+            render_calls: Cell<usize>,
+        }
+        impl PdfBackend for StubBackend {
+            fn open_document(&mut self, _: &str, _: &[u8], _: Option<&str>) -> Result<PdfOpenResult, PdfError> {
+                Ok(PdfOpenResult {
+                    status: PdfOpenStatus::Ok,
+                    page_count: 1,
+                    pages: vec![PdfPageSummary {
+                        source_page_index: 0,
+                        base_width: 595.0,
+                        base_height: 842.0,
+                        intrinsic_rotation: 0,
+                    }],
+                    can_copy_text: true,
+                    permissions: 0,
+                })
+            }
+            fn close_document(&mut self, _: &str) -> Result<(), PdfError> { Ok(()) }
+            fn render_tile(&self, req: &TileRenderRequest, cancel: &gp_pdf::CancellationFlag) -> Result<RenderedBitmap, PdfError> {
+                cancel.check()?;
+                self.render_calls.set(self.render_calls.get() + 1);
+                Ok(RenderedBitmap {
+                    width: req.tile_width_px,
+                    height: req.tile_height_px,
+                    rgba: vec![42; (req.tile_width_px * req.tile_height_px * 4) as usize],
+                })
+            }
+            fn extract_text_chars(&self, _: &str, _: usize) -> Result<Vec<PdfTextCharBox>, PdfError> { Ok(vec![]) }
+            fn extract_text_spans(&self, _: &str, _: usize) -> Result<Vec<PdfTextSpan>, PdfError> { Ok(vec![]) }
+            fn extract_page_text(&self, _: &str, _: usize) -> Result<String, PdfError> { Ok("ok".into()) }
+            fn extract_outline(&self, _: &str) -> Result<Vec<PdfOutlineNode>, PdfError> { Ok(vec![]) }
+            fn extract_links(&self, _: &str, _: usize) -> Result<Vec<PdfLinkAnnotation>, PdfError> { Ok(vec![]) }
+            fn search_page(&self, _: &str, _: usize, _: &str, _: bool) -> Result<Vec<PdfSearchHit>, PdfError> { Ok(vec![]) }
+            fn redact_and_save(&self, _: &str, rects: &[RedactionRect]) -> Result<(Vec<u8>, RedactionReport), PdfError> {
+                Ok((
+                    vec![b'%', b'P', b'D', b'F'],
+                    RedactionReport {
+                        redacted_regions: rects.len(),
+                        removed_objects: rects.len(),
+                        remaining_matches: 0,
+                        verified: true,
+                    },
+                ))
+            }
+        }
+
+        let mut rt = EngineRuntime::new(StubBackend { render_calls: Cell::new(0) }, 4 * 1024 * 1024);
+        let req = dummy_tile_req(0);
+        rt.enqueue_thumbnail("s", dummy_tile_req(1));
+        rt.enqueue_visible_tile("s", req.clone());
+
+        match rt.step_once().unwrap() {
+            RuntimeStepOutcome::TileRendered { page_index, cache_hit, .. } => {
+                assert_eq!(page_index, 0);
+                assert!(!cache_hit);
+            }
+            other => panic!("Unexpected outcome: {other:?}"),
+        }
+
+        // Enqueue same tile again -> served cleanly from TileCache
+        rt.enqueue_visible_tile("s", req);
+        match rt.step_once().unwrap() {
+            RuntimeStepOutcome::TileRendered { cache_hit, .. } => assert!(cache_hit),
+            other => panic!("Unexpected outcome: {other:?}"),
+        }
+        assert_eq!(rt.backend.render_calls.get(), 1);
+
+        let mut stages = Vec::new();
+        let (_, rep) = rt
+            .redact_with_progress(
+                "d",
+                &[RedactionRect { page_index: 0, x: 10.0, y: 10.0, width: 20.0, height: 10.0 }],
+                &gp_pdf::CancellationFlag::new(),
+                |p| stages.push(p.stage),
+            )
+            .unwrap();
+        assert!(rep.verified);
+        assert_eq!(stages, vec!["redacting", "verified"]);
+        rt.trim_memory(0);
+        assert_eq!(rt.session.tile_cache.used_bytes(), 0);
     }
 }

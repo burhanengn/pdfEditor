@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
-import { PDFDocument, rgb } from 'pdf-lib';
+import { buildTestPdfWithPdfium } from './pdfTestHelpers';
 import { PdfiumEngine } from '../pdfiumEngine';
 import { generateReferencePdf } from '@/engine/referencePdfSet';
 
@@ -22,14 +22,19 @@ describe('PdfiumEngine (Wasm) rendering, text spans, Turkish search, and outline
   });
 
   it('opens PDF, verifies top-left vs bottom-right tile orientation, extracts text spans, and runs Turkish-folded search', async () => {
-    const doc = await PDFDocument.create();
-    const page = doc.addPage([400, 600]);
-    // Paint bright RED block at visual TOP-LEFT (PDF space y=520..580, x=20..120)
-    page.drawRectangle({ x: 20, y: 520, width: 100, height: 60, color: rgb(0.95, 0.05, 0.05) });
-    // Paint bright BLUE block at visual BOTTOM-RIGHT (PDF space y=20..80, x=280..380)
-    page.drawRectangle({ x: 280, y: 20, width: 100, height: 60, color: rgb(0.05, 0.1, 0.95) });
-    page.drawText('Istanbul Turkish Verification Line', { x: 40, y: 400, size: 14 });
-    const bytes = await doc.save();
+    const bytes = await buildTestPdfWithPdfium([
+      {
+        width: 400,
+        height: 600,
+        rects: [
+          // Paint bright RED block at visual TOP-LEFT (PDF space y=520..580, x=20..120)
+          { x: 20, yPdf: 520, width: 100, height: 60, fill: [242, 13, 13] },
+          // Paint bright BLUE block at visual BOTTOM-RIGHT (PDF space y=20..80, x=280..380)
+          { x: 280, yPdf: 20, width: 100, height: 60, fill: [13, 26, 242] },
+        ],
+        texts: [{ text: 'Istanbul Turkish Verification Line', x: 40, yPdf: 400, fontSize: 14 }],
+      },
+    ]);
 
     const openRes = engine.openDocument('orient_test', bytes);
     expect(openRes.status).toBe('ok');
@@ -92,11 +97,13 @@ describe('PdfiumEngine (Wasm) rendering, text spans, Turkish search, and outline
   });
 
   it('rotates tile rendering accurately across 90, 180, and 270 userRotation steps', async () => {
-    const doc = await PDFDocument.create();
-    const page = doc.addPage([400, 600]);
-    // Put RED block at top-left in 0-deg visual space: x=0..100, y=500..600 (PDF Y-up)
-    page.drawRectangle({ x: 0, y: 500, width: 100, height: 100, color: rgb(0.95, 0.05, 0.05) });
-    const bytes = await doc.save();
+    const bytes = await buildTestPdfWithPdfium([
+      {
+        width: 400,
+        height: 600,
+        rects: [{ x: 0, yPdf: 500, width: 100, height: 100, fill: [242, 13, 13] }],
+      },
+    ]);
 
     engine.openDocument('rot_test', bytes);
 

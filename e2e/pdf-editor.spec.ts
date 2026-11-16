@@ -1,26 +1,21 @@
 import { expect, test } from '@playwright/test';
-import fontkit from '@pdf-lib/fontkit';
 import fs from 'node:fs';
 import http from 'node:http';
 import path from 'node:path';
-import * as mupdf from 'mupdf';
-import { PDFDocument, StandardFonts, rgb } from 'pdf-lib';
+import {
+  buildE2ePdf,
+  countE2ePageImages,
+  createE2ePngBytes,
+  extractE2ePageCharsWithBoxes,
+  extractE2ePageText,
+  getE2ePdfInfo,
+  measureE2eTtfWidth,
+  patchTtfFontForTest,
+  renderE2ePageRgba,
+} from './helpers/pdfiumTestHelper';
 
 function createWatermarkPngBuffer(): Uint8Array {
-  const pixmap = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, 120, 160], false);
-  try {
-    // Solid soft blue-gray fill so pixel sampling can prove whether it is present or cleanly stripped
-    pixmap.clear(205);
-    const samples = pixmap.getPixels();
-    for (let i = 0; i < samples.length; i += 3) {
-      samples[i] = 195;
-      samples[i + 1] = 220;
-      samples[i + 2] = 242;
-    }
-    return new Uint8Array(pixmap.asPNG());
-  } finally {
-    pixmap.destroy();
-  }
+  return createE2ePngBytes(120, 160, undefined, [195, 220, 242, 255]);
 }
 
 async function createTurkishFormPdf(): Promise<Buffer> {
@@ -28,112 +23,121 @@ async function createTurkishFormPdf(): Promise<Buffer> {
   const regularBytes = fs.readFileSync(path.join(ttfDir, 'DejaVuSerif.ttf'));
   const boldBytes = fs.readFileSync(path.join(ttfDir, 'DejaVuSerif-Bold.ttf'));
 
-  const doc = await PDFDocument.create();
-  doc.registerFontkit(fontkit);
-  const regularFont = await doc.embedFont(regularBytes, { subset: false });
-  const boldFont = await doc.embedFont(boldBytes, { subset: false });
-
-  const page = doc.addPage([595, 842]);
-
-  // 1. Background watermark image placed UNDERNEATH table lines, banner, and paragraphs
-  const watermarkImg = await doc.embedPng(createWatermarkPngBuffer());
-  page.drawImage(watermarkImg, {
-    x: 90,
-    y: 120,
-    width: 415,
-    height: 550,
-  });
-
-  // 2. Dark table horizontal borders & cell text directly over the background image
-  page.drawLine({
-    start: { x: 90, y: 635 },
-    end: { x: 505, y: 635 },
-    thickness: 2,
-    color: rgb(0, 0, 0),
-  });
-  page.drawLine({
-    start: { x: 90, y: 585 },
-    end: { x: 505, y: 585 },
-    thickness: 2,
-    color: rgb(0, 0, 0),
-  });
-  page.drawText('Öğrenim Görülecek Ülke', {
-    x: 100,
-    y: 604,
-    size: 11,
-    font: regularFont,
-    color: rgb(0, 0, 0),
-  });
-
-  // 3. Dark maroon section banner with WHITE bold Turkish heading
-  page.drawRectangle({
-    x: 90,
-    y: 700,
-    width: 415,
-    height: 26,
-    color: rgb(0.54, 0.16, 0.16),
-  });
-  page.drawText('YURT DIŞI ÖĞRENCİ BİLGİLERİ', {
-    x: 170,
-    y: 708,
-    size: 12,
-    font: boldFont,
-    color: rgb(1, 1, 1),
-  });
-
-  // 4. Wrapped 3-line Turkish paragraph over the background image area (tight uniform right edge)
-  const line1 = 'Birinci satır örnek eğitim programı kapsamında deneme';
-  const line2 = 'yazısı üzerinde yapılan detaylı inceleme neticesinde olan';
-  const line3 = 'bir yazı.';
-  page.drawText(line1, { x: 98, y: 470, size: 11, font: regularFont, color: rgb(0, 0, 0) });
-  page.drawText(line2, { x: 98, y: 454, size: 11, font: regularFont, color: rgb(0, 0, 0) });
-  page.drawText(line3, { x: 98, y: 438, size: 11, font: regularFont, color: rgb(0, 0, 0) });
-
-  return Buffer.from(await doc.save());
+  const bytes = await buildE2ePdf(
+    [
+      {
+        width: 595,
+        height: 842,
+        images: [
+          {
+            pngBytes: createWatermarkPngBuffer(),
+            x: 90,
+            yPdf: 120,
+            width: 415,
+            height: 550,
+          },
+        ],
+        lines: [
+          { x1: 90, y1Pdf: 635, x2: 505, y2Pdf: 635, stroke: [0, 0, 0], strokeWidth: 2 },
+          { x1: 90, y1Pdf: 585, x2: 505, y2Pdf: 585, stroke: [0, 0, 0], strokeWidth: 2 },
+        ],
+        rects: [
+          { x: 90, yPdf: 700, width: 415, height: 26, fill: [138, 41, 41] },
+        ],
+        texts: [
+          {
+            text: 'Öğrenim Görülecek Ülke',
+            x: 100,
+            yPdf: 604,
+            fontSize: 11,
+            color: [0, 0, 0],
+            fontKey: 'serifReg',
+          },
+          {
+            text: 'YURT DIŞI ÖĞRENCİ BİLGİLERİ',
+            x: 170,
+            yPdf: 708,
+            fontSize: 12,
+            color: [255, 255, 255],
+            fontKey: 'serifBold',
+          },
+          {
+            text: 'Birinci satır örnek eğitim programı kapsamında deneme',
+            x: 98,
+            yPdf: 470,
+            fontSize: 11,
+            color: [0, 0, 0],
+            fontKey: 'serifReg',
+          },
+          {
+            text: 'yazısı üzerinde yapılan detaylı inceleme neticesinde olan',
+            x: 98,
+            yPdf: 454,
+            fontSize: 11,
+            color: [0, 0, 0],
+            fontKey: 'serifReg',
+          },
+          {
+            text: 'bir yazı.',
+            x: 98,
+            yPdf: 438,
+            fontSize: 11,
+            color: [0, 0, 0],
+            fontKey: 'serifReg',
+          },
+        ],
+      },
+    ],
+    {
+      customFonts: {
+        serifReg: regularBytes,
+        serifBold: boldBytes,
+      },
+    },
+  );
+  return Buffer.from(bytes);
 }
 
 function createPngBuffer(): Uint8Array {
-  const pixmap = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, 40, 40], false);
-  try {
-    pixmap.clear(180);
-    return new Uint8Array(pixmap.asPNG());
-  } finally {
-    pixmap.destroy();
-  }
+  return createE2ePngBytes(40, 40, undefined, [180, 180, 180, 255]);
 }
 
 async function createMultiPagePdf(pageCount: number, prefix = 'Page'): Promise<Buffer> {
-  const doc = await PDFDocument.create();
-  const font = await doc.embedFont(StandardFonts.HelveticaBold);
-  for (let i = 0; i < pageCount; i++) {
-    const page = doc.addPage([612, 792]);
-    page.drawText(`${prefix} ${i + 1} Content`, {
-      x: 54,
-      y: 720,
-      size: 16,
-      font,
-      color: rgb(0.1, 0.1, 0.1),
-    });
-  }
-  return Buffer.from(await doc.save());
+  const bytes = await buildE2ePdf(
+    Array.from({ length: pageCount }, (_, i) => ({
+      width: 612,
+      height: 792,
+      texts: [
+        {
+          text: `${prefix} ${i + 1} Content`,
+          x: 54,
+          yPdf: 720,
+          fontSize: 16,
+          color: [26, 26, 26],
+        },
+      ],
+    })),
+  );
+  return Buffer.from(bytes);
 }
 
 async function createEncryptedPdf(password: string): Promise<Buffer> {
-  const plain = await createMultiPagePdf(2, 'SecretPage');
-  const doc = mupdf.Document.openDocument(plain, 'application/pdf');
-  try {
-    const pdfDoc = doc.asPDF()!;
-    const buf = pdfDoc.saveToBuffer(
-      `encrypt=aes-256,user-password=${password},owner-password=owner_${password}`,
-    );
-    try {
-      return Buffer.from(buf.asUint8Array());
-    } finally {
-      buf.destroy();
-    }
-  } finally {
-    doc.destroy();
-  }
+  const bytes = await buildE2ePdf(
+    [
+      {
+        width: 612,
+        height: 792,
+        texts: [{ text: 'SecretPage 1 Content', x: 54, yPdf: 720, fontSize: 16 }],
+      },
+      {
+        width: 612,
+        height: 792,
+        texts: [{ text: 'SecretPage 2 Content', x: 54, yPdf: 720, fontSize: 16 }],
+      },
+    ],
+    { userPassword: password, ownerPassword: `owner_${password}` },
+  );
+  return Buffer.from(bytes);
 }
 
 function readDownloadBytes(stream: NodeJS.ReadableStream): Promise<Buffer> {
@@ -390,34 +394,16 @@ test.describe('AetherPDF Studio E2E Verification', () => {
     const pdfStream = await pdfDownload.createReadStream();
     const exportedPdfBytes = await readDownloadBytes(pdfStream!);
 
-    const parsedExport = mupdf.Document.openDocument(exportedPdfBytes, 'application/pdf');
-    try {
-      expect(parsedExport.countPages()).toBe(4);
-      const p0 = parsedExport.loadPage(0);
-      const stext = p0.toStructuredText('preserve-whitespace');
-      const p0Text = stext.asText();
-      stext.destroy();
-      p0.destroy();
+    const expInfo = await getE2ePdfInfo(exportedPdfBytes);
+    expect(expInfo.pageCount).toBe(4);
+    const p0Text = await extractE2ePageText(exportedPdfBytes, 0);
+    expect(p0Text).toContain('MODIFIED_IN_PLACE_WASM');
+    expect(p0Text).toContain('NEW_CUSTOM_TEXT_BLOCK');
+    expect(p0Text).not.toContain('Q4 Product Architecture Brief');
 
-      expect(p0Text).toContain('MODIFIED_IN_PLACE_WASM');
-      expect(p0Text).toContain('NEW_CUSTOM_TEXT_BLOCK');
-      expect(p0Text).not.toContain('Q4 Product Architecture Brief');
-
-      const imgStext = parsedExport.loadPage(0);
-      const stImg = imgStext.toStructuredText('preserve-images');
-      let imgCount = 0;
-      stImg.walk({
-        onImageBlock() {
-          imgCount++;
-        },
-      });
-      stImg.destroy();
-      imgStext.destroy();
-      // Moved embedded image + badge.png + stamp.webp + uploaded PNG signature
-      expect(imgCount).toBeGreaterThanOrEqual(4);
-    } finally {
-      parsedExport.destroy();
-    }
+    const imgCount = await countE2ePageImages(exportedPdfBytes, 0);
+    // Moved embedded image + badge.png + stamp.webp + uploaded PNG signature
+    expect(imgCount).toBeGreaterThanOrEqual(4);
 
     // 12. Verify signature vault persisted in localStorage across reload
     await page.reload();
@@ -688,37 +674,21 @@ test.describe('AetherPDF Studio E2E Verification', () => {
     const pdfStream = await pdfDownload.createReadStream();
     const exportedPdfBytes = await readDownloadBytes(pdfStream!);
 
-    const parsedExport = mupdf.Document.openDocument(exportedPdfBytes, 'application/pdf');
-    try {
-      expect(parsedExport.countPages()).toBe(1);
-      const p0 = parsedExport.loadPage(0);
-      const stext = p0.toStructuredText('preserve-whitespace');
-      const exportedText = stext.asText();
-      stext.destroy();
+    const expInfo = await getE2ePdfInfo(exportedPdfBytes);
+    expect(expInfo.pageCount).toBe(1);
+    const exportedText = await extractE2ePageText(exportedPdfBytes, 0);
+    const imgCount = await countE2ePageImages(exportedPdfBytes, 0);
 
-      const stImg = p0.toStructuredText('preserve-images');
-      let imgCount = 0;
-      stImg.walk({
-        onImageBlock() {
-          imgCount++;
-        },
-      });
-      stImg.destroy();
-      p0.destroy();
-
-      const normalizedExportText = exportedText.replace(/\s+/g, ' ');
-      expect(imgCount).toBe(0);
-      expect(normalizedExportText).toContain(
-        'eklenen uzun Türkçe şğüöçıİŞĞÜÖÇ kelime eklentisiyle birlikte uzayıp giden',
-      );
-      expect(normalizedExportText).toContain('olan bir yazı.');
-      expect(normalizedExportText).toContain('YURT DIŞI ÖĞRENCİ BİLGİLERİ');
-      expect(normalizedExportText).toContain('Öğrenim Görülecek Ülke');
-      expect(normalizedExportText).toContain('Fiyat: ₺1.250 — Bağlantı şığöüç ŞİĞÖÜÇ');
-      expect(exportedText).not.toContain('?');
-    } finally {
-      parsedExport.destroy();
-    }
+    const normalizedExportText = exportedText.replace(/\s+/g, ' ');
+    expect(imgCount).toBe(0);
+    expect(normalizedExportText).toContain(
+      'eklenen uzun Türkçe şğüöçıİŞĞÜÖÇ kelime eklentisiyle birlikte uzayıp giden',
+    );
+    expect(normalizedExportText).toContain('olan bir yazı.');
+    expect(normalizedExportText).toContain('YURT DIŞI ÖĞRENCİ BİLGİLERİ');
+    expect(normalizedExportText).toContain('Öğrenim Görülecek Ülke');
+    expect(normalizedExportText).toContain('Fiyat: ₺1.250 — Bağlantı şığöüç ŞİĞÖÜÇ');
+    expect(exportedText).not.toContain('?');
 
     expect(consoleErrors).toEqual([]);
     expect(pageErrors).toEqual([]);
@@ -740,89 +710,101 @@ test.describe('AetherPDF Studio E2E Verification', () => {
       failedRequests.push(`${req.method()} ${req.url()} (${req.failure()?.errorText})`);
     });
 
-    const fs = await import('node:fs');
-    const path = await import('node:path');
-    const { PDFDocument, rgb } = await import('pdf-lib');
-    const fontkitMod = await import('@pdf-lib/fontkit');
-    const fontkit = fontkitMod.default ?? fontkitMod;
-
-    // Generate synthetic pink/coral RGBA-less RGB PNG emblem
-    const wmPix = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, 80, 60], false);
-    const wmData = wmPix.getPixels();
-    for (let i = 0; i < wmData.length; i += 3) {
-      wmData[i] = 245;
-      wmData[i + 1] = 210;
-      wmData[i + 2] = 210;
-    }
-    const wmPngBytes = new Uint8Array(wmPix.asPNG());
-    wmPix.destroy();
-
-    const doc = await PDFDocument.create();
-    doc.registerFontkit(fontkit as never);
+    const wmPngBytes = createE2ePngBytes(80, 60, undefined, [245, 210, 210, 255]);
     const uoDir = path.resolve(process.cwd(), 'node_modules/@universal-office/font-files');
-    const serifFont = await doc.embedFont(
-      new Uint8Array(fs.readFileSync(path.join(uoDir, 'liberationserif-regular.ttf'))),
-      { subset: true },
+    const serifRegBytes = new Uint8Array(
+      fs.readFileSync(path.join(uoDir, 'liberationserif-regular.ttf')),
     );
-    const calibriFont = await doc.embedFont(
-      new Uint8Array(fs.readFileSync(path.join(uoDir, 'carlito-regular.ttf'))),
-      { subset: true },
+    const calibriRegBytes = new Uint8Array(
+      fs.readFileSync(path.join(uoDir, 'carlito-regular.ttf')),
     );
 
-    const p = doc.addPage([595, 842]);
-    // 1. Behind-content watermark image [x=120..470, PDF y=480..700 -> top-down y=142..362]
-    const wmImg = await doc.embedPng(wmPngBytes);
-    p.drawImage(wmImg, { x: 120, y: 480, width: 350, height: 220, opacity: 0.7 });
-
-    // Foreground table border & title sitting ON TOP of watermark
-    p.drawLine({
-      start: { x: 54, y: 590 },
-      end: { x: 540, y: 590 },
-      thickness: 3,
-      color: rgb(0, 0, 0),
-    });
-    p.drawText('Resmi Tablo Başlığı', { x: 64, y: 605, size: 12, font: serifFont, color: rgb(0, 0, 0) });
-
-    // 2. Justified 3-line paragraph spanning exact flush left=54 to right=540 (PDF y=430, 414, 398)
-    const drawJustifiedRow = (words: string[], y: number, leftX: number, rightX: number) => {
-      const totalWordW = words.reduce((s, w) => s + serifFont.widthOfTextAtSize(w, 11), 0);
+    const buildJustifiedTexts = async (words: string[], yPdf: number, leftX: number, rightX: number) => {
+      const widths = await Promise.all(words.map((w) => measureE2eTtfWidth(serifRegBytes, w, 11)));
+      const totalWordW = widths.reduce((s, w) => s + w, 0);
       const gap = (rightX - leftX - totalWordW) / (words.length - 1);
       let curX = leftX;
-      for (const w of words) {
-        p.drawText(w, { x: curX, y, size: 11, font: serifFont, color: rgb(0, 0, 0) });
-        curX += serifFont.widthOfTextAtSize(w, 11) + gap;
-      }
+      return words.map((w, idx) => {
+        const entry = {
+          text: w,
+          x: curX,
+          yPdf,
+          fontSize: 11,
+          color: [0, 0, 0] as [number, number, number],
+          fontKey: 'serif',
+        };
+        curX += widths[idx] + gap;
+        return entry;
+      });
     };
-    drawJustifiedRow(
+
+    const row1 = await buildJustifiedTexts(
       ['Öğrencinin', 'yurt', 'dışı', 'öğrenim', 'süreci', 'hakkında', 'hazırlanan', 'resmi'],
       430,
       54,
       540,
     );
-    drawJustifiedRow(
+    const row2 = await buildJustifiedTexts(
       ['belge', 'bütün', 'kurallar', 'çerçevesinde', 'iki', 'yana', 'yaslı', 'hizalı'],
       414,
       54,
       540,
     );
-    p.drawText('biçimde sunulmaktadır.', { x: 54, y: 398, size: 11, font: serifFont, color: rgb(0, 0, 0) });
 
-    // 3. Inline superscript ('2' at y=345, size 8) + subscript ('2' at y=336.5, size 8) + tail digit '9'
+    const scriptParts: Array<{ txt: string; sz: number; yPdf: number }> = [
+      { txt: 'Alan 10', sz: 12, yPdf: 340 },
+      { txt: '2', sz: 8, yPdf: 345 },
+      { txt: ' ve kimyasal H', sz: 12, yPdf: 340 },
+      { txt: '2', sz: 8, yPdf: 336.5 },
+      { txt: 'O ölçümü Madde 9', sz: 12, yPdf: 340 },
+    ];
     let sx = 54;
-    const drawSeg = (txt: string, sz: number, y: number) => {
-      p.drawText(txt, { x: sx, y, size: sz, font: serifFont, color: rgb(0, 0, 0) });
-      sx += serifFont.widthOfTextAtSize(txt, sz);
-    };
-    drawSeg('Alan 10', 12, 340);
-    drawSeg('2', 8, 345);
-    drawSeg(' ve kimyasal H', 12, 340);
-    drawSeg('2', 8, 336.5);
-    drawSeg('O ölçümü Madde 9', 12, 340);
+    const scriptTexts: Array<{
+      text: string;
+      x: number;
+      yPdf: number;
+      fontSize: number;
+      color: [number, number, number];
+      fontKey: string;
+    }> = [];
+    for (const sp of scriptParts) {
+      scriptTexts.push({
+        text: sp.txt,
+        x: sx,
+        yPdf: sp.yPdf,
+        fontSize: sp.sz,
+        color: [0, 0, 0],
+        fontKey: 'serif',
+      });
+      sx += await measureE2eTtfWidth(serifRegBytes, sp.txt, sp.sz);
+    }
 
-    // 4. Calibri text line (mapped to Carlito / Calibri)
-    p.drawText('Calibri Font Örneği', { x: 54, y: 270, size: 12, font: calibriFont, color: rgb(0, 0, 0) });
-
-    const pdfBytes = Buffer.from(await doc.save());
+    const pdfBytes = Buffer.from(
+      await buildE2ePdf(
+        [
+          {
+            width: 595,
+            height: 842,
+            images: [{ pngBytes: wmPngBytes, x: 120, yPdf: 480, width: 350, height: 220 }],
+            lines: [{ x1: 54, y1Pdf: 590, x2: 540, y2Pdf: 590, stroke: [0, 0, 0], strokeWidth: 3 }],
+            texts: [
+              { text: 'Resmi Tablo Başlığı', x: 64, yPdf: 605, fontSize: 12, color: [0, 0, 0], fontKey: 'serif' },
+              ...row1,
+              ...row2,
+              { text: 'biçimde sunulmaktadır.', x: 54, yPdf: 398, fontSize: 11, color: [0, 0, 0], fontKey: 'serif' },
+              ...scriptTexts,
+              { text: 'Calibri Font Örneği', x: 54, yPdf: 270, fontSize: 12, color: [0, 0, 0], fontKey: 'calibri' },
+            ],
+          },
+        ],
+        {
+          customFonts: {
+            serif: serifRegBytes,
+            calibri: calibriRegBytes,
+          },
+        },
+      ),
+    );
 
     await page.goto('/');
     await page.getByTestId('open-pdf-input').setInputFiles({
@@ -1011,77 +993,48 @@ test.describe('AetherPDF Studio E2E Verification', () => {
       })(),
     ]);
     const exportedBytes = await readDownloadBytes((await dl.createReadStream())!);
-
-    const expDoc = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
-    try {
-      const p0 = expDoc.loadPage(0);
-      try {
-        // Behind-content moved watermark stays BEHIND black line at PDF y=590 -> top-down y=252
-        const pix = p0.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
-        try {
-          const w = pix.getWidth();
-          const n = pix.getNumberOfComponents();
-          const px = pix.getPixels();
-          let minLuma = 255;
-          for (let dy = -3; dy <= 3; dy++) {
-            const idx = ((252 + dy) * w + 280) * n;
-            const luma = 0.2126 * px[idx] + 0.7152 * px[idx + 1] + 0.0722 * px[idx + 2];
-            if (luma < minLuma) minLuma = luma;
-          }
-          expect(minLuma).toBeLessThan(60);
-        } finally {
-          pix.destroy();
-        }
-
-        // Justified lines (PDF y=430..398 -> top-down y=400..470) stretch flush near right edge ~540
-        // and superscripts/subscripts (PDF y=340 -> top-down y=485..520) preserve raised/lowered origins
-        const st = p0.toStructuredText('preserve-whitespace');
-        try {
-          const justRows: Array<{ y: number; x0: number; x1: number }> = [];
-          const scriptGlyphs: Array<{ c: string; y: number; size: number }> = [];
-          st.walk({
-            onChar(c, origin, _font, size, quad) {
-              if (!c.trim()) return;
-              if (origin[1] >= 400 && origin[1] <= 465) {
-                const cx0 = Math.min(quad[0], quad[4]);
-                const cx1 = Math.max(quad[2], quad[6]);
-                const row = justRows.find((r) => Math.abs(r.y - origin[1]) <= 2.5);
-                if (row) {
-                  row.x0 = Math.min(row.x0, cx0);
-                  row.x1 = Math.max(row.x1, cx1);
-                } else {
-                  justRows.push({ y: origin[1], x0: cx0, x1: cx1 });
-                }
-              }
-              if (origin[1] >= 480 && origin[1] <= 530) {
-                scriptGlyphs.push({ c, y: origin[1], size });
-              }
-            },
-          });
-
-          justRows.sort((a, b) => a.y - b.y);
-          expect(justRows.length).toBeGreaterThanOrEqual(3);
-          expect(justRows[0].x1).toBeGreaterThan(528);
-          expect(justRows[1].x1).toBeGreaterThan(528);
-          expect(justRows[justRows.length - 1].x1).toBeLessThan(480);
-
-          const baseH = scriptGlyphs.find((g) => g.c === 'H');
-          const sup2 = scriptGlyphs.find((g) => g.c === '2' && baseH && g.y < baseH.y - 2);
-          const sup9 = scriptGlyphs.find((g) => g.c === '9' && baseH && g.y < baseH.y - 2);
-          const sub2 = scriptGlyphs.find((g) => g.c === '2' && baseH && g.y > baseH.y + 1.5);
-          expect(baseH).toBeDefined();
-          expect(sup2).toBeDefined();
-          expect(sup9).toBeDefined();
-          expect(sub2).toBeDefined();
-        } finally {
-          st.destroy();
-        }
-      } finally {
-        p0.destroy();
-      }
-    } finally {
-      expDoc.destroy();
+    const { width: w, samples: px } = await renderE2ePageRgba(exportedBytes, 0, 1);
+    const n = 4;
+    let minLuma = 255;
+    for (let dy = -3; dy <= 3; dy++) {
+      const idx = ((252 + dy) * w + 280) * n;
+      const luma = 0.2126 * px[idx] + 0.7152 * px[idx + 1] + 0.0722 * px[idx + 2];
+      if (luma < minLuma) minLuma = luma;
     }
+    expect(minLuma).toBeLessThan(60);
+
+    const chars = await extractE2ePageCharsWithBoxes(exportedBytes, 0);
+    const justRows: Array<{ y: number; x0: number; x1: number }> = [];
+    const scriptGlyphs: Array<{ c: string; y: number; size: number }> = [];
+    for (const ch of chars) {
+      if (ch.yTop >= 400 && ch.yTop <= 465) {
+        const row = justRows.find((r) => Math.abs(r.y - ch.yTop) <= 2.5);
+        if (row) {
+          row.x0 = Math.min(row.x0, ch.x0);
+          row.x1 = Math.max(row.x1, ch.x1);
+        } else {
+          justRows.push({ y: ch.yTop, x0: ch.x0, x1: ch.x1 });
+        }
+      }
+      if (ch.yTop >= 480 && ch.yTop <= 530) {
+        scriptGlyphs.push({ c: ch.c, y: ch.yTop, size: ch.fontSize });
+      }
+    }
+
+    justRows.sort((a, b) => a.y - b.y);
+    expect(justRows.length).toBeGreaterThanOrEqual(3);
+    expect(justRows[0].x1).toBeGreaterThan(528);
+    expect(justRows[1].x1).toBeGreaterThan(528);
+    expect(justRows[justRows.length - 1].x1).toBeLessThan(480);
+
+    const baseH = scriptGlyphs.find((g) => g.c === 'H');
+    const sup2 = scriptGlyphs.find((g) => g.c === '2' && baseH && g.y < baseH.y - 2);
+    const sup9 = scriptGlyphs.find((g) => g.c === '9' && baseH && g.y < baseH.y - 2);
+    const sub2 = scriptGlyphs.find((g) => g.c === '2' && baseH && g.y > baseH.y + 1.5);
+    expect(baseH).toBeDefined();
+    expect(sup2).toBeDefined();
+    expect(sup9).toBeDefined();
+    expect(sub2).toBeDefined();
 
     expect(consoleErrors).toEqual([]);
     expect(pageErrors).toEqual([]);
@@ -1101,31 +1054,33 @@ test.describe('AetherPDF Studio E2E Verification', () => {
     // Build a 4-page multi-column PDF with overlapping header image + vertical table rules + custom font name
     const ttfDir = path.resolve(process.cwd(), 'node_modules/dejavu-fonts-ttf/ttf');
     const regularBytes = fs.readFileSync(path.join(ttfDir, 'DejaVuSerif.ttf'));
-    const doc = await PDFDocument.create();
-    doc.registerFontkit(fontkit);
-    const customFont = await doc.embedFont(regularBytes, {
-      subset: false,
-      customName: 'AcmeCorpBrand-Bold',
+    const acmeBrandFont = patchTtfFontForTest(regularBytes, {
+      postscriptName: 'AcmeCorpBrand-Bold',
     });
-    const stdFont = await doc.embedFont(StandardFonts.Helvetica);
 
-    const p1 = doc.addPage([595, 842]);
-    // Large header image overlapping heading text
-    const headerImg = await doc.embedPng(createWatermarkPngBuffer());
-    p1.drawImage(headerImg, { x: 40, y: 710, width: 515, height: 100 });
-    p1.drawText('Header Overlap Title', { x: 80, y: 755, size: 16, font: customFont, color: rgb(0, 0, 0) });
-
-    // Bordered 2-column table row
-    p1.drawLine({ start: { x: 220, y: 580 }, end: { x: 220, y: 640 }, thickness: 1.5, color: rgb(0, 0, 0) });
-    p1.drawText('Cell Alpha', { x: 75, y: 605, size: 12, font: stdFont, color: rgb(0, 0, 0) });
-    p1.drawText('Cell Beta', { x: 245, y: 605, size: 12, font: stdFont, color: rgb(0, 0, 0) });
-
-    // Pages 2..4
-    for (let k = 2; k <= 4; k++) {
-      const pk = doc.addPage([595, 842]);
-      pk.drawText(`Body Page ${k}`, { x: 72, y: 760, size: 12, font: stdFont });
-    }
-    const pdfBuffer = Buffer.from(await doc.save());
+    const pdfBuffer = Buffer.from(
+      await buildE2ePdf(
+        [
+          {
+            width: 595,
+            height: 842,
+            images: [{ pngBytes: createWatermarkPngBuffer(), x: 40, yPdf: 710, width: 515, height: 100 }],
+            lines: [{ x1: 220, y1Pdf: 580, x2: 220, y2Pdf: 640, stroke: [0, 0, 0], strokeWidth: 1.5 }],
+            texts: [
+              { text: 'Header Overlap Title', x: 80, yPdf: 755, fontSize: 16, fontKey: 'acmeBrand' },
+              { text: 'Cell Alpha', x: 75, yPdf: 605, fontSize: 12 },
+              { text: 'Cell Beta', x: 245, yPdf: 605, fontSize: 12 },
+            ],
+          },
+          ...[2, 3, 4].map((k) => ({
+            width: 595,
+            height: 842,
+            texts: [{ text: `Body Page ${k}`, x: 72, yPdf: 760, fontSize: 12 }],
+          })),
+        ],
+        { customFonts: { acmeBrand: acmeBrandFont } },
+      ),
+    );
 
     await page.goto('/');
     await page.getByTestId('open-pdf-input').setInputFiles({
@@ -1265,17 +1220,7 @@ test.describe('AetherPDF Studio E2E Verification', () => {
       })(),
     ]);
     const outBytes = await readDownloadBytes((await dl.createReadStream())!);
-    const outDoc = mupdf.Document.openDocument(outBytes, 'application/pdf');
-    try {
-      const outP2 = outDoc.loadPage(1);
-      try {
-        expect(outP2.toStructuredText('preserve-whitespace').asText()).toContain('Sayfa 1 / 3');
-      } finally {
-        outP2.destroy();
-      }
-    } finally {
-      outDoc.destroy();
-    }
+    expect(await extractE2ePageText(outBytes, 1)).toContain('Sayfa 1 / 3');
 
     expect(consoleErrors).toEqual([]);
     expect(pageErrors).toEqual([]);
@@ -1300,75 +1245,64 @@ test.describe('AetherPDF Studio E2E Verification', () => {
     const libSansRegPath = path.join(uoDir, 'liberationsans-regular.ttf');
     const libSansBoldBytes = fs.readFileSync(libSansBoldPath);
 
-    const doc = await PDFDocument.create();
-    doc.registerFontkit(fontkit);
-
-    // 1. Real subsetted custom TrueType font (`subset: true` strips SFNT cmap in pdf-lib!)
-    const subsetBrandFont = await doc.embedFont(djBoldBytes, {
-      subset: true,
-      customName: 'AcmeSubsetBrand-Bold',
+    const subsetBrandFont = patchTtfFontForTest(djBoldBytes, {
+      postscriptName: 'AcmeSubsetBrand-Bold',
+      subsetChars: 'CUSTOM BRAND HEADERABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789 ',
     });
-    // 2. Font matching user upload (`LiberationSans-Bold`)
-    const libBrandFont = await doc.embedFont(libSansBoldBytes, {
-      subset: true,
-      customName: 'LiberationSans-Bold',
-    });
-    // 3. Body serif + bold lead-in fonts for wrapped paragraph over a light fill-only shading strip
-    const bodySerif = await doc.embedFont(djSerifRegBytes, { subset: false });
-    const leadBold = await doc.embedFont(djSerifBoldBytes, { subset: false });
-
-    const p1 = doc.addPage([595, 842]);
-    p1.drawText('CUSTOM BRAND HEADER', {
-      x: 60,
-      y: 760,
-      size: 16,
-      font: subsetBrandFont,
-      color: rgb(0, 0, 0),
+    const libBrandFont = patchTtfFontForTest(libSansBoldBytes, {
+      postscriptName: 'LiberationSans-Bold',
+      subsetChars: 'TARGET UPLOAD MATCH TEXT',
     });
 
-    p1.drawText('TARGET UPLOAD MATCH TEXT', {
-      x: 60,
-      y: 700,
-      size: 13,
-      font: libBrandFont,
-      color: rgb(0.1, 0.2, 0.4),
-    });
-
-    // Full-width fill-only background highlight/shading box BEHIND a 3-line mixed-weight paragraph
-    // (must NOT split line 1 from lines 2-3 into separate blocks!)
-    p1.drawRectangle({
-      x: 52,
-      y: 590,
-      width: 490,
-      height: 22,
-      color: rgb(0.99, 0.96, 0.84),
-    });
     const leadStr = 'Önemli Not: ';
-    p1.drawText(leadStr, { x: 60, y: 596, size: 11, font: leadBold, color: rgb(0, 0, 0) });
-    const leadWidth = leadBold.widthOfTextAtSize(leadStr, 11);
-    p1.drawText('bu başvuru kapsamındaki tüm onaylı eğitim belgeleri', {
-      x: 60 + leadWidth,
-      y: 596,
-      size: 11,
-      font: bodySerif,
-      color: rgb(0, 0, 0),
-    });
-    p1.drawText('ilgili akademik koordinatörlük birimine zamanında teslim', {
-      x: 60,
-      y: 580,
-      size: 11,
-      font: bodySerif,
-      color: rgb(0, 0, 0),
-    });
-    p1.drawText('edilmelidir.', {
-      x: 60,
-      y: 564,
-      size: 11,
-      font: bodySerif,
-      color: rgb(0, 0, 0),
-    });
+    const leadWidth = await measureE2eTtfWidth(djSerifBoldBytes, leadStr, 11);
 
-    const pdfBuffer = Buffer.from(await doc.save());
+    const pdfBuffer = Buffer.from(
+      await buildE2ePdf(
+        [
+          {
+            width: 595,
+            height: 842,
+            rects: [{ x: 52, yPdf: 590, width: 490, height: 22, fill: [252, 245, 214] }],
+            texts: [
+              { text: 'CUSTOM BRAND HEADER', x: 60, yPdf: 760, fontSize: 16, fontKey: 'subsetBrand' },
+              {
+                text: 'TARGET UPLOAD MATCH TEXT',
+                x: 60,
+                yPdf: 700,
+                fontSize: 13,
+                color: [26, 51, 102],
+                fontKey: 'libBrand',
+              },
+              { text: leadStr, x: 60, yPdf: 596, fontSize: 11, fontKey: 'leadBold' },
+              {
+                text: 'bu başvuru kapsamındaki tüm onaylı eğitim belgeleri',
+                x: 60 + leadWidth,
+                yPdf: 596,
+                fontSize: 11,
+                fontKey: 'bodySerif',
+              },
+              {
+                text: 'ilgili akademik koordinatörlük birimine zamanında teslim',
+                x: 60,
+                yPdf: 580,
+                fontSize: 11,
+                fontKey: 'bodySerif',
+              },
+              { text: 'edilmelidir.', x: 60, yPdf: 564, fontSize: 11, fontKey: 'bodySerif' },
+            ],
+          },
+        ],
+        {
+          customFonts: {
+            subsetBrand: subsetBrandFont,
+            libBrand: libBrandFont,
+            leadBold: djSerifBoldBytes,
+            bodySerif: djSerifRegBytes,
+          },
+        },
+      ),
+    );
     await page.goto('/');
     await page.getByTestId('open-pdf-input').setInputFiles({
       name: 'custom-fonts-and-paragraphs.pdf',
@@ -1442,21 +1376,11 @@ test.describe('AetherPDF Studio E2E Verification', () => {
         await page.getByTestId('save-as-copy-btn').click();
       })(),
     ]);
-    const outBytes = await readDownloadBytes((await dl.createReadStream())!);
-    const outDoc = mupdf.Document.openDocument(outBytes, 'application/pdf');
-    try {
-      const outP1 = outDoc.loadPage(0);
-      try {
-        const exportedText = outP1.toStructuredText('preserve-whitespace').asText();
-        expect(exportedText).toContain('CUSTOM');
-        expect(exportedText).toContain('ŞİĞÜ');
-        expect(exportedText).toContain('Öğrenci ŞİĞÜ Özel Fontu');
-      } finally {
-        outP1.destroy();
-      }
-    } finally {
-      outDoc.destroy();
-    }
+      const outBytes = await readDownloadBytes((await dl.createReadStream())!);
+      const exportedText = await extractE2ePageText(outBytes, 0);
+      expect(exportedText).toContain('CUSTOM');
+      expect(exportedText).toContain('ŞİĞÜ');
+      expect(exportedText).toContain('Öğrenci ŞİĞÜ Özel Fontu');
 
     expect(consoleErrors).toEqual([]);
     expect(pageErrors).toEqual([]);
@@ -1554,18 +1478,8 @@ test.describe('AetherPDF Studio E2E Verification', () => {
       })(),
       ]);
       const outBytes = await readDownloadBytes((await dl.createReadStream())!);
-      const outDoc = mupdf.Document.openDocument(outBytes, 'application/pdf');
-      try {
-        const outP1 = outDoc.loadPage(0);
-        try {
-          const normalized = outP1.toStructuredText('preserve-whitespace').asText().replace(/\s+/g, ' ');
-          expect(normalized).toContain('GitHub Pages Türkçe ŞİĞÜ Doğrulama');
-        } finally {
-          outP1.destroy();
-        }
-      } finally {
-        outDoc.destroy();
-      }
+      const normalized = (await extractE2ePageText(outBytes, 0)).replace(/\s+/g, ' ');
+      expect(normalized).toContain('GitHub Pages Türkçe ŞİĞÜ Doğrulama');
 
       expect(notFoundUrls).toEqual([]);
       expect(failedRequests).toEqual([]);

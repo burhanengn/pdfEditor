@@ -1,7 +1,9 @@
 import { deflateSync } from 'node:zlib';
 import { beforeEach, describe, expect, it } from 'vitest';
-import * as mupdf from 'mupdf';
-import { PDFDocument } from 'pdf-lib';
+import {
+  buildTestPdfWithPdfium,
+  renderPdfPageRgbaWithPdfium,
+} from '../pdfium/__tests__/pdfTestHelpers';
 import {
   applyCropSubRectToElement,
   buildClippingMaskFromElement,
@@ -95,9 +97,7 @@ function createTwoTonePngBytes(
 }
 
 async function createBlankPdfBytes(width = 400, height = 400): Promise<Uint8Array> {
-  const doc = await PDFDocument.create();
-  doc.addPage([width, height]);
-  return doc.save();
+  return buildTestPdfWithPdfium([{ width, height }]);
 }
 
 function makeTestPageMeta(id = 'page_0', width = 400, height = 400): PageMeta {
@@ -449,7 +449,7 @@ describe('imageMask geometry, transform actions & PDF vector clipping', () => {
 
   it('compiles PDF with native vector W clipping paths for ellipse mask, open-line cut (both sides), and flipped rotated shape', async () => {
     const basePdf = await createBlankPdfBytes(400, 400);
-    const info = await inspectPdfDocument(mupdf, basePdf);
+    const info = await inspectPdfDocument(basePdf);
     const pages: PageMeta[] = info.pages.map((p, idx) => ({
       id: `page_${idx}`,
       sourceDocId: 'src_1',
@@ -557,78 +557,61 @@ describe('imageMask geometry, transform actions & PDF vector clipping', () => {
       strokeWidth: 0,
     });
 
-    const compiledBytes = await compilePdfDocument(mupdf, {
+    const compiledBytes = await compilePdfDocument({
       sourceDocs: [{ id: 'src_1', bytes: basePdf }],
       pages,
       elements: [imgTopHalf, imgBottomHalf, imgCircleMasked, flippedArrow],
       optimizeWithMupdf: true,
     });
 
-    const doc = mupdf.Document.openDocument(compiledBytes, 'application/pdf');
-    try {
-      const page = doc.loadPage(0);
-      const pm = page.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
-      try {
-        const px = pm.getPixels();
-        const w = pm.getWidth();
-        const n = pm.getNumberOfComponents();
-        const sample = (x: number, y: number): [number, number, number] => {
-          const idx = (y * w + x) * n;
-          return [px[idx], px[idx + 1], px[idx + 2]];
-        };
+    const { data: px, width: w } = await renderPdfPageRgbaWithPdfium(compiledBytes, 0, 1);
+    const n = 4;
+    const sample = (x: number, y: number): [number, number, number] => {
+      const idx = (y * w + x) * n;
+      return [px[idx], px[idx + 1], px[idx + 2]];
+    };
 
-        // Top-half open-line cut: (80, 50) is bright red, (80, 110) in bottom half is clipped white!
-        const [rTop, gTop, bTop] = sample(80, 50);
-        expect(rTop).toBeGreaterThan(190);
-        expect(gTop).toBeLessThan(95);
-        expect(bTop).toBeLessThan(95);
-        const [rTopClip, gTopClip, bTopClip] = sample(80, 110);
-        expect(rTopClip).toBeGreaterThan(245);
-        expect(gTopClip).toBeGreaterThan(245);
-        expect(bTopClip).toBeGreaterThan(245);
+    // Top-half open-line cut: (80, 50) is bright red, (80, 110) in bottom half is clipped white!
+    const [rTop, gTop, bTop] = sample(80, 50);
+    expect(rTop).toBeGreaterThan(190);
+    expect(gTop).toBeLessThan(95);
+    expect(bTop).toBeLessThan(95);
+    const [rTopClip, gTopClip, bTopClip] = sample(80, 110);
+    expect(rTopClip).toBeGreaterThan(245);
+    expect(gTopClip).toBeGreaterThan(245);
+    expect(bTopClip).toBeGreaterThan(245);
 
-        // Flipped bottom-half cut: (80, 210) in top half is white, (80, 270) is dark blue!
-        const [rBotClip, gBotClip, bBotClip] = sample(80, 210);
-        expect(rBotClip).toBeGreaterThan(245);
-        expect(gBotClip).toBeGreaterThan(245);
-        expect(bBotClip).toBeGreaterThan(245);
-        const [rBot, , bBot] = sample(80, 270);
-        expect(bBot).toBeGreaterThan(110);
-        expect(rBot).toBeLessThan(65);
+    // Flipped bottom-half cut: (80, 210) in top half is white, (80, 270) is dark blue!
+    const [rBotClip, gBotClip, bBotClip] = sample(80, 210);
+    expect(rBotClip).toBeGreaterThan(245);
+    expect(gBotClip).toBeGreaterThan(245);
+    expect(bBotClip).toBeGreaterThan(245);
+    const [rBot, , bBot] = sample(80, 270);
+    expect(bBot).toBeGreaterThan(110);
+    expect(rBot).toBeLessThan(65);
 
-        // Ellipse clip on Image 3: outer corner (223, 43) is white, upper inside (260, 60) is red, lower inside (260, 98) is dark blue
-        const [cCornerR, cCornerG, cCornerB] = sample(223, 43);
-        expect(cCornerR).toBeGreaterThan(245);
-        expect(cCornerG).toBeGreaterThan(245);
-        expect(cCornerB).toBeGreaterThan(245);
+    // Ellipse clip on Image 3: outer corner (223, 43) is white, upper inside (260, 60) is red, lower inside (260, 98) is dark blue
+    const [cCornerR, cCornerG, cCornerB] = sample(223, 43);
+    expect(cCornerR).toBeGreaterThan(245);
+    expect(cCornerG).toBeGreaterThan(245);
+    expect(cCornerB).toBeGreaterThan(245);
 
-        const [cUpperR, cUpperG] = sample(260, 60);
-        expect(cUpperR).toBeGreaterThan(190);
-        expect(cUpperG).toBeLessThan(95);
+    const [cUpperR, cUpperG] = sample(260, 60);
+    expect(cUpperR).toBeGreaterThan(190);
+    expect(cUpperG).toBeLessThan(95);
 
-        const [cLowerR, , cLowerB] = sample(260, 98);
-        expect(cLowerB).toBeGreaterThan(110);
-        expect(cLowerR).toBeLessThan(65);
+    const [cLowerR, , cLowerB] = sample(260, 98);
+    expect(cLowerB).toBeGreaterThan(110);
+    expect(cLowerR).toBeLessThan(65);
 
-        // Flipped arrow-right (now pointing LEFT):
-        // Mid-shaft/head right edge near (290, 240) has shaft ink? Wait: arrow-right shaft spans x=0..0.55, head apex at x=1.
-        // With flipX:true, arrowhead points to x=200 (apex at (200,240)), shaft at right (x=245..300, y=224..256),
-        // so top-left of bbox (208, 212) is outside arrowhead -> WHITE, while top-right tail? Shaft is middle band; head widest near x=245 -> (242, 215) IS green, whereas unflipped (242, 215) was empty tail!
-        // Specifically: at (210, 240) (arrowhead tip) it IS green (#16a34a), and at (290, 208) (outside shaft on right tail) it IS white!
-        const [arrHeadR, arrHeadG] = sample(215, 240);
-        expect(arrHeadG).toBeGreaterThan(130);
-        expect(arrHeadR).toBeLessThan(60);
+    // Flipped arrow-right (now pointing LEFT):
+    const [arrHeadR, arrHeadG] = sample(215, 240);
+    expect(arrHeadG).toBeGreaterThan(130);
+    expect(arrHeadR).toBeLessThan(60);
 
-        const [arrTailCornerR, arrTailCornerG, arrTailCornerB] = sample(290, 208);
-        expect(arrTailCornerR).toBeGreaterThan(245);
-        expect(arrTailCornerG).toBeGreaterThan(245);
-        expect(arrTailCornerB).toBeGreaterThan(245);
-      } finally {
-        pm.destroy();
-        page.destroy();
-      }
-    } finally {
-      doc.destroy();
-    }
+    const [arrTailCornerR, arrTailCornerG, arrTailCornerB] = sample(290, 208);
+    expect(arrTailCornerR).toBeGreaterThan(245);
+    expect(arrTailCornerG).toBeGreaterThan(245);
+    expect(arrTailCornerB).toBeGreaterThan(245);
   });
 });

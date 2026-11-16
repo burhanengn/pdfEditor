@@ -1,18 +1,30 @@
-import type { StandardFonts } from 'pdf-lib';
+export type StandardPdfFontName =
+  | 'Courier'
+  | 'Courier-Bold'
+  | 'Courier-Oblique'
+  | 'Courier-BoldOblique'
+  | 'Helvetica'
+  | 'Helvetica-Bold'
+  | 'Helvetica-Oblique'
+  | 'Helvetica-BoldOblique'
+  | 'Times-Roman'
+  | 'Times-Bold'
+  | 'Times-Italic'
+  | 'Times-BoldItalic';
 
-const STD_FONT = {
-  Courier: 'Courier' as StandardFonts,
-  CourierBold: 'Courier-Bold' as StandardFonts,
-  CourierOblique: 'Courier-Oblique' as StandardFonts,
-  CourierBoldOblique: 'Courier-BoldOblique' as StandardFonts,
-  Helvetica: 'Helvetica' as StandardFonts,
-  HelveticaBold: 'Helvetica-Bold' as StandardFonts,
-  HelveticaOblique: 'Helvetica-Oblique' as StandardFonts,
-  HelveticaBoldOblique: 'Helvetica-BoldOblique' as StandardFonts,
-  TimesRoman: 'Times-Roman' as StandardFonts,
-  TimesRomanBold: 'Times-Bold' as StandardFonts,
-  TimesRomanItalic: 'Times-Italic' as StandardFonts,
-  TimesRomanBoldItalic: 'Times-BoldItalic' as StandardFonts,
+const STD_FONT: Record<string, StandardPdfFontName> = {
+  Courier: 'Courier',
+  CourierBold: 'Courier-Bold',
+  CourierOblique: 'Courier-Oblique',
+  CourierBoldOblique: 'Courier-BoldOblique',
+  Helvetica: 'Helvetica',
+  HelveticaBold: 'Helvetica-Bold',
+  HelveticaOblique: 'Helvetica-Oblique',
+  HelveticaBoldOblique: 'Helvetica-BoldOblique',
+  TimesRoman: 'Times-Roman',
+  TimesRomanBold: 'Times-Bold',
+  TimesRomanItalic: 'Times-Italic',
+  TimesRomanBoldItalic: 'Times-BoldItalic',
 };
 import type {
   BuiltinFontFamilyOption,
@@ -31,10 +43,10 @@ export interface FontDefinition {
   cssFamily: string;
   category: FontCategory;
   pdfStandard: {
-    regular: StandardFonts;
-    bold: StandardFonts;
-    italic: StandardFonts;
-    boldItalic: StandardFonts;
+    regular: StandardPdfFontName;
+    bold: StandardPdfFontName;
+    italic: StandardPdfFontName;
+    boldItalic: StandardPdfFontName;
   };
 }
 
@@ -288,7 +300,7 @@ export function getStandardPdfFont(
   bold: boolean,
   italic: boolean,
   fallback?: BuiltinFontFamilyOption,
-): StandardFonts {
+): StandardPdfFontName {
   const def = getBuiltinFontDefinition(family, fallback);
   if (bold && italic) return def.pdfStandard.boldItalic;
   if (bold) return def.pdfStandard.bold;

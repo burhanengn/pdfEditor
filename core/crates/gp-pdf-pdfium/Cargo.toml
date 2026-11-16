@@ -1,0 +1,17 @@
+[package]
+name = "gp-pdf-pdfium"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gp-model = { path = "../gp-model" }
+gp-pdf = { path = "../gp-pdf" }
+gp-redact = { path = "../gp-redact" }
+gp-text = { path = "../gp-text" }
+pdfium-render = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+
+[dev-dependencies]
+lopdf = { workspace = true }

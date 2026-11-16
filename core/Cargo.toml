@@ -6,6 +6,8 @@ members = [
     "crates/gp-text",
     "crates/gp-pdf",
     "crates/gp-engine",
+    "crates/gp-redact",
+    "crates/gp-pdf-pdfium",
     "bindings/wasm",
 ]
 
@@ -18,7 +20,10 @@ license = "MIT OR Apache-2.0"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
+ttf-parser = "0.25.1"
 unicode-normalization = "0.1"
+lopdf = { version = "0.47", default-features = false, features = ["wasm_js"] }
+pdfium-render = { version = "0.9.5", default-features = false, features = ["pdfium_7881", "thread_safe"] }
 wasm-bindgen = "0.2"
 serde-wasm-bindgen = "0.6"
 

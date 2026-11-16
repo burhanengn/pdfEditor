@@ -1,53 +1,44 @@
 import { expect, test } from '@playwright/test';
-import fontkit from '@pdf-lib/fontkit';
-import fs from 'node:fs';
-import path from 'node:path';
-import * as mupdf from 'mupdf';
-import { PDFDocument, rgb } from 'pdf-lib';
+import {
+  buildE2ePdf,
+  createE2ePngBytes,
+  extractE2ePageCharsWithBoxes,
+  extractE2ePageText,
+  getE2ePdfInfo,
+  renderE2ePageRgba,
+} from './helpers/pdfiumTestHelper';
 
 function createSoftPhotoPng(width = 160, height = 220): Uint8Array {
-  const pixmap = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, width, height], false);
-  try {
-    const samples = pixmap.getPixels();
-    for (let i = 0; i < samples.length; i += 3) {
-      samples[i] = 226;
-      samples[i + 1] = 232;
-      samples[i + 2] = 240;
-    }
-    return new Uint8Array(pixmap.asPNG());
-  } finally {
-    pixmap.destroy();
-  }
+  return createE2ePngBytes(width, height, undefined, [226, 232, 240, 255]);
 }
 
 async function createFullPageScanWithTextPdf(): Promise<Buffer> {
-  const ttfDir = path.resolve(process.cwd(), 'node_modules/dejavu-fonts-ttf/ttf');
-  const regularBytes = fs.readFileSync(path.join(ttfDir, 'DejaVuSans.ttf'));
-
-  const doc = await PDFDocument.create();
-  doc.registerFontkit(fontkit);
-  const sans = await doc.embedFont(regularBytes, { subset: false });
-  const page = doc.addPage([595, 842]);
-
-  // >= 84% page-area background image behind foreground text
-  const bgImg = await doc.embedPng(createSoftPhotoPng());
-  page.drawImage(bgImg, {
-    x: 28,
-    y: 31,
-    width: 540,
-    height: 780,
-  });
-
-  // Single-line fractional font size 10.62pt with Turkish characters right over the background scan
-  page.drawText('ĞÜŞİÖÇ ğüşiöç ıİ Tek Satır Başlık', {
-    x: 80,
-    y: 620,
-    size: 10.62,
-    font: sans,
-    color: rgb(0.06, 0.09, 0.16),
-  });
-
-  return Buffer.from(await doc.save());
+  const bytes = await buildE2ePdf([
+    {
+      width: 595,
+      height: 842,
+      images: [
+        {
+          pngBytes: createSoftPhotoPng(),
+          x: 28,
+          yPdf: 31,
+          width: 540,
+          height: 780,
+        },
+      ],
+      texts: [
+        {
+          text: 'ĞÜŞİÖÇ ğüşiöç ıİ Tek Satır Başlık',
+          x: 80,
+          yPdf: 620,
+          fontSize: 10.62,
+          color: [15, 23, 41],
+          useDejaVuSans: true,
+        },
+      ],
+    },
+  ]);
+  return Buffer.from(bytes);
 }
 
 async function readStreamBytes(stream: NodeJS.ReadableStream): Promise<Uint8Array> {
@@ -327,33 +318,16 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
       })(),
     ]);
     const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
-    const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
-    try {
-      const mp = md.loadPage(0);
-      try {
-        const st = mp.toStructuredText('preserve-whitespace');
-        try {
-          const rows: Array<{ y: number; text: string }> = [];
-          st.walk({
-            onChar(c, origin) {
-              if (!c.trim()) return;
-              const row = rows.find((r) => Math.abs(r.y - origin[1]) <= 3);
-              if (row) row.text += c;
-              else rows.push({ y: origin[1], text: c });
-            },
-          });
-          expect(rows).toHaveLength(1);
-          expect(rows[0].text).toContain('İSTANBUL');
-          expect(rows[0].text).toContain('ĞÜŞİÖÇ');
-        } finally {
-          st.destroy();
-        }
-      } finally {
-        mp.destroy();
-      }
-    } finally {
-      md.destroy();
+    const chars = await extractE2ePageCharsWithBoxes(exportedBytes, 0);
+    const rows: Array<{ y: number; text: string }> = [];
+    for (const ch of chars) {
+      const row = rows.find((r) => Math.abs(r.y - ch.yTop) <= 3);
+      if (row) row.text += ch.c;
+      else rows.push({ y: ch.yTop, text: ch.c });
     }
+    expect(rows).toHaveLength(1);
+    expect(rows[0].text).toContain('İSTANBUL');
+    expect(rows[0].text).toContain('ĞÜŞİÖÇ');
   });
 
   test('Sample PDF header banner background can be selected, recolored, and exported behind white title without trapping text', async ({
@@ -422,29 +396,16 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
       })(),
     ]);
     const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
-    const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
-    try {
-      const mp = md.loadPage(0);
-      expect(mp.toStructuredText('preserve-whitespace').asText()).toContain(
-        'Q4 Product Architecture Brief',
-      );
-      const pm = mp.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
-      try {
-        const px = pm.getPixels();
-        const w = pm.getWidth();
-        const n = pm.getNumberOfComponents();
-        // Open right side of banner at top-right (x=520, y=65) is now red (#dc2626)
-        const bannerIdx = (65 * w + 520) * n;
-        expect(px[bannerIdx]).toBeGreaterThan(190);
-        expect(px[bannerIdx + 1]).toBeLessThan(65);
-        expect(px[bannerIdx + 2]).toBeLessThan(65);
-      } finally {
-        pm.destroy();
-        mp.destroy();
-      }
-    } finally {
-      md.destroy();
-    }
+    expect(await extractE2ePageText(exportedBytes, 0)).toContain(
+      'Q4 Product Architecture Brief',
+    );
+    const { width: w, samples: px } = await renderE2ePageRgba(exportedBytes, 0, 1);
+    const n = 4;
+    // Open right side of banner at top-right (x=520, y=65) is now red (#dc2626)
+    const bannerIdx = (65 * w + 520) * n;
+    expect(px[bannerIdx]).toBeGreaterThan(190);
+    expect(px[bannerIdx + 1]).toBeLessThan(65);
+    expect(px[bannerIdx + 2]).toBeLessThan(65);
   });
 
   test('Vector Shapes (rounded rect, circle), Straight Lines, Path Joining & Node Editing export cleanly to PDF', async ({
@@ -541,33 +502,19 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
       })(),
     ]);
     const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
-    const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
-    try {
-      const mp = md.loadPage(0);
-      const pm = mp.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
-      try {
-        const px = pm.getPixels();
-        const w = pm.getWidth();
-        const h = pm.getHeight();
-        const n = pm.getNumberOfComponents();
-        // Scan mid-page area where the blue filled vector shapes were placed (x: 50..360, y: 200..500)
-        let bluePixelCount = 0;
-        for (let py = Math.floor(h * 0.3); py < Math.floor(h * 0.75); py++) {
-          for (let pxX = Math.floor(w * 0.1); pxX < Math.floor(w * 0.8); pxX++) {
-            const idx = (py * w + pxX) * n;
-            if (px[idx + 2] > 180 && px[idx] < 100) {
-              bluePixelCount++;
-            }
-          }
+    const { width: w, height: h, samples: px } = await renderE2ePageRgba(exportedBytes, 0, 1);
+    const n = 4;
+    // Scan mid-page area where the blue filled vector shapes were placed (x: 50..360, y: 200..500)
+    let bluePixelCount = 0;
+    for (let py = Math.floor(h * 0.3); py < Math.floor(h * 0.75); py++) {
+      for (let pxX = Math.floor(w * 0.1); pxX < Math.floor(w * 0.8); pxX++) {
+        const idx = (py * w + pxX) * n;
+        if (px[idx + 2] > 180 && px[idx] < 100) {
+          bluePixelCount++;
         }
-        expect(bluePixelCount).toBeGreaterThan(500);
-      } finally {
-        pm.destroy();
-        mp.destroy();
       }
-    } finally {
-      md.destroy();
     }
+    expect(bluePixelCount).toBeGreaterThan(500);
   });
 
   test('Smart Signature Photo Extractor removes shadowed tinted paper, keeps blue ink crisp, auto-crops & exports cleanly to PDF', async ({
@@ -576,43 +523,21 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
     // Build a challenging shaded-paper + warm-tint + blue-pen signature photo (280x150)
     const imgW = 280;
     const imgH = 150;
-    const photoPixmap = new mupdf.Pixmap(mupdf.ColorSpace.DeviceRGB, [0, 0, imgW, imgH], false);
-    let photoPng: Uint8Array;
-    try {
-      const samples = photoPixmap.getPixels();
-      for (let y = 0; y < imgH; y++) {
-        for (let x = 0; x < imgW; x++) {
-          // Left bright cream paper (~245 lum) -> right deep hand shadow (~118 lum)
-          const t = Math.max(0, Math.min(1, (x - 95) / 60));
-          const illum = 1 - t * 0.52;
-          const idx = (y * imgW + x) * 3;
-          samples[idx] = Math.round(246 * illum);
-          samples[idx + 1] = Math.round(236 * illum);
-          samples[idx + 2] = Math.round(212 * illum);
-        }
+    const photoPng = createE2ePngBytes(imgW, imgH, (x, y) => {
+      const t = Math.max(0, Math.min(1, (x - 95) / 60));
+      const illum = 1 - t * 0.52;
+      let r = Math.round(246 * illum);
+      let g = Math.round(236 * illum);
+      let b = Math.round(212 * illum);
+      const cy = 75 + Math.sin(((x - 42) / 195) * Math.PI * 2.2) * 18;
+      if (x >= 40 && x <= 239 && Math.abs(y - cy) <= 2.3) {
+        const shadowScale = 1 - t * 0.45;
+        r = Math.round(20 * shadowScale);
+        g = Math.round(58 * shadowScale);
+        b = Math.round(196 * shadowScale);
       }
-      // Draw bold blue pen curve spanning bright half & dark shadow half (y ~ 55..95)
-      for (let s = 0; s <= 240; s++) {
-        const cx = 42 + (s / 240) * 195;
-        const cy = 75 + Math.sin((s / 240) * Math.PI * 2.2) * 18;
-        for (let dy = -2; dy <= 2; dy++) {
-          for (let dx = -2; dx <= 2; dx++) {
-            if (dx * dx + dy * dy > 5) continue;
-            const px = Math.round(cx + dx);
-            const py = Math.round(cy + dy);
-            if (px < 0 || px >= imgW || py < 0 || py >= imgH) continue;
-            const o = (py * imgW + px) * 3;
-            const shadowScale = 1 - Math.max(0, Math.min(1, (px - 95) / 60)) * 0.45;
-            samples[o] = Math.round(20 * shadowScale);
-            samples[o + 1] = Math.round(58 * shadowScale);
-            samples[o + 2] = Math.round(196 * shadowScale);
-          }
-        }
-      }
-      photoPng = new Uint8Array(photoPixmap.asPNG());
-    } finally {
-      photoPixmap.destroy();
-    }
+      return [r, g, b, 255];
+    });
 
     await page.goto('/');
     await page.getByTestId('welcome-sample-btn').click();
@@ -722,46 +647,32 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
       })(),
     ]);
     const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
-    const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
-    try {
-      const mp = md.loadPage(0);
-      const pm = mp.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
-      try {
-        const px = pm.getPixels();
-        const w = pm.getWidth();
-        const h = pm.getHeight();
-        const n = pm.getNumberOfComponents();
-        // Scan around y = 0.62..0.84 * h where the placed signature sits
-        let blueInkPixels = 0;
-        let warmShadowPaperPixels = 0;
-        let opaqueBackdropPixels = 0;
-        for (let py = Math.floor(h * 0.62); py < Math.floor(h * 0.84); py++) {
-          for (let pxX = Math.floor(w * 0.25); pxX < Math.floor(w * 0.75); pxX++) {
-            const idx = (py * w + pxX) * n;
-            const r = px[idx];
-            const g = px[idx + 1];
-            const b = px[idx + 2];
-            if (b > r + 40 && b > 110) {
-              blueInkPixels++;
-            } else if (r < 238 && r > 95 && r - b >= 12) {
-              warmShadowPaperPixels++;
-            } else if (r < 225 && g < 220 && b < 210 && Math.abs(r - g) < 20) {
-              opaqueBackdropPixels++;
-            }
-          }
+    const { width: w, height: h, samples: px } = await renderE2ePageRgba(exportedBytes, 0, 1);
+    const n = 4;
+    // Scan around y = 0.62..0.84 * h where the placed signature sits
+    let blueInkPixels = 0;
+    let warmShadowPaperPixels = 0;
+    let opaqueBackdropPixels = 0;
+    for (let py = Math.floor(h * 0.62); py < Math.floor(h * 0.84); py++) {
+      for (let pxX = Math.floor(w * 0.25); pxX < Math.floor(w * 0.75); pxX++) {
+        const idx = (py * w + pxX) * n;
+        const r = px[idx];
+        const g = px[idx + 1];
+        const b = px[idx + 2];
+        if (b > r + 40 && b > 110) {
+          blueInkPixels++;
+        } else if (r < 238 && r > 95 && r - b >= 12) {
+          warmShadowPaperPixels++;
+        } else if (r < 225 && g < 220 && b < 210 && Math.abs(r - g) < 20) {
+          opaqueBackdropPixels++;
         }
-        expect(blueInkPixels).toBeGreaterThan(80);
-        // Warm cream / shaded paper backdrop pixels (R - B >= 12) must not appear on the PDF
-        expect(warmShadowPaperPixels).toBeLessThan(25);
-        // No large opaque gray rectangle (~4,000+ px) was stamped onto the PDF page
-        expect(opaqueBackdropPixels).toBeLessThan(500);
-      } finally {
-        pm.destroy();
-        mp.destroy();
       }
-    } finally {
-      md.destroy();
     }
+    expect(blueInkPixels).toBeGreaterThan(80);
+    // Warm cream / shaded paper backdrop pixels (R - B >= 12) must not appear on the PDF
+    expect(warmShadowPaperPixels).toBeLessThan(25);
+    // No large opaque gray rectangle (~4,000+ px) was stamped onto the PDF page
+    expect(opaqueBackdropPixels).toBeLessThan(500);
   });
 
   test('custom right-click context menu transforms shapes (reflect, rotate & copy, duplicate, lock, delete)', async ({
@@ -1061,35 +972,22 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
       })(),
     ]);
     const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
-    const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
-    try {
-      const mp = md.loadPage(0);
-      const pm = mp.toPixmap(mupdf.Matrix.identity, mupdf.ColorSpace.DeviceRGB, false, true);
-      try {
-        const px = pm.getPixels();
-        const w = pm.getWidth();
-        const n = pm.getNumberOfComponents();
-        let redCount = 0;
-        let blueCount = 0;
-        for (let py = 318; py < 474; py++) {
-          for (let pxX = 296; pxX < 384; pxX++) {
-            const idx = (py * w + pxX) * n;
-            const r = px[idx];
-            const g = px[idx + 1];
-            const b = px[idx + 2];
-            if (r > 195 && g < 90 && b < 90) redCount++;
-            else if (b > 115 && r < 55 && b - r > 55) blueCount++;
-          }
-        }
-        // Only ONE half of the two-tone PNG remains in exported PDF!
-        expect((redCount > 500 && blueCount < 15) || (blueCount > 500 && redCount < 15)).toBe(true);
-      } finally {
-        pm.destroy();
-        mp.destroy();
+    const { width: w, samples: px } = await renderE2ePageRgba(exportedBytes, 0, 1);
+    const n = 4;
+    let redCount = 0;
+    let blueCount = 0;
+    for (let py = 318; py < 474; py++) {
+      for (let pxX = 296; pxX < 384; pxX++) {
+        const idx = (py * w + pxX) * n;
+        const r = px[idx];
+        const g = px[idx + 1];
+        const b = px[idx + 2];
+        if (r > 195 && g < 90 && b < 90) redCount++;
+        else if (b > 115 && r < 55 && b - r > 55) blueCount++;
       }
-    } finally {
-      md.destroy();
     }
+    // Only ONE half of the two-tone PNG remains in exported PDF!
+    expect((redCount > 500 && blueCount < 15) || (blueCount > 500 && redCount < 15)).toBe(true);
   });
 
   test('starts directly with a blank A4 PDF document, edits text/shapes, inserts blank pages, and exports cleanly', async ({
@@ -1156,36 +1054,13 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
       })(),
     ]);
     const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
-    const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
-    try {
-      expect(md.countPages()).toBe(2);
-      const mp0 = md.loadPage(0);
-      try {
-        const bounds0 = mp0.getBounds();
-        expect(Math.round(bounds0[2] - bounds0[0])).toBe(595);
-        expect(Math.round(bounds0[3] - bounds0[1])).toBe(842);
-
-        const st = mp0.toStructuredText('preserve-whitespace');
-        try {
-          expect(st.asText()).toContain('Boş Sayfa Belgesi');
-        } finally {
-          st.destroy();
-        }
-      } finally {
-        mp0.destroy();
-      }
-
-      const mp1 = md.loadPage(1);
-      try {
-        const bounds1 = mp1.getBounds();
-        expect(Math.round(bounds1[2] - bounds1[0])).toBe(595);
-        expect(Math.round(bounds1[3] - bounds1[1])).toBe(842);
-      } finally {
-        mp1.destroy();
-      }
-    } finally {
-      md.destroy();
-    }
+    const info = await getE2ePdfInfo(exportedBytes);
+    expect(info.pageCount).toBe(2);
+    expect(Math.round(info.pages[0].width)).toBe(595);
+    expect(Math.round(info.pages[0].height)).toBe(842);
+    expect(await extractE2ePageText(exportedBytes, 0)).toContain('Boş Sayfa Belgesi');
+    expect(Math.round(info.pages[1].width)).toBe(595);
+    expect(Math.round(info.pages[1].height)).toBe(842);
 
     // 6. Toolbar "Yeni Boş PDF Oluştur" button resets cleanly to a fresh 1-page blank document
     await page.getByTestId('toolbar-new-blank-btn').click();

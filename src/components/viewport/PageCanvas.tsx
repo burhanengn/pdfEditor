@@ -457,9 +457,9 @@ export function PageCanvas({
     (async () => {
       const { ensureEditEngineReadyForCurrentDocs } = await import('@/engine/documentController');
       await ensureEditEngineReadyForCurrentDocs();
-      const { pdfjsService } = await import('@/engine/pdfjsService');
+      const { pdfiumAnalyzer } = await import('@/engine/pdfium/pdfiumAnalyzer');
       const { images, shapes, horizontalRules, verticalRules, cellRects } =
-        await pdfjsService.extractPageImagesAndRules(
+        await pdfiumAnalyzer.extractPageImagesAndRules(
           page.sourceDocId,
           activeBytes,
           page.sourcePageIndex,
@@ -487,7 +487,7 @@ export function PageCanvas({
           });
         }
       } catch {
-        const fallback = await pdfjsService.extractPageContent(
+        const fallback = await pdfiumAnalyzer.extractPageContent(
           page.sourceDocId,
           activeBytes,
           page.sourcePageIndex,

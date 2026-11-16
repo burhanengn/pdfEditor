@@ -1,4 +1,5 @@
-import type * as MuPdfNamespace from 'mupdf';
+import type { PdfiumRuntimeModule } from './pdfium/pdfiumLoader';
+import { getSharedPdfium } from './pdfium/pdfiumLoader';
 import type {
   DetectedTextBlock,
   FontFamilyOption,
@@ -1110,133 +1111,202 @@ function splitLineCharsAtBarriersAndColumns(
 
 /**
  * Extracts accurate Unicode text, rich inline formatting (bold, italic, superscript, subscript),
- * true ink colors (RGB/CMYK/Gray/Form XObjects), alignment, and smartly grouped paragraphs
- * using MuPDF StructuredText.
+ * true ink colors, alignment, and smartly grouped paragraphs directly via PDFium (`FPDFText_*`),
+ * completely free of MuPDF.
  */
-export function extractTextBlocksFromMuPdfPage(
-  page: MuPdfNamespace.Page,
+export function extractTextBlocksFromPdfiumPage(
+  mod: PdfiumRuntimeModule,
+  pagePtr: number,
+  pageHeight: number,
   pageId: string,
   rulesOrBarriers?: HorizontalRule[] | TableVectorBarriers,
 ): DetectedTextBlock[] {
   const barriers = normalizeBarriers(rulesOrBarriers);
-  const bounds = page.getBounds();
-  const offsetX = bounds[0] ?? 0;
-  const offsetY = bounds[1] ?? 0;
+  const textPage = mod.FPDFText_LoadPage(pagePtr);
+  if (!textPage) return [];
 
-  const stext = page.toStructuredText('preserve-whitespace');
   const rawSegments: CharAccumulator[] = [];
+  const boxPtr = mod.pdfium.wasmExports.malloc(32); // 4 doubles
+  const originPtr = mod.pdfium.wasmExports.malloc(16); // 2 doubles
+  const colorPtr = mod.pdfium.wasmExports.malloc(16); // r, g, b, a u32
+  const fontBufBytes = 256;
+  const fontBufPtr = mod.pdfium.wasmExports.malloc(fontBufBytes);
+  const flagsPtr = mod.pdfium.wasmExports.malloc(4);
 
-  let blockIdx = -1;
-  let activeLine: CharAccumulator | null = null;
+  let activeLine: CharAccumulator = { chars: [], mupdfBlockIdx: 0 };
+  let blockIdx = 0;
+
+  const commitLine = () => {
+    if (activeLine.chars.length > 0) {
+      rawSegments.push(
+        ...splitLineCharsAtBarriersAndColumns(activeLine.chars, activeLine.mupdfBlockIdx, barriers),
+      );
+      activeLine = { chars: [], mupdfBlockIdx: blockIdx };
+    }
+  };
 
   try {
-    stext.walk({
-      beginTextBlock() {
+    const charCount = mod.FPDFText_CountChars(textPage);
+    for (let i = 0; i < charCount; i++) {
+      const code = mod.FPDFText_GetUnicode(textPage, i);
+      if (code === 0 || code === 0xfffe || code === 0xffff) continue;
+      const c = String.fromCodePoint(code);
+      if (c === '\r' || c === '\n') {
+        commitLine();
         blockIdx++;
-      },
-      beginLine() {
-        activeLine = { chars: [], mupdfBlockIdx: blockIdx };
-      },
-      endLine() {
-        if (activeLine && activeLine.chars.length > 0) {
-          rawSegments.push(
-            ...splitLineCharsAtBarriersAndColumns(
-              activeLine.chars,
-              activeLine.mupdfBlockIdx,
-              barriers,
-            ),
-          );
-        }
-        activeLine = null;
-      },
-      onChar(c, origin, font, size, quad, color) {
-        if (!activeLine) {
-          activeLine = { chars: [], mupdfBlockIdx: Math.max(0, blockIdx) };
-        }
-        const x0 = Math.min(quad[0], quad[2], quad[4], quad[6]) - offsetX;
-        const y0 = Math.min(quad[1], quad[3], quad[5], quad[7]) - offsetY;
-        const x1 = Math.max(quad[0], quad[2], quad[4], quad[6]) - offsetX;
-        const y1 = Math.max(quad[1], quad[3], quad[5], quad[7]) - offsetY;
-        const baselineY = (origin[1] ?? y1) - offsetY;
-        const fontName = font.getName() || '';
-        const parsedFont = parsePdfFontMetadata(fontName, {
-          isSerif: font.isSerif(),
-          isMono: font.isMono(),
-          isBold: font.isBold(),
-          isItalic: font.isItalic(),
-        });
+        activeLine.mupdfBlockIdx = blockIdx;
+        continue;
+      }
 
-        const explicitSans =
-          parsedFont.fontFamily === 'Calibri' ||
-          parsedFont.fontFamily === 'Inter' ||
-          parsedFont.fontFamily === 'DejaVuSans' ||
-          parsedFont.fontFamily === 'DejaVuSansCondensed' ||
-          parsedFont.fontFamily === 'Verdana' ||
-          /sans|arial|helvetica|calibri|carlito|tahoma|verdana|segoe|roboto|opensans|noto.?sans|trebuchet|cantarell|ubuntu|corbel|candara/i.test(
-            fontName,
-          );
-        const mono =
-          font.isMono() ||
-          parsedFont.fontFamily === 'Courier' ||
-          parsedFont.fontFamily === 'JetBrainsMono' ||
-          parsedFont.fontFamily === 'DejaVuSansMono';
-        const serif =
-          !mono &&
-          !explicitSans &&
-          (parsedFont.fontFamily === 'TimesRoman' ||
-            parsedFont.fontFamily === 'Cambria' ||
-            parsedFont.fontFamily === 'Merriweather' ||
-            parsedFont.fontFamily === 'Georgia' ||
-            parsedFont.fontFamily === 'Garamond' ||
-            parsedFont.fontFamily === 'DejaVuSerif' ||
-            parsedFont.fontFamily === 'DejaVuSerifCondensed' ||
-            font.isSerif());
-        const resolvedFamily: FontFamilyOption = mono
-          ? parsedFont.fontFamily === 'JetBrainsMono' || parsedFont.fontFamily === 'DejaVuSansMono'
-            ? parsedFont.fontFamily
-            : 'Courier'
-          : explicitSans
-            ? parsedFont.fontFamily
-            : parsedFont.fontFamily === 'Cambria' ||
-                parsedFont.fontFamily === 'Merriweather' ||
-                parsedFont.fontFamily === 'Georgia' ||
-                parsedFont.fontFamily === 'Garamond' ||
-                parsedFont.fontFamily === 'DejaVuSerif' ||
-                parsedFont.fontFamily === 'DejaVuSerifCondensed'
-              ? parsedFont.fontFamily
-              : serif
-                ? 'TimesRoman'
-                : parsedFont.fontFamily;
-
-        activeLine.chars.push({
-          c,
-          x0,
-          y0,
-          x1,
-          y1,
-          baselineY,
-          size: Math.max(4, size || 12),
-          color: rgbFloatsToHex(color),
-          fontName,
-          cleanFontName: parsedFont.cleanFontName,
-          isCustomFont: parsedFont.isCustomFont,
-          horizontalScale: parsedFont.estimatedHorizontalScale,
-          fontFamily: resolvedFamily,
-          bold: font.isBold() || parsedFont.bold,
-          italic: font.isItalic() || parsedFont.italic,
-          serif,
-          mono,
-        });
-      },
-    });
-    if (activeLine && (activeLine as CharAccumulator).chars.length > 0) {
-      const dangling = activeLine as CharAccumulator;
-      rawSegments.push(
-        ...splitLineCharsAtBarriersAndColumns(dangling.chars, dangling.mupdfBlockIdx, barriers),
+      const okBox = mod.FPDFText_GetCharBox(
+        textPage,
+        i,
+        boxPtr,
+        boxPtr + 8,
+        boxPtr + 16,
+        boxPtr + 24,
       );
+      if (!okBox) continue;
+
+      const left = mod.pdfium.getValue(boxPtr, 'double');
+      const right = mod.pdfium.getValue(boxPtr + 8, 'double');
+      const bottom = mod.pdfium.getValue(boxPtr + 16, 'double');
+      const top = mod.pdfium.getValue(boxPtr + 24, 'double');
+
+      const okOrig = mod.FPDFText_GetCharOrigin(textPage, i, originPtr, originPtr + 8);
+      const origY = okOrig ? mod.pdfium.getValue(originPtr + 8, 'double') : bottom;
+
+      const x0 = Math.min(left, right);
+      const x1 = Math.max(left, right);
+      const y0 = Math.max(0, pageHeight - Math.max(top, bottom));
+      const y1 = Math.max(y0, pageHeight - Math.min(top, bottom));
+      const baselineY = Math.max(0, pageHeight - origY);
+
+      const rawSize = mod.FPDFText_GetFontSize(textPage, i) || 12;
+      const size = Math.max(4, rawSize);
+
+      // Font descriptor flags & name
+      mod.pdfium.setValue(flagsPtr, 0, 'i32');
+      const fontLen = mod.FPDFText_GetFontInfo(textPage, i, fontBufPtr, fontBufBytes, flagsPtr);
+      const fontName =
+        fontLen > 0 ? mod.pdfium.UTF8ToString(fontBufPtr).replace(/^\//, '').trim() : '';
+      const flags = mod.pdfium.getValue(flagsPtr, 'i32');
+      const weight = mod.FPDFText_GetFontWeight(textPage, i);
+
+      const flagMono = (flags & 0x01) !== 0;
+      const flagSerif = (flags & 0x02) !== 0;
+      const flagItalic = (flags & 0x40) !== 0;
+      const flagBold = (flags & 0x40000) !== 0 || weight >= 600;
+
+      const parsedFont = parsePdfFontMetadata(fontName, {
+        isSerif: flagSerif,
+        isMono: flagMono,
+        isBold: flagBold,
+        isItalic: flagItalic,
+      });
+
+      const explicitSans =
+        parsedFont.fontFamily === 'Calibri' ||
+        parsedFont.fontFamily === 'Inter' ||
+        parsedFont.fontFamily === 'DejaVuSans' ||
+        parsedFont.fontFamily === 'DejaVuSansCondensed' ||
+        parsedFont.fontFamily === 'Verdana' ||
+        /sans|arial|helvetica|calibri|carlito|tahoma|verdana|segoe|roboto|opensans|noto.?sans|trebuchet|cantarell|ubuntu|corbel|candara/i.test(
+          fontName,
+        );
+      const mono =
+        flagMono ||
+        parsedFont.fontFamily === 'Courier' ||
+        parsedFont.fontFamily === 'JetBrainsMono' ||
+        parsedFont.fontFamily === 'DejaVuSansMono';
+      const serif =
+        !mono &&
+        !explicitSans &&
+        (parsedFont.fontFamily === 'TimesRoman' ||
+          parsedFont.fontFamily === 'Cambria' ||
+          parsedFont.fontFamily === 'Merriweather' ||
+          parsedFont.fontFamily === 'Georgia' ||
+          parsedFont.fontFamily === 'Garamond' ||
+          parsedFont.fontFamily === 'DejaVuSerif' ||
+          parsedFont.fontFamily === 'DejaVuSerifCondensed' ||
+          flagSerif);
+      const resolvedFamily: FontFamilyOption = mono
+        ? parsedFont.fontFamily === 'JetBrainsMono' || parsedFont.fontFamily === 'DejaVuSansMono'
+          ? parsedFont.fontFamily
+          : 'Courier'
+        : explicitSans
+          ? parsedFont.fontFamily
+          : parsedFont.fontFamily === 'Cambria' ||
+              parsedFont.fontFamily === 'Merriweather' ||
+              parsedFont.fontFamily === 'Georgia' ||
+              parsedFont.fontFamily === 'Garamond' ||
+              parsedFont.fontFamily === 'DejaVuSerif' ||
+              parsedFont.fontFamily === 'DejaVuSerifCondensed'
+            ? parsedFont.fontFamily
+            : serif
+              ? 'TimesRoman'
+              : parsedFont.fontFamily;
+
+      let hexColor = '#000000';
+      if (
+        mod.FPDFText_GetFillColor(
+          textPage,
+          i,
+          colorPtr,
+          colorPtr + 4,
+          colorPtr + 8,
+          colorPtr + 12,
+        )
+      ) {
+        const r = (mod.pdfium.getValue(colorPtr, 'i32') & 0xff) / 255;
+        const g = (mod.pdfium.getValue(colorPtr + 4, 'i32') & 0xff) / 255;
+        const b = (mod.pdfium.getValue(colorPtr + 8, 'i32') & 0xff) / 255;
+        hexColor = rgbFloatsToHex([r, g, b]);
+      }
+
+      const prev = activeLine.chars[activeLine.chars.length - 1];
+      if (prev) {
+        const baselineDelta = Math.abs(baselineY - prev.baselineY);
+        const maxFs = Math.max(prev.size, size);
+        const horizontalReset = x0 < prev.x0 - maxFs * 1.5;
+        if (baselineDelta > maxFs * 0.42 || horizontalReset) {
+          commitLine();
+          if (baselineDelta > maxFs * 1.1) {
+            blockIdx++;
+            activeLine.mupdfBlockIdx = blockIdx;
+          }
+        }
+      }
+
+      const safeX1 = c === ' ' && x1 - x0 < 0.2 ? x0 + size * 0.28 : x1;
+      activeLine.chars.push({
+        c,
+        x0,
+        y0,
+        x1: safeX1,
+        y1,
+        baselineY,
+        size,
+        color: hexColor,
+        fontName,
+        cleanFontName: parsedFont.cleanFontName,
+        isCustomFont: parsedFont.isCustomFont,
+        horizontalScale: parsedFont.estimatedHorizontalScale,
+        fontFamily: resolvedFamily,
+        bold: flagBold || parsedFont.bold,
+        italic: flagItalic || parsedFont.italic,
+        serif,
+        mono,
+      });
     }
+    commitLine();
   } finally {
-    stext.destroy();
+    mod.pdfium.wasmExports.free(boxPtr);
+    mod.pdfium.wasmExports.free(originPtr);
+    mod.pdfium.wasmExports.free(colorPtr);
+    mod.pdfium.wasmExports.free(fontBufPtr);
+    mod.pdfium.wasmExports.free(flagsPtr);
+    mod.FPDFText_ClosePage(textPage);
   }
 
   const withScripts = mergeOrphanScriptSegments(rawSegments);
@@ -1254,7 +1324,6 @@ export function extractTextBlocksFromMuPdfPage(
     const nonSpace = visibleSpan.filter((ch) => !/^\s$/.test(ch.c));
     if (nonSpace.length === 0) continue;
 
-    // Identify body glyph baseline & size (ignoring tiny superscripts/subscripts)
     const maxCharSize = Math.max(...nonSpace.map((ch) => ch.size));
     const bodyChars = nonSpace.filter(
       (ch) => !ch.forcedScript && ch.size >= maxCharSize * 0.84,
@@ -1272,7 +1341,6 @@ export function extractTextBlocksFromMuPdfPage(
     const x1 = Math.max(...nonSpace.map((ch) => ch.x1));
     const y1 = Math.max(...bodyVisibleBounds.map((ch) => ch.y1));
 
-    // Measure first token width directly from character quads
     let firstWordEndX = nonSpace[0].x1;
     for (const ch of visibleSpan) {
       if (/^\s$/.test(ch.c)) break;
@@ -1280,14 +1348,12 @@ export function extractTextBlocksFromMuPdfPage(
     }
     const firstWordWidth = Math.max(4, firstWordEndX - x0);
 
-    // Measure largest visual inter-word gap to recognize justified lines cleanly
     let maxWordSpace = 0;
     for (let i = 1; i < nonSpace.length; i++) {
       const gap = nonSpace[i].x0 - nonSpace[i - 1].x1;
       if (gap > maxWordSpace) maxWordSpace = gap;
     }
 
-    // Dominant metrics weighted over body characters
     const colorCounts = new Map<string, number>();
     let boldCount = 0;
     let italicCount = 0;
@@ -1338,13 +1404,11 @@ export function extractTextBlocksFromMuPdfPage(
     const mono = monoCount > baselinePool.length / 2;
     const serif = !mono && serifCount > baselinePool.length / 2;
 
-    // Build inline rich runs tracking superscript, subscript, bold, and italic per character
     const charRuns: TextRun[] = [];
     for (let i = 0; i < visibleSpan.length; i++) {
       const ch = visibleSpan[i];
       const isSpace = /^\s$/.test(ch.c);
       if (isSpace) {
-        // Collapse repeated spaces synthesized between columns/runs into single space while inheriting normal script
         const prev = charRuns[charRuns.length - 1];
         if (prev && !prev.text.endsWith(' ')) {
           charRuns.push({ text: ' ', bold: lineBold, italic: lineItalic, script: 'normal' });
@@ -1409,4 +1473,37 @@ export function extractTextBlocksFromMuPdfPage(
   }
 
   return buildDetectedTextBlocksFromMuLines(lines, pageId, barriers);
+}
+
+/**
+ * Convenience helper for extracting text blocks from raw PDF bytes using PDFium.
+ */
+export async function extractTextBlocksFromPdfBytes(
+  pdfBytes: Uint8Array,
+  sourcePageIndex: number,
+  pageId: string,
+  rulesOrBarriers?: HorizontalRule[] | TableVectorBarriers,
+): Promise<DetectedTextBlock[]> {
+  const mod = await getSharedPdfium();
+  const dataPtr = mod.pdfium.wasmExports.malloc(pdfBytes.byteLength);
+  if (!dataPtr) return [];
+  mod.pdfium.HEAPU8.set(pdfBytes, dataPtr);
+  const docPtr = mod.FPDF_LoadMemDocument(dataPtr, pdfBytes.byteLength, '');
+  if (!docPtr) {
+    mod.pdfium.wasmExports.free(dataPtr);
+    return [];
+  }
+  try {
+    const pagePtr = mod.FPDF_LoadPage(docPtr, sourcePageIndex);
+    if (!pagePtr) return [];
+    try {
+      const pageHeight = mod.FPDF_GetPageHeightF(pagePtr) || 792;
+      return extractTextBlocksFromPdfiumPage(mod, pagePtr, pageHeight, pageId, rulesOrBarriers);
+    } finally {
+      mod.FPDF_ClosePage(pagePtr);
+    }
+  } finally {
+    mod.FPDF_CloseDocument(docPtr);
+    mod.pdfium.wasmExports.free(dataPtr);
+  }
 }

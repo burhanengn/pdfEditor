@@ -73,12 +73,11 @@ export default defineConfig({
   resolve: {
     alias: {
       '@': path.resolve(__dirname, 'src'),
-      '@mupdf-wasm': path.resolve(__dirname, 'node_modules/mupdf/dist/mupdf-wasm.wasm'),
       '@pdfium-wasm': path.resolve(__dirname, 'node_modules/@embedpdf/pdfium/dist/pdfium.wasm'),
     },
   },
   optimizeDeps: {
-    exclude: ['mupdf', '@embedpdf/pdfium'],
+    exclude: ['@embedpdf/pdfium'],
     esbuildOptions: {
       target: 'esnext',
     },
@@ -90,7 +89,6 @@ export default defineConfig({
       output: {
         manualChunks: {
           'react-vendor': ['react', 'react-dom', 'zustand'],
-          'pdfjs-vendor': ['pdfjs-dist'],
           'ui-vendor': ['lucide-react', '@tanstack/react-virtual'],
         },
       },

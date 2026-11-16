@@ -7,4 +7,5 @@ license.workspace = true
 [dependencies]
 gp-model = { path = "../gp-model" }
 serde = { workspace = true }
+ttf-parser = { workspace = true }
 unicode-normalization = { workspace = true }

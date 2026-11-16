@@ -1,116 +1,115 @@
-import fontkit from '@pdf-lib/fontkit';
 import JSZip from 'jszip';
-import {
-  appendBezierCurve,
-  clip,
-  closePath,
-  degrees,
-  endPath,
-  LineCapStyle,
-  lineTo,
-  moveTo,
-  PDFArray,
-  PDFDocument,
-  PDFName,
-  PDFNumber,
-  PDFOperator,
-  PDFOperatorNames,
-  PDFRef,
-  popGraphicsState,
-  pushGraphicsState,
-  rgb,
-  setCharacterSpacing,
-  type PDFFont,
-  type PDFImage,
-  type PDFPage,
-} from 'pdf-lib';
-import type * as MuPdfNamespace from 'mupdf';
-import {
-  getElementLayerTier,
-  type CanvasElement,
-  type HighlightElement,
-  type ImageAddElement,
-  type ImageReplacementElement,
-  type ShapeReplacementElement,
-  type SignatureElement,
-  type StrokeElement,
-  type TextAddElement,
-  type TextEditElement,
+import type {
+  CanvasElement,
+  HighlightElement,
+  ImageAddElement,
+  ImageReplacementElement,
+  ShapeReplacementElement,
+  SignatureElement,
+  StrokeElement,
+  TextAddElement,
+  TextEditElement,
 } from '@/types/elements';
 import type {
   BuiltinFontFamilyOption,
   FontFamilyOption,
   PageMeta,
+  PageNumberingConfig,
   RectBox,
   RotationAngle,
   TextScriptMode,
 } from '@/types/pdf';
-import type {
-  CompilePdfPayload,
-  FontAssetPayload,
-  InspectPdfResult,
-  SplitPdfZipPayload,
-} from '@/types/worker';
+import type { FontAssetPayload } from '@/types/worker';
 import {
-  computePdfLibDrawPlacement,
   normalizeRotation,
   pointBaseVisualToPdfUserSpace,
-  rectBaseVisualToMupdfRect,
+  rectBaseVisualToPdfUserSpace,
 } from './coordinates';
-import {
-  extractEmbeddedFontsFromPdfBytes,
-  getExtractedFontAssetPayloads,
-} from './embeddedFontExtractor';
 import {
   filterTextForPdfFont,
   getFontCategory,
   getStandardPdfFont,
   isBuiltinFontFamily,
-  parsePdfFontMetadata,
+  type FontCategory,
+  type StandardPdfFontName,
 } from './fonts';
-import { computePageNumberLayout } from './pageNumbers';
-import { buildWrappedRichLines, ensureRunsFromElement } from './richText';
 import {
   elementLocalToPage,
   flipSvgPath,
   parseSvgPathCommands,
   scaleSvgPath as scaleSvgPathCommands,
+  type SvgPathCommand,
 } from './imageMask';
+import { computePageNumberLayout } from './pageNumbers';
+import { getSharedPdfium, type PdfiumRuntimeModule } from './pdfium/pdfiumLoader';
+import { buildWrappedRichLines, ensureRunsFromElement } from './richText';
+import { ensureRustCoreReady, type GpWasmModule } from './rustCoreBridge';
 import {
   pathPointsToSvgPath,
   pointsToSmoothSvgPath,
   shapeToSvgPath,
   strokeDashToArray,
 } from './vectorShapes';
-export { pointsToSmoothSvgPath };
 
-type PdfLibDrawPlacement = ReturnType<typeof computePdfLibDrawPlacement>;
+export interface PdfPageInspectInfo {
+  sourcePageIndex: number;
+  baseWidth: number;
+  baseHeight: number;
+  intrinsicRotation: RotationAngle;
+  mediaBox: [number, number, number, number];
+  cropBox: [number, number, number, number];
+}
 
-export type MuPdfModule = Pick<typeof MuPdfNamespace, 'Document' | 'PDFDocument' | 'PDFPage'>;
+export interface PdfInspectResult {
+  status: 'ok' | 'needs-password' | 'invalid-password';
+  decryptedBytes?: Uint8Array;
+  wasEncrypted: boolean;
+  pageCount: number;
+  pages: PdfPageInspectInfo[];
+}
 
-function parseHexColor(hex: string): { r: number; g: number; b: number } {
+export interface CompilePdfPayload {
+  sourceDocs: Array<{ id: string; bytes: Uint8Array }>;
+  pages: PageMeta[];
+  elements: CanvasElement[];
+  fonts?: FontAssetPayload[];
+  pageNumbering?: PageNumberingConfig | null;
+  optimizeWithMupdf?: boolean;
+}
+
+export interface SplitPdfZipJob {
+  id: string;
+  filename: string;
+  pages: PageMeta[];
+}
+
+export interface SplitPdfZipPayload {
+  sourceDocs: Array<{ id: string; bytes: Uint8Array }>;
+  elements: CanvasElement[];
+  jobs: SplitPdfZipJob[];
+  fonts?: FontAssetPayload[];
+  pageNumbering?: PageNumberingConfig | null;
+}
+
+const FPDF_ERR_PASSWORD = 4;
+const FPDF_FONT_TRUETYPE = 2;
+const FPDF_FILLMODE_WINDING = 2;
+
+function parseHexColorBytes(hex: string): { r: number; g: number; b: number } {
   const clean = hex.replace('#', '').trim();
   const full =
     clean.length === 3
-      ? clean
-          .split('')
-          .map((c) => c + c)
-          .join('')
-      : clean.padEnd(6, '0').slice(0, 6);
+      ? `${clean[0]}${clean[0]}${clean[1]}${clean[1]}${clean[2]}${clean[2]}`
+      : clean;
   const num = Number.parseInt(full, 16);
   if (Number.isNaN(num)) {
     return { r: 0, g: 0, b: 0 };
   }
   return {
-    r: ((num >> 16) & 255) / 255,
-    g: ((num >> 8) & 255) / 255,
-    b: (num & 255) / 255,
+    r: (num >> 16) & 255,
+    g: (num >> 8) & 255,
+    b: num & 255,
   };
-}
-
-function pdfRgb(hex: string) {
-  const { r, g, b } = parseHexColor(hex);
-  return rgb(r, g, b);
 }
 
 /**
@@ -143,7 +142,6 @@ export function wrapTextLines(
         if (trimmed.length > 0) {
           lines.push(trimmed);
         }
-        // If single long token exceeds maxWidth, break character-by-character
         const nextStart = token.trimStart();
         if (measureWidth(nextStart) > safeMaxWidth && nextStart.length > 1) {
           let chunk = '';
@@ -164,388 +162,380 @@ export function wrapTextLines(
     lines.push(currentLine.trimEnd());
   }
 
-  return lines.length > 0 ? lines : [''];
+  return lines;
 }
 
-// pointsToSmoothSvgPath imported from ./vectorShapes and re-exported above
+function savePdfiumDocToBytes(mod: PdfiumRuntimeModule, docPtr: number): Uint8Array {
+  const writer = mod.PDFiumExt_OpenFileWriter();
+  if (!writer) {
+    throw new Error('Failed to open PDFium file writer.');
+  }
+  try {
+    const ok = mod.PDFiumExt_SaveAsCopy(docPtr, writer);
+    if (!ok) {
+      throw new Error('PDFium failed to serialize compiled PDF.');
+    }
+    const size = mod.PDFiumExt_GetFileWriterSize(writer);
+    if (size <= 0) {
+      return new Uint8Array(0);
+    }
+    const outPtr = mod.pdfium.wasmExports.malloc(size);
+    if (!outPtr) {
+      throw new Error('Out of Wasm memory while copying compiled PDF.');
+    }
+    try {
+      mod.PDFiumExt_GetFileWriterData(writer, outPtr, size);
+      const out = new Uint8Array(size);
+      out.set(mod.pdfium.HEAPU8.subarray(outPtr, outPtr + size));
+      return out;
+    } finally {
+      mod.pdfium.wasmExports.free(outPtr);
+    }
+  } finally {
+    mod.PDFiumExt_CloseFileWriter(writer);
+  }
+}
+
+function loadPdfiumMemDoc(
+  mod: PdfiumRuntimeModule,
+  bytes: Uint8Array,
+  password = '',
+): { docPtr: number; freeData: () => void } {
+  const ptr = mod.pdfium.wasmExports.malloc(bytes.byteLength);
+  if (!ptr) {
+    throw new Error('Out of Wasm memory allocating PDF buffer.');
+  }
+  mod.pdfium.HEAPU8.set(bytes, ptr);
+  const docPtr = mod.FPDF_LoadMemDocument(ptr, bytes.byteLength, password);
+  if (!docPtr) {
+    mod.pdfium.wasmExports.free(ptr);
+    return { docPtr: 0, freeData: () => undefined };
+  }
+  return {
+    docPtr,
+    freeData: () => mod.pdfium.wasmExports.free(ptr),
+  };
+}
 
 /**
- * Inspects a PDF with MuPDF Wasm (handling encryption & password auth) and extracts
- * canonical page geometry via pdf-lib on the decrypted bytes.
+ * Inspects a PDF buffer using PDFium Wasm and returns decrypted bytes (when password-protected),
+ * page dimensions, crop/media boxes, and intrinsic page rotations.
  */
 export async function inspectPdfDocument(
-  mupdf: MuPdfModule,
   bytes: Uint8Array,
   password?: string,
-): Promise<InspectPdfResult> {
-  const doc = mupdf.Document.openDocument(bytes, 'application/pdf');
+): Promise<PdfInspectResult> {
+  const mod = await getSharedPdfium();
+  const dataPtr = mod.pdfium.wasmExports.malloc(bytes.byteLength);
+  if (!dataPtr) {
+    throw new Error('Out of Wasm memory allocating PDF buffer.');
+  }
+  mod.pdfium.HEAPU8.set(bytes, dataPtr);
+
+  let docPtr = mod.FPDF_LoadMemDocument(dataPtr, bytes.byteLength, password ?? '');
+  if (!docPtr) {
+    const errCode = mod.FPDF_GetLastError();
+    mod.pdfium.wasmExports.free(dataPtr);
+    if (errCode === FPDF_ERR_PASSWORD) {
+      return {
+        status: password ? 'invalid-password' : 'needs-password',
+        wasEncrypted: true,
+        pageCount: 0,
+        pages: [],
+      };
+    }
+    throw new Error(`Unable to open PDF document (PDFium error ${errCode}).`);
+  }
+
   try {
-    const wasEncrypted = doc.needsPassword();
+    const wasEncrypted = mod.EPDF_IsEncrypted(docPtr);
+    let decryptedBytes: Uint8Array | undefined;
     if (wasEncrypted) {
-      if (!password) {
-        return {
-          status: 'needs-password',
-          wasEncrypted: true,
-          pageCount: 0,
-          pages: [],
-        };
-      }
-      const auth = doc.authenticatePassword(password);
-      if (!auth) {
-        return {
-          status: 'invalid-password',
-          wasEncrypted: true,
-          pageCount: 0,
-          pages: [],
-        };
-      }
+      mod.EPDF_RemoveEncryption(docPtr);
+      decryptedBytes = savePdfiumDocToBytes(mod, docPtr);
     }
 
-    const pdfDoc = doc.asPDF();
-    if (!pdfDoc) {
-      throw new Error('Selected file is not a valid PDF document.');
+    const pageCount = mod.FPDF_GetPageCount(docPtr);
+    const pages: PdfPageInspectInfo[] = [];
+    const boxPtr = mod.pdfium.wasmExports.malloc(16);
+    if (!boxPtr) {
+      throw new Error('Out of Wasm memory allocating page box buffer.');
     }
 
-    let effectiveBytes: Uint8Array;
-    if (wasEncrypted) {
-      const buf = pdfDoc.saveToBuffer('encrypt=none');
-      try {
-        const raw = buf.asUint8Array();
-        effectiveBytes = new Uint8Array(raw.byteLength);
-        effectiveBytes.set(raw);
-      } finally {
-        buf.destroy();
+    try {
+      for (let i = 0; i < pageCount; i++) {
+        const pagePtr = mod.FPDF_LoadPage(docPtr, i);
+        if (!pagePtr) {
+          throw new Error(`Failed loading page ${i + 1} during inspection.`);
+        }
+        try {
+          const rotIdx = mod.EPDF_GetPageRotationByIndex(docPtr, i);
+          const intrinsicRotation = normalizeRotation(rotIdx * 90);
+
+          const hasMedia = mod.FPDFPage_GetMediaBox(
+            pagePtr,
+            boxPtr,
+            boxPtr + 4,
+            boxPtr + 8,
+            boxPtr + 12,
+          );
+          const rawW = mod.FPDF_GetPageWidthF(pagePtr) || 595;
+          const rawH = mod.FPDF_GetPageHeightF(pagePtr) || 842;
+
+          let mediaBox: [number, number, number, number];
+          if (hasMedia) {
+            const l = mod.pdfium.getValue(boxPtr, 'float');
+            const b = mod.pdfium.getValue(boxPtr + 4, 'float');
+            const r = mod.pdfium.getValue(boxPtr + 8, 'float');
+            const t = mod.pdfium.getValue(boxPtr + 12, 'float');
+            mediaBox = [l, b, r, t];
+          } else {
+            mediaBox = [0, 0, rawW, rawH];
+          }
+
+          const hasCrop = mod.FPDFPage_GetCropBox(
+            pagePtr,
+            boxPtr,
+            boxPtr + 4,
+            boxPtr + 8,
+            boxPtr + 12,
+          );
+          let cropBox: [number, number, number, number] = [...mediaBox];
+          if (hasCrop) {
+            const l = mod.pdfium.getValue(boxPtr, 'float');
+            const b = mod.pdfium.getValue(boxPtr + 4, 'float');
+            const r = mod.pdfium.getValue(boxPtr + 8, 'float');
+            const t = mod.pdfium.getValue(boxPtr + 12, 'float');
+            if (Math.abs(r - l) > 1 && Math.abs(t - b) > 1) {
+              cropBox = [l, b, r, t];
+            }
+          }
+
+          const cw = Math.abs(cropBox[2] - cropBox[0]);
+          const ch = Math.abs(cropBox[3] - cropBox[1]);
+          const swapped = intrinsicRotation === 90 || intrinsicRotation === 270;
+          const baseWidth = swapped ? ch : cw;
+          const baseHeight = swapped ? cw : ch;
+
+          pages.push({
+            sourcePageIndex: i,
+            baseWidth,
+            baseHeight,
+            intrinsicRotation,
+            mediaBox,
+            cropBox,
+          });
+        } finally {
+          mod.FPDF_ClosePage(pagePtr);
+        }
       }
-    } else {
-      effectiveBytes = bytes;
-    }
-
-    const libDoc = await PDFDocument.load(effectiveBytes, { ignoreEncryption: true });
-    const libPages = libDoc.getPages();
-    const pages: InspectPdfResult['pages'] = [];
-
-    for (let i = 0; i < libPages.length; i++) {
-      const libPage = libPages[i];
-      const mb = libPage.getMediaBox();
-      const cb = libPage.getCropBox();
-      const mediaBox: [number, number, number, number] = [
-        mb.x,
-        mb.y,
-        mb.x + mb.width,
-        mb.y + mb.height,
-      ];
-      const cropBox: [number, number, number, number] = [
-        cb.x,
-        cb.y,
-        cb.x + cb.width,
-        cb.y + cb.height,
-      ];
-      const intrinsicRotation = normalizeRotation(libPage.getRotation().angle);
-      const swapped = intrinsicRotation === 90 || intrinsicRotation === 270;
-      const baseWidth = swapped ? cb.height : cb.width;
-      const baseHeight = swapped ? cb.width : cb.height;
-
-      pages.push({
-        sourcePageIndex: i,
-        baseWidth,
-        baseHeight,
-        intrinsicRotation,
-        mediaBox,
-        cropBox,
-      });
+    } finally {
+      mod.pdfium.wasmExports.free(boxPtr);
     }
 
     return {
       status: 'ok',
-      decryptedBytes: wasEncrypted ? effectiveBytes : undefined,
+      decryptedBytes,
       wasEncrypted,
-      pageCount: pages.length,
+      pageCount,
       pages,
     };
   } finally {
-    doc.destroy();
-  }
-}
-
-function addMupdfRedactAnnotation(
-  page: MuPdfNamespace.PDFPage,
-  rect: RectBox,
-  bounds: [number, number, number, number],
-): void {
-  const annot = page.createAnnotation('Redact');
-  try {
-    annot.setRect(rectBaseVisualToMupdfRect(rect, bounds));
-    annot.update();
-  } finally {
-    annot.destroy();
-  }
-}
-
-function applyRedactionsToMupdfPage(
-  mupdf: MuPdfModule,
-  page: MuPdfNamespace.PDFPage,
-  textRects: RectBox[],
-  imageRects: RectBox[],
-  blackRedactRects: RectBox[] = [],
-  shapeRects: RectBox[] = [],
-): void {
-  const bounds = page.getBounds('CropBox');
-
-  // Pass 1: Remove original text stream operators inside edited/deleted text rects (no black box)
-  if (textRects.length > 0) {
-    for (const r of textRects) {
-      const padX = Math.min(0.5, r.width * 0.05);
-      const padY = Math.min(0.5, r.height * 0.05);
-      const target: RectBox = {
-        x: r.x + padX,
-        y: r.y + padY,
-        width: Math.max(1, r.width - padX * 2),
-        height: Math.max(1, r.height - padY * 2),
-      };
-      const annot = page.createAnnotation('Redact');
-      try {
-        annot.setRect(rectBaseVisualToMupdfRect(target, bounds));
-        annot.update();
-      } finally {
-        annot.destroy();
-      }
-    }
-    page.applyRedactions(
-      false,
-      mupdf.PDFPage.REDACT_IMAGE_NONE,
-      mupdf.PDFPage.REDACT_LINE_ART_NONE,
-      mupdf.PDFPage.REDACT_TEXT_REMOVE,
-    );
-  }
-
-  // Pass 2: Remove original image XObjects inside moved/deleted image rects (no black box)
-  if (imageRects.length > 0) {
-    for (const r of imageRects) {
-      const padX = Math.min(0.5, r.width * 0.02);
-      const padY = Math.min(0.5, r.height * 0.02);
-      const target: RectBox = {
-        x: r.x + padX,
-        y: r.y + padY,
-        width: Math.max(1, r.width - padX * 2),
-        height: Math.max(1, r.height - padY * 2),
-      };
-      const annot = page.createAnnotation('Redact');
-      try {
-        annot.setRect(rectBaseVisualToMupdfRect(target, bounds));
-        annot.update();
-      } finally {
-        annot.destroy();
-      }
-    }
-    page.applyRedactions(
-      false,
-      mupdf.PDFPage.REDACT_IMAGE_REMOVE,
-      mupdf.PDFPage.REDACT_LINE_ART_NONE,
-      mupdf.PDFPage.REDACT_TEXT_NONE,
-    );
-  }
-
-  // Pass 3: Apply explicit solid black redactions
-  if (blackRedactRects.length > 0) {
-    for (const r of blackRedactRects) {
-      const annot = page.createAnnotation('Redact');
-      try {
-        annot.setRect(rectBaseVisualToMupdfRect(r, bounds));
-        annot.update();
-      } finally {
-        annot.destroy();
-      }
-    }
-    page.applyRedactions(
-      true,
-      mupdf.PDFPage.REDACT_IMAGE_REMOVE,
-      mupdf.PDFPage.REDACT_LINE_ART_REMOVE_IF_COVERED,
-      mupdf.PDFPage.REDACT_TEXT_REMOVE,
-    );
-  }
-
-  // Pass 4: Remove replaced/deleted vector background shapes cleanly without erasing overlapping foreground text
-  if (shapeRects.length > 0) {
-    for (const r of shapeRects) {
-      addMupdfRedactAnnotation(page, r, bounds);
-    }
-    page.applyRedactions(
-      false,
-      mupdf.PDFPage.REDACT_IMAGE_NONE,
-      mupdf.PDFPage.REDACT_LINE_ART_REMOVE_IF_COVERED,
-      mupdf.PDFPage.REDACT_TEXT_NONE,
-    );
+    mod.FPDF_CloseDocument(docPtr);
+    mod.pdfium.wasmExports.free(dataPtr);
   }
 }
 
 /**
- * Produces a clean 1-page preview PDF with edited text / deleted or moved image XObject
- * stream operators removed via MuPDF Wasm, preserving underlying tables/lines/backgrounds.
+ * Produces a clean 1-page preview PDF with edited text / deleted or moved image XObject /
+ * deleted vector shape stream operators removed via Rust `gp-wasm`, preserving tables/lines.
  */
-export function prepareCleanPreviewPagePdf(
-  mupdf: MuPdfModule,
-  srcPdfDoc: MuPdfNamespace.PDFDocument,
+export async function prepareCleanPreviewPagePdf(
+  srcPdfBytes: Uint8Array,
   sourcePageIndex: number,
   textRects: RectBox[],
   imageRects: RectBox[],
   shapeRects: RectBox[] = [],
-): Uint8Array {
-  const singleDoc = new mupdf.PDFDocument();
-  try {
-    singleDoc.graftPage(0, srcPdfDoc, sourcePageIndex);
-    if (textRects.length > 0 || imageRects.length > 0 || shapeRects.length > 0) {
-      const rawPage = singleDoc.loadPage(0);
-      try {
-        if (rawPage.isPDF()) {
-          applyRedactionsToMupdfPage(
-            mupdf,
-            rawPage as MuPdfNamespace.PDFPage,
-            textRects,
-            imageRects,
-            [],
-            shapeRects,
-          );
-        }
-      } finally {
-        rawPage.destroy();
-      }
-    }
-    const outBuf = singleDoc.saveToBuffer('compress');
-    try {
-      const raw = outBuf.asUint8Array();
-      const copy = new Uint8Array(raw.byteLength);
-      copy.set(raw);
-      return copy;
-    } finally {
-      outBuf.destroy();
-    }
-  } finally {
-    singleDoc.destroy();
-  }
+): Promise<Uint8Array> {
+  const wasm = await ensureRustCoreReady();
+  const out = wasm.prepare_clean_page_preview_bytes(
+    srcPdfBytes,
+    sourcePageIndex,
+    textRects,
+    imageRects,
+    shapeRects,
+  );
+  return out instanceof Uint8Array ? out : new Uint8Array(out);
+}
+
+interface RedactionEntry {
+  pageIndex: number;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
 }
 
 /**
- * Applies MuPDF Wasm content-stream redactions for edited/deleted original text blocks,
- * moved/deleted embedded images, and explicit redaction rectangles.
+ * Mandatory D3 post-redaction PDFium `FPDFText_*` check:
+ * Ensures zero non-whitespace characters remain inside explicit black redaction rectangles.
  */
-function applyMupdfStreamRemovals(
-  mupdf: MuPdfModule,
-  assembledBytes: Uint8Array,
-  pages: PageMeta[],
-  elementsByPage: Map<string, CanvasElement[]>,
-): Uint8Array {
-  const pagesNeedingRedaction = new Map<
-    number,
-    {
-      textRects: RectBox[];
-      imageRects: RectBox[];
-      blackRedactRects: RectBox[];
-      shapeRects: RectBox[];
-    }
-  >();
+function verifyRedactionsWithPdfium(
+  mod: PdfiumRuntimeModule,
+  redactedBytes: Uint8Array,
+  blackRedactRects: RedactionEntry[],
+  pageMetas: PageMeta[],
+): number {
+  if (blackRedactRects.length === 0) return 0;
 
-  pages.forEach((pageMeta, pageIndex) => {
-    const pageEls = elementsByPage.get(pageMeta.id) ?? [];
-    const textRects: RectBox[] = [];
-    const imageRects: RectBox[] = [];
-    const blackRedactRects: RectBox[] = [];
-    const shapeRects: RectBox[] = [];
-
-    for (const el of pageEls) {
-      if (el.kind === 'text-edit') {
-        textRects.push(el.originalRect);
-      } else if (el.kind === 'image-replacement') {
-        imageRects.push(el.originalRect);
-      } else if (el.kind === 'shape-replacement') {
-        const pad = Math.max(0.5, (el.originalStrokeWidth ?? 0) / 2 + 0.5);
-        shapeRects.push({
-          x: Math.max(0, el.originalRect.x - pad),
-          y: Math.max(0, el.originalRect.y - pad),
-          width: el.originalRect.width + pad * 2,
-          height: el.originalRect.height + pad * 2,
-        });
-      } else if (el.kind === 'highlight' && el.shape === 'redact') {
-        blackRedactRects.push({ x: el.x, y: el.y, width: el.width, height: el.height });
-      }
-    }
-
-    if (
-      textRects.length > 0 ||
-      imageRects.length > 0 ||
-      blackRedactRects.length > 0 ||
-      shapeRects.length > 0
-    ) {
-      pagesNeedingRedaction.set(pageIndex, {
-        textRects,
-        imageRects,
-        blackRedactRects,
-        shapeRects,
-      });
-    }
-  });
-
-  if (pagesNeedingRedaction.size === 0) {
-    return assembledBytes;
+  const { docPtr, freeData } = loadPdfiumMemDoc(mod, redactedBytes);
+  if (!docPtr) {
+    throw new Error('PDFium failed to open redacted PDF for D3 text verification.');
   }
 
-  const doc = mupdf.Document.openDocument(assembledBytes, 'application/pdf');
+  const charBoxPtr = mod.pdfium.wasmExports.malloc(32); // 4 doubles (8 bytes each)
+  if (!charBoxPtr) {
+    mod.FPDF_CloseDocument(docPtr);
+    freeData();
+    return 0;
+  }
+
+  let leakedChars = 0;
   try {
-    const pdfDoc = doc.asPDF();
-    if (!pdfDoc) {
-      return assembledBytes;
+    const byPage = new Map<number, RedactionEntry[]>();
+    for (const r of blackRedactRects) {
+      if (r.width <= 0 || r.height <= 0) continue;
+      const list = byPage.get(r.pageIndex) ?? [];
+      list.push(r);
+      byPage.set(r.pageIndex, list);
     }
 
-    for (const [pageIndex, ops] of pagesNeedingRedaction.entries()) {
-      const rawPage = pdfDoc.loadPage(pageIndex);
-      if (!rawPage.isPDF()) {
-        rawPage.destroy();
-        continue;
-      }
-      const page = rawPage as MuPdfNamespace.PDFPage;
+    for (const [pageIdx, rects] of byPage.entries()) {
+      const pageMeta = pageMetas[pageIdx];
+      const pagePtr = mod.FPDF_LoadPage(docPtr, pageIdx);
+      if (!pagePtr) continue;
       try {
-        applyRedactionsToMupdfPage(
-          mupdf,
-          page,
-          ops.textRects,
-          ops.imageRects,
-          ops.blackRedactRects,
-          ops.shapeRects,
-        );
-      } finally {
-        page.destroy();
-      }
-    }
+        const textPagePtr = mod.FPDFText_LoadPage(pagePtr);
+        if (!textPagePtr) continue;
+        try {
+          const pdfTargets: Array<[number, number, number, number]> = rects.map((r) => {
+            if (pageMeta) {
+              return rectBaseVisualToPdfUserSpace(r, pageMeta.cropBox, pageMeta.intrinsicRotation);
+            }
+            const pageH = mod.FPDF_GetPageHeightF(pagePtr) || 842;
+            const y0 = pageH - (r.y + r.height);
+            return [r.x, y0, r.x + r.width, y0 + r.height];
+          });
+          const charCount = mod.FPDFText_CountChars(textPagePtr);
+          for (let ci = 0; ci < charCount; ci++) {
+            const chCode = mod.FPDFText_GetUnicode(textPagePtr, ci);
+            if (!chCode) continue;
+            const chStr = String.fromCodePoint(chCode);
+            if (/\s/.test(chStr) || chCode < 32) continue;
+            const ok = mod.FPDFText_GetCharBox(
+              textPagePtr,
+              ci,
+              charBoxPtr,
+              charBoxPtr + 8,
+              charBoxPtr + 16,
+              charBoxPtr + 24,
+            );
+            if (!ok) continue;
+            const l = mod.pdfium.getValue(charBoxPtr, 'double');
+            const r = mod.pdfium.getValue(charBoxPtr + 8, 'double');
+            const b = mod.pdfium.getValue(charBoxPtr + 16, 'double');
+            const t = mod.pdfium.getValue(charBoxPtr + 24, 'double');
+            const cw = Math.abs(r - l);
+            const ch = Math.abs(t - b);
+            if (cw <= 0.05 && ch <= 0.05) continue;
 
-    const outBuf = pdfDoc.saveToBuffer('garbage=2,compress');
-    try {
-      const raw = outBuf.asUint8Array();
-      const copy = new Uint8Array(raw.byteLength);
-      copy.set(raw);
-      return copy;
-    } finally {
-      outBuf.destroy();
+            const cLeft = Math.min(l, r);
+            const cRight = Math.max(l, r);
+            const cBot = Math.min(b, t);
+            const cTop = Math.max(b, t);
+
+            for (const target of pdfTargets) {
+              const tLeft = Math.min(target[0], target[2]);
+              const tRight = Math.max(target[0], target[2]);
+              const tBot = Math.min(target[1], target[3]);
+              const tTop = Math.max(target[1], target[3]);
+              const eps = 0.25;
+              if (
+                tRight > cLeft + eps &&
+                tLeft < cRight - eps &&
+                tTop > cBot + eps &&
+                tBot < cTop - eps
+              ) {
+                leakedChars++;
+                break;
+              }
+            }
+          }
+        } finally {
+          mod.FPDFText_ClosePage(textPagePtr);
+        }
+      } finally {
+        mod.FPDF_ClosePage(pagePtr);
+      }
     }
   } finally {
-    doc.destroy();
+    mod.pdfium.wasmExports.free(charBoxPtr);
+    mod.FPDF_CloseDocument(docPtr);
+    freeData();
   }
+
+  return leakedChars;
 }
 
-interface EmbeddedFontEntry {
-  font: PDFFont;
+interface PdfiumLoadedFont {
+  fontPtr: number;
   supportedCodePoints: Set<number> | null;
+  glyphWidthCache: Map<string, number>;
 }
 
-interface FontPairEntry {
-  primary: EmbeddedFontEntry;
-  fallback: EmbeddedFontEntry | null;
+interface PdfiumFontPair {
+  primary: PdfiumLoadedFont;
+  fallback: PdfiumLoadedFont | null;
 }
 
-type FontPairResolver = (bold: boolean, italic: boolean) => Promise<FontPairEntry>;
+function measureFontWidth(
+  mod: PdfiumRuntimeModule,
+  entry: PdfiumLoadedFont,
+  text: string,
+  fontSize: number,
+): number {
+  if (!text) return 0;
+  const ptr = mod.pdfium.wasmExports.malloc(4);
+  if (!ptr) {
+    return text.length * fontSize * 0.5;
+  }
+  let total = 0;
+  try {
+    for (const ch of text) {
+      const cp = ch.codePointAt(0);
+      if (cp === undefined) continue;
+      const cacheKey = `${fontSize}:${cp}`;
+      const cached = entry.glyphWidthCache.get(cacheKey);
+      if (cached !== undefined) {
+        total += cached;
+      } else {
+        const ok = mod.FPDFFont_GetGlyphWidth(entry.fontPtr, cp, fontSize, ptr);
+        const measured = ok ? Number(mod.pdfium.getValue(ptr, 'float') || 0) : 0;
+        const nextW = measured > 0 ? measured : ch === ' ' ? fontSize * 0.28 : fontSize * 0.52;
+        entry.glyphWidthCache.set(cacheKey, nextW);
+        total += nextW;
+      }
+    }
+  } finally {
+    mod.pdfium.wasmExports.free(ptr);
+  }
+  return total;
+}
 
 function splitTextByGlyphSupport(
   text: string,
-  pair: FontPairEntry,
-): Array<{ entry: EmbeddedFontEntry; text: string }> {
+  pair: PdfiumFontPair,
+): Array<{ entry: PdfiumLoadedFont; text: string }> {
   const supported = pair.primary.supportedCodePoints;
   if (!supported || !pair.fallback) {
     return [
@@ -556,7 +546,7 @@ function splitTextByGlyphSupport(
     ];
   }
 
-  const segments: Array<{ entry: EmbeddedFontEntry; text: string }> = [];
+  const segments: Array<{ entry: PdfiumLoadedFont; text: string }> = [];
   for (const ch of text) {
     const cp = ch.codePointAt(0);
     const usePrimary = cp === undefined || ch === ' ' || supported.has(cp);
@@ -573,361 +563,314 @@ function splitTextByGlyphSupport(
 }
 
 function measureWithFontPair(
+  mod: PdfiumRuntimeModule,
   text: string,
-  pair: FontPairEntry,
+  pair: PdfiumFontPair,
   fontSize: number,
 ): number {
   let width = 0;
   for (const seg of splitTextByGlyphSupport(text, pair)) {
     if (!seg.text) continue;
-    try {
-      width += seg.entry.font.widthOfTextAtSize(seg.text, fontSize);
-    } catch {
-      width += seg.text.length * fontSize * 0.5;
-    }
+    width += measureFontWidth(mod, seg.entry, seg.text, fontSize);
   }
   return width;
 }
 
-async function drawTextElementOnPage(
-  page: PDFPage,
+function writeFsMatrix(
+  mod: PdfiumRuntimeModule,
+  ptr: number,
+  a: number,
+  b: number,
+  c: number,
+  d: number,
+  e: number,
+  f: number,
+): void {
+  mod.pdfium.setValue(ptr, a, 'float');
+  mod.pdfium.setValue(ptr + 4, b, 'float');
+  mod.pdfium.setValue(ptr + 8, c, 'float');
+  mod.pdfium.setValue(ptr + 12, d, 'float');
+  mod.pdfium.setValue(ptr + 16, e, 'float');
+  mod.pdfium.setValue(ptr + 20, f, 'float');
+}
+
+function insertPageObjectOrdered(
+  mod: PdfiumRuntimeModule,
+  pagePtr: number,
+  objPtr: number,
+  behindIndex: { next: number } | null,
+): void {
+  if (behindIndex !== null) {
+    const ok = mod.FPDFPage_InsertObjectAtIndex(pagePtr, objPtr, behindIndex.next);
+    if (ok) {
+      behindIndex.next += 1;
+      return;
+    }
+  }
+  mod.FPDFPage_InsertObject(pagePtr, objPtr);
+}
+
+function emitTextRunAtVisualPoint(
+  mod: PdfiumRuntimeModule,
+  docPtr: number,
+  pagePtr: number,
   pageMeta: PageMeta,
-  el: TextEditElement | TextAddElement,
-  resolvePair: FontPairResolver,
-): Promise<void> {
-  if ((el.kind === 'text-edit' && el.deleted) || el.text.length === 0) {
+  fontPtr: number,
+  fontSize: number,
+  text: string,
+  visX: number,
+  visY: number,
+  rotationDegCW: number,
+  hScale: number,
+  colorHex: string,
+  opacity: number,
+  scratchMatrixPtr: number,
+  behindIndex: { next: number } | null,
+): void {
+  if (!text) return;
+  const objPtr = mod.FPDFPageObj_CreateTextObj(docPtr, fontPtr, fontSize);
+  if (!objPtr) return;
+
+  const bufBytes = (text.length + 1) * 2;
+  const textBuf = mod.pdfium.wasmExports.malloc(bufBytes);
+  if (!textBuf) {
+    mod.FPDFPageObj_Destroy(objPtr);
+    return;
+  }
+  mod.pdfium.stringToUTF16(text, textBuf, bufBytes);
+  const okText = mod.FPDFText_SetText(objPtr, textBuf);
+  mod.pdfium.wasmExports.free(textBuf);
+  if (!okText) {
+    mod.FPDFPageObj_Destroy(objPtr);
     return;
   }
 
-  // Optional background fill
-  if (el.kind === 'text-add' && el.backgroundColor) {
-    const placement = computePdfLibDrawPlacement(
-      { x: el.x, y: el.y, width: el.width, height: el.height },
-      el.rotation,
-      pageMeta,
-    );
-    page.drawRectangle({
-      x: placement.x,
-      y: placement.y,
-      width: placement.width,
-      height: placement.height,
-      rotate: degrees(placement.rotateDegCCW),
-      color: pdfRgb(el.backgroundColor),
-      opacity: el.opacity,
-    });
-  }
+  const { r, g, b } = parseHexColorBytes(colorHex);
+  const alpha = Math.max(0, Math.min(255, Math.round(opacity * 255)));
+  mod.FPDFPageObj_SetFillColor(objPtr, r, g, b, alpha);
 
-  const runs = ensureRunsFromElement(el.text, el.runs, el.bold, el.italic);
-  const stylePairs = new Map<string, FontPairEntry>();
-  const getStyleKey = (b: boolean, i: boolean) => `${b ? 1 : 0}_${i ? 1 : 0}`;
-  const ensurePair = async (b: boolean, i: boolean) => {
-    const k = getStyleKey(b, i);
-    let p = stylePairs.get(k);
-    if (!p) {
-      p = await resolvePair(b, i);
-      stylePairs.set(k, p);
-    }
-    return p;
-  };
-
-  await ensurePair(el.bold, el.italic);
-  for (const r of runs) {
-    await ensurePair(r.bold ?? el.bold, r.italic ?? el.italic);
-  }
-
-  const getPairSync = (b: boolean, i: boolean): FontPairEntry =>
-    stylePairs.get(getStyleKey(b, i)) ?? stylePairs.get(getStyleKey(el.bold, el.italic))!;
-
-  const charSpacing = el.letterSpacing ?? 0;
-  const hScale = el.horizontalScale && el.horizontalScale > 0 ? el.horizontalScale : 1;
-
-  const measurePiece = (
-    text: string,
-    bold: boolean,
-    italic: boolean,
-    script: TextScriptMode,
-  ): number => {
-    const scale = script === 'normal' ? 1 : 0.60;
-    const baseW = measureWithFontPair(text, getPairSync(bold, italic), el.fontSize * scale);
-    return baseW * hScale + Math.max(0, text.length - 1) * charSpacing;
-  };
-
-  const explicitLineCount = el.text.split('\n').length;
-  const isSingleLine =
-    explicitLineCount === 1 &&
-    (el.renderedLineCount === 1 ||
-      (el.renderedLineCount === undefined &&
-        !el.widthResizedByUser &&
-        el.height < el.fontSize * el.lineHeight * 1.65));
-
-  const wrappedLines = buildWrappedRichLines(runs, el.width, measurePiece, el.bold, el.italic, {
-    disableSoftWrap: isSingleLine,
-    widthToleranceRatio: el.align === 'justify' && !isSingleLine ? 0 : 0.025,
-    widthTolerancePt: el.align === 'justify' && !isSingleLine ? 0.5 : 2.0,
-  });
-
-  const lineBoxHeight = el.fontSize * el.lineHeight;
-  const baselineFromLineTop =
-    el.fontSize * 0.85 + Math.max(0, (el.lineHeight - 1) * el.fontSize * 0.35);
-
-  const cx = el.x + el.width / 2;
-  const cy = el.y + el.height / 2;
-  const radCW = (el.rotation * Math.PI) / 180;
+  // Map visual baseline and glyph-up vectors through affine BaseVisual -> PdfUserSpace Jacobian
+  const radCW = (rotationDegCW * Math.PI) / 180;
   const cos = Math.cos(radCW);
   const sin = Math.sin(radCW);
 
-  // Determine base CCW angle for raw PDF space
-  const pdfCenter = pointBaseVisualToPdfUserSpace(cx, cy, pageMeta.cropBox, pageMeta.intrinsicRotation);
-  const pdfRight = pointBaseVisualToPdfUserSpace(
-    cx + 1,
-    cy,
+  const pdfPt = pointBaseVisualToPdfUserSpace(
+    visX,
+    visY,
     pageMeta.cropBox,
     pageMeta.intrinsicRotation,
   );
-  const basePdfAngleCCW =
-    (Math.atan2(pdfRight.y - pdfCenter.y, pdfRight.x - pdfCenter.x) * 180) / Math.PI;
-  const drawAngleCCW = basePdfAngleCCW - el.rotation;
-  const textColor = pdfRgb(el.color);
+  const oPdf = pointBaseVisualToPdfUserSpace(0, 0, pageMeta.cropBox, pageMeta.intrinsicRotation);
+  const xAxisPdf = pointBaseVisualToPdfUserSpace(
+    1,
+    0,
+    pageMeta.cropBox,
+    pageMeta.intrinsicRotation,
+  );
+  const yAxisPdf = pointBaseVisualToPdfUserSpace(
+    0,
+    1,
+    pageMeta.cropBox,
+    pageMeta.intrinsicRotation,
+  );
 
-  for (let i = 0; i < wrappedLines.length; i++) {
-    const line = wrappedLines[i];
-    if (line.pieces.length === 0) continue;
+  const jxx = xAxisPdf.x - oPdf.x;
+  const jxy = xAxisPdf.y - oPdf.y;
+  const jyx = yAxisPdf.x - oPdf.x;
+  const jyy = yAxisPdf.y - oPdf.y;
 
-    // `line.naturalWidth` already includes `hScale` (from `measurePiece`).
-    const scaledLineWidth = line.naturalWidth;
-    const fitScale =
-      scaledLineWidth > el.width + 0.5 ? Math.max(0.88, el.width / scaledLineWidth) : 1;
-    const effectiveHScale = hScale * fitScale;
-    const effectiveLineWidth = scaledLineWidth * fitScale;
-    const useTz = Math.abs(effectiveHScale - 1) > 0.005;
+  // In visual coords: text baseline unit vector is (cos, sin), glyph up vector is (sin, -cos)
+  const a = (cos * jxx + sin * jyx) * hScale;
+  const pb = (cos * jxy + sin * jyy) * hScale;
+  const c = sin * jxx - cos * jyx;
+  const d = sin * jxy - cos * jyy;
 
-    let localStartX = 0;
-    if (el.align === 'center') {
-      localStartX = Math.max(0, (el.width - effectiveLineWidth) / 2);
-    } else if (el.align === 'right') {
-      localStartX = Math.max(0, el.width - effectiveLineWidth);
-    }
+  writeFsMatrix(mod, scratchMatrixPtr, a, pb, c, d, pdfPt.x, pdfPt.y);
+  mod.FPDFPageObj_SetMatrix(objPtr, scratchMatrixPtr);
 
-    const shouldJustify =
-      el.align === 'justify' &&
-      !line.endsParagraph &&
-      line.spaceCount > 0 &&
-      el.width - effectiveLineWidth > 0.5 &&
-      effectiveLineWidth > el.width * 0.38;
-    const extraPerSpace = shouldJustify
-      ? (el.width - effectiveLineWidth) / line.spaceCount
-      : 0;
-
-    let cursorX = localStartX;
-    for (const piece of line.pieces) {
-      const piecePair = getPairSync(piece.bold, piece.italic);
-      const pieceSize = piece.script === 'normal' ? el.fontSize : el.fontSize * 0.60;
-      const scriptDeltaY =
-        piece.script === 'super'
-          ? -el.fontSize * 0.30
-          : piece.script === 'sub'
-            ? el.fontSize * 0.15
-            : 0;
-
-      if (piece.isSpace) {
-        cursorX +=
-          measureWithFontPair(piece.text, piecePair, pieceSize) * effectiveHScale +
-          extraPerSpace * piece.text.length;
-        continue;
-      }
-
-      const glyphSegs = splitTextByGlyphSupport(piece.text, piecePair);
-      for (const seg of glyphSegs) {
-        if (!seg.text) continue;
-        const localOffsetY = i * lineBoxHeight + baselineFromLineTop + scriptDeltaY;
-        const relX = -el.width / 2 + cursorX;
-        const relY = -el.height / 2 + localOffsetY;
-
-        const visX = cx + (relX * cos - relY * sin);
-        const visY = cy + (relX * sin + relY * cos);
-        const pdfPt = pointBaseVisualToPdfUserSpace(
-          visX,
-          visY,
-          pageMeta.cropBox,
-          pageMeta.intrinsicRotation,
-        );
-
-        const pushOps: PDFOperator[] = [];
-        if (charSpacing !== 0) {
-          pushOps.push(setCharacterSpacing(charSpacing));
-        }
-        if (useTz) {
-          pushOps.push(
-            PDFOperator.of(PDFOperatorNames.SetTextHorizontalScaling, [
-              PDFNumber.of(Number((effectiveHScale * 100).toFixed(2))),
-            ]),
-          );
-        }
-        if (pushOps.length > 0) {
-          page.pushOperators(pushGraphicsState(), ...pushOps);
-        }
-        page.drawText(seg.text, {
-          x: pdfPt.x,
-          y: pdfPt.y,
-          size: pieceSize,
-          font: seg.entry.font,
-          color: textColor,
-          opacity: el.opacity,
-          rotate: degrees(drawAngleCCW),
-        });
-        if (pushOps.length > 0) {
-          page.pushOperators(popGraphicsState());
-        }
-
-        const advanceScale = useTz ? effectiveHScale : 1;
-        try {
-          cursorX +=
-            seg.entry.font.widthOfTextAtSize(seg.text, pieceSize) * effectiveHScale +
-            seg.text.length * charSpacing * advanceScale;
-        } catch {
-          cursorX +=
-            seg.text.length * pieceSize * 0.5 * effectiveHScale +
-            seg.text.length * charSpacing * advanceScale;
-        }
-      }
-    }
-  }
+  insertPageObjectOrdered(mod, pagePtr, objPtr, behindIndex);
 }
 
-function drawSvgBoxOnPage(
-  page: PDFPage,
-  pageMeta: PageMeta,
-  rect: RectBox,
-  rotationDeg: number,
+function buildSvgClipCommandsInPdfSpace(
   svgPath: string,
-  scaleX: number,
-  scaleY: number,
-  strokeColor: string,
-  strokeWidth: number,
-  opacity: number,
-  extra?: {
+  mapLocalToPdf: (lx: number, ly: number) => { x: number; y: number },
+): Array<
+  | { op: 'move-to'; x: number; y: number }
+  | { op: 'line-to'; x: number; y: number }
+  | { op: 'curve-to'; cx1: number; cy1: number; cx2: number; cy2: number; x: number; y: number }
+  | { op: 'close' }
+> {
+  const cmds = parseSvgPathCommands(svgPath);
+  const out: Array<
+    | { op: 'move-to'; x: number; y: number }
+    | { op: 'line-to'; x: number; y: number }
+    | { op: 'curve-to'; cx1: number; cy1: number; cx2: number; cy2: number; x: number; y: number }
+    | { op: 'close' }
+  > = [];
+
+  let curPdf = { x: 0, y: 0 };
+  let startPdf = { x: 0, y: 0 };
+
+  for (const c of cmds) {
+    if (c.cmd === 'M' && c.nums.length >= 2) {
+      curPdf = mapLocalToPdf(c.nums[0], c.nums[1]);
+      startPdf = curPdf;
+      out.push({ op: 'move-to', x: curPdf.x, y: curPdf.y });
+      for (let i = 2; i + 1 < c.nums.length; i += 2) {
+        curPdf = mapLocalToPdf(c.nums[i], c.nums[i + 1]);
+        out.push({ op: 'line-to', x: curPdf.x, y: curPdf.y });
+      }
+    } else if (c.cmd === 'L') {
+      for (let i = 0; i + 1 < c.nums.length; i += 2) {
+        curPdf = mapLocalToPdf(c.nums[i], c.nums[i + 1]);
+        out.push({ op: 'line-to', x: curPdf.x, y: curPdf.y });
+      }
+    } else if (c.cmd === 'Q') {
+      for (let i = 0; i + 3 < c.nums.length; i += 4) {
+        const pCp = mapLocalToPdf(c.nums[i], c.nums[i + 1]);
+        const pEnd = mapLocalToPdf(c.nums[i + 2], c.nums[i + 3]);
+        out.push({
+          op: 'curve-to',
+          cx1: curPdf.x + (2 / 3) * (pCp.x - curPdf.x),
+          cy1: curPdf.y + (2 / 3) * (pCp.y - curPdf.y),
+          cx2: pEnd.x + (2 / 3) * (pCp.x - pEnd.x),
+          cy2: pEnd.y + (2 / 3) * (pCp.y - pEnd.y),
+          x: pEnd.x,
+          y: pEnd.y,
+        });
+        curPdf = pEnd;
+      }
+    } else if (c.cmd === 'C') {
+      for (let i = 0; i + 5 < c.nums.length; i += 6) {
+        const pC1 = mapLocalToPdf(c.nums[i], c.nums[i + 1]);
+        const pC2 = mapLocalToPdf(c.nums[i + 2], c.nums[i + 3]);
+        const pEnd = mapLocalToPdf(c.nums[i + 4], c.nums[i + 5]);
+        out.push({
+          op: 'curve-to',
+          cx1: pC1.x,
+          cy1: pC1.y,
+          cx2: pC2.x,
+          cy2: pC2.y,
+          x: pEnd.x,
+          y: pEnd.y,
+        });
+        curPdf = pEnd;
+      }
+    } else if (c.cmd === 'Z') {
+      out.push({ op: 'close' });
+      curPdf = startPdf;
+    }
+  }
+
+  return out;
+}
+
+function drawSvgCommandsAsPdfiumPath(
+  mod: PdfiumRuntimeModule,
+  pagePtr: number,
+  cmds: SvgPathCommand[],
+  mapLocalToPdf: (lx: number, ly: number) => { x: number; y: number },
+  style: {
     fillColor?: string;
+    fillAlpha?: number;
+    strokeColor?: string;
+    strokeWidth?: number;
+    strokeAlpha?: number;
     dashArray?: number[];
   },
+  behindIndex: { next: number } | null,
 ): void {
-  if (!svgPath) return;
-  const fillHex = extra?.fillColor;
+  const fillHex = style.fillColor;
+  const strokeHex = style.strokeColor;
+  const strokeWidth = style.strokeWidth ?? 0;
   const hasFill = Boolean(fillHex && fillHex !== 'transparent');
-  const hasStroke = Boolean(strokeColor && strokeColor !== 'transparent' && strokeWidth > 0);
+  const hasStroke = Boolean(strokeHex && strokeHex !== 'transparent' && strokeWidth > 0);
   if (!hasFill && !hasStroke) return;
 
-  const cx = rect.x + rect.width / 2;
-  const cy = rect.y + rect.height / 2;
-  const radCW = (rotationDeg * Math.PI) / 180;
-  const cos = Math.cos(radCW);
-  const sin = Math.sin(radCW);
+  let pathObj = 0;
+  let curPdf = { x: 0, y: 0 };
+  let startPdf = { x: 0, y: 0 };
 
-  // Top-left corner of the visual box rotated around center
-  const relX = -rect.width / 2;
-  const relY = -rect.height / 2;
-  const tlVisX = cx + (relX * cos - relY * sin);
-  const tlVisY = cy + (relX * sin + relY * cos);
+  for (const c of cmds) {
+    if (c.cmd === 'M' && c.nums.length >= 2) {
+      curPdf = mapLocalToPdf(c.nums[0], c.nums[1]);
+      startPdf = curPdf;
+      if (!pathObj) {
+        pathObj = mod.FPDFPageObj_CreateNewPath(curPdf.x, curPdf.y);
+      } else {
+        mod.FPDFPath_MoveTo(pathObj, curPdf.x, curPdf.y);
+      }
+      for (let i = 2; i + 1 < c.nums.length; i += 2) {
+        if (!pathObj) break;
+        curPdf = mapLocalToPdf(c.nums[i], c.nums[i + 1]);
+        mod.FPDFPath_LineTo(pathObj, curPdf.x, curPdf.y);
+      }
+    } else if (c.cmd === 'L' && pathObj) {
+      for (let i = 0; i + 1 < c.nums.length; i += 2) {
+        curPdf = mapLocalToPdf(c.nums[i], c.nums[i + 1]);
+        mod.FPDFPath_LineTo(pathObj, curPdf.x, curPdf.y);
+      }
+    } else if (c.cmd === 'Q' && pathObj) {
+      for (let i = 0; i + 3 < c.nums.length; i += 4) {
+        const pCp = mapLocalToPdf(c.nums[i], c.nums[i + 1]);
+        const pEnd = mapLocalToPdf(c.nums[i + 2], c.nums[i + 3]);
+        mod.FPDFPath_BezierTo(
+          pathObj,
+          curPdf.x + (2 / 3) * (pCp.x - curPdf.x),
+          curPdf.y + (2 / 3) * (pCp.y - curPdf.y),
+          pEnd.x + (2 / 3) * (pCp.x - pEnd.x),
+          pEnd.y + (2 / 3) * (pCp.y - pEnd.y),
+          pEnd.x,
+          pEnd.y,
+        );
+        curPdf = pEnd;
+      }
+    } else if (c.cmd === 'C' && pathObj) {
+      for (let i = 0; i + 5 < c.nums.length; i += 6) {
+        const pC1 = mapLocalToPdf(c.nums[i], c.nums[i + 1]);
+        const pC2 = mapLocalToPdf(c.nums[i + 2], c.nums[i + 3]);
+        const pEnd = mapLocalToPdf(c.nums[i + 4], c.nums[i + 5]);
+        mod.FPDFPath_BezierTo(pathObj, pC1.x, pC1.y, pC2.x, pC2.y, pEnd.x, pEnd.y);
+        curPdf = pEnd;
+      }
+    } else if (c.cmd === 'Z' && pathObj) {
+      mod.FPDFPath_Close(pathObj);
+      curPdf = startPdf;
+    }
+  }
 
-  const tlPdf = pointBaseVisualToPdfUserSpace(
-    tlVisX,
-    tlVisY,
-    pageMeta.cropBox,
-    pageMeta.intrinsicRotation,
-  );
-  const pdfCenter = pointBaseVisualToPdfUserSpace(cx, cy, pageMeta.cropBox, pageMeta.intrinsicRotation);
-  const pdfRight = pointBaseVisualToPdfUserSpace(
-    cx + 1,
-    cy,
-    pageMeta.cropBox,
-    pageMeta.intrinsicRotation,
-  );
-  const basePdfAngleCCW =
-    (Math.atan2(pdfRight.y - pdfCenter.y, pdfRight.x - pdfCenter.x) * 180) / Math.PI;
-  const drawAngleCCW = basePdfAngleCCW - rotationDeg;
+  if (!pathObj) return;
 
-  // pdf-lib drawSvgPath accepts single uniform `scale`; pre-scale non-uniform paths when needed
-  const uniformScale = Math.abs(scaleX - scaleY) < 1e-4 ? scaleX : 1;
-  const effectivePath =
-    uniformScale === 1 && (Math.abs(scaleX - 1) > 1e-4 || Math.abs(scaleY - 1) > 1e-4)
-      ? scaleSvgPath(svgPath, scaleX, scaleY)
-      : svgPath;
-
-  const drawOpts: Parameters<PDFPage['drawSvgPath']>[1] = {
-    x: tlPdf.x,
-    y: tlPdf.y,
-    scale: uniformScale,
-    rotate: degrees(drawAngleCCW),
-    borderLineCap: LineCapStyle.Round,
-  };
+  mod.FPDFPath_SetDrawMode(pathObj, hasFill ? FPDF_FILLMODE_WINDING : 0, hasStroke);
   if (hasFill && fillHex) {
-    drawOpts.color = pdfRgb(fillHex);
-    drawOpts.opacity = opacity;
+    const rgb = parseHexColorBytes(fillHex);
+    const alpha = Math.max(0, Math.min(255, Math.round((style.fillAlpha ?? 1) * 255)));
+    mod.FPDFPageObj_SetFillColor(pathObj, rgb.r, rgb.g, rgb.b, alpha);
   }
-  if (hasStroke) {
-    drawOpts.borderColor = pdfRgb(strokeColor);
-    drawOpts.borderWidth = strokeWidth;
-    drawOpts.borderOpacity = opacity;
-    if (extra?.dashArray && extra.dashArray.length > 0) {
-      drawOpts.borderDashArray = extra.dashArray;
+  if (hasStroke && strokeHex) {
+    const rgb = parseHexColorBytes(strokeHex);
+    const alpha = Math.max(0, Math.min(255, Math.round((style.strokeAlpha ?? 1) * 255)));
+    mod.FPDFPageObj_SetStrokeColor(pathObj, rgb.r, rgb.g, rgb.b, alpha);
+    mod.FPDFPageObj_SetStrokeWidth(pathObj, strokeWidth);
+    mod.FPDFPageObj_SetLineCap(pathObj, 1); // Round cap
+    if (style.dashArray && style.dashArray.length > 0) {
+      const dashPtr = mod.pdfium.wasmExports.malloc(style.dashArray.length * 4);
+      if (dashPtr) {
+        for (let di = 0; di < style.dashArray.length; di++) {
+          mod.pdfium.setValue(dashPtr + di * 4, style.dashArray[di], 'float');
+        }
+        mod.FPDFPageObj_SetDashArray(pathObj, dashPtr, style.dashArray.length, 0);
+        mod.pdfium.wasmExports.free(dashPtr);
+      }
     }
-  } else {
-    drawOpts.borderWidth = 0;
   }
 
-  page.drawSvgPath(effectivePath, drawOpts);
+  insertPageObjectOrdered(mod, pagePtr, pathObj, behindIndex);
 }
 
-function drawVectorElementOnPage(
-  pdfPage: PDFPage,
-  pageMeta: PageMeta,
-  el: Extract<CanvasElement, { kind: 'shape' | 'path' }>,
-): void {
-  const rawSvgPath =
-    el.kind === 'shape'
-      ? shapeToSvgPath(el.shapeType, el.width, el.height, el.borderRadius ?? 0)
-      : pathPointsToSvgPath(el.points, el.width, el.height, el.closed, el.smooth);
-  const svgPath =
-    el.kind === 'shape' && (el.flipX || el.flipY)
-      ? flipSvgPath(rawSvgPath, el.width, el.height, el.flipX, el.flipY, 3)
-      : rawSvgPath;
-  const fillColor = el.kind === 'shape' || el.closed ? el.fillColor : 'transparent';
-  drawSvgBoxOnPage(
-    pdfPage,
-    pageMeta,
-    { x: el.x, y: el.y, width: el.width, height: el.height },
-    el.rotation,
-    svgPath,
-    1,
-    1,
-    el.strokeColor,
-    el.strokeWidth,
-    el.opacity,
-    {
-      fillColor,
-      dashArray: strokeDashToArray(el.strokeDash, el.strokeWidth),
-    },
-  );
-}
-
-function scaleSvgPath(d: string, sx: number, sy: number): string {
-  // Scales numeric coordinate pairs in M/L/Q/C commands
-  return d.replace(/([MLQC])\s*([^MLQCZ]+)/gi, (_match, cmd: string, coords: string) => {
-    const nums = coords
-      .trim()
-      .split(/[\s,]+/)
-      .map(Number)
-      .filter((n) => !Number.isNaN(n));
-    const scaled: string[] = [];
-    for (let i = 0; i < nums.length; i++) {
-      const factor = i % 2 === 0 ? sx : sy;
-      scaled.push((nums[i] * factor).toFixed(2));
-    }
-    return `${cmd} ${scaled.join(' ')} `;
-  });
-}
-
-function drawRectShapeOnPage(
-  pdfPage: PDFPage,
+function drawRectOnPdfiumPage(
+  mod: PdfiumRuntimeModule,
+  pagePtr: number,
   pageMeta: PageMeta,
   box: RectBox,
   rotation: number,
@@ -938,210 +881,114 @@ function drawRectShapeOnPage(
     opacity: number;
     isHighlight?: boolean;
   },
+  behindIndex: { next: number } | null,
 ): void {
-  const placement = computePdfLibDrawPlacement(box, rotation, pageMeta);
-  const fillHex = style.fillColor;
-  const strokeHex = style.strokeColor;
-  const borderWidth = strokeHex ? style.strokeWidth ?? 0 : 0;
-  pdfPage.drawRectangle({
-    x: placement.x,
-    y: placement.y,
-    width: placement.width,
-    height: placement.height,
-    rotate: degrees(placement.rotateDegCCW),
-    color: style.isHighlight || (fillHex && fillHex !== 'transparent') ? pdfRgb(fillHex ?? '#fef08a') : undefined,
-    opacity: style.isHighlight ? Math.min(0.45, style.opacity) : style.opacity,
-    borderColor: strokeHex && borderWidth > 0 ? pdfRgb(strokeHex) : undefined,
-    borderWidth,
-    borderOpacity: style.opacity,
-  });
-}
-
-function drawPlacedImage(
-  pdfPage: PDFPage,
-  img: PDFImage,
-  placement: PdfLibDrawPlacement,
-  opacity: number,
-  flipX?: boolean,
-  flipY?: boolean,
-): void {
-  const theta = (placement.rotateDegCCW * Math.PI) / 180;
-  const ux = Math.cos(theta);
-  const uy = Math.sin(theta);
-  const vx = -Math.sin(theta);
-  const vy = Math.cos(theta);
-
-  let drawX = placement.x;
-  let drawY = placement.y;
-  let drawW = placement.width;
-  let drawH = placement.height;
-
-  if (flipX) {
-    drawX += placement.width * ux;
-    drawY += placement.width * uy;
-    drawW = -placement.width;
-  }
-  if (flipY) {
-    drawX += placement.height * vx;
-    drawY += placement.height * vy;
-    drawH = -placement.height;
-  }
-
-  pdfPage.drawImage(img, {
-    x: drawX,
-    y: drawY,
-    width: drawW,
-    height: drawH,
-    rotate: degrees(placement.rotateDegCCW),
-    opacity,
-  });
-}
-
-function appendSvgClipOperators(
-  ops: PDFOperator[],
-  svgPath: string,
-  mapLocalToPdf: (lx: number, ly: number) => { x: number; y: number },
-): void {
-  const cmds = parseSvgPathCommands(svgPath);
-  let curPdf = { x: 0, y: 0 };
-  let startPdf = { x: 0, y: 0 };
-  let emittedPath = false;
-
-  for (const c of cmds) {
-    if (c.cmd === 'M' && c.nums.length >= 2) {
-      curPdf = mapLocalToPdf(c.nums[0], c.nums[1]);
-      startPdf = curPdf;
-      ops.push(moveTo(curPdf.x, curPdf.y));
-      emittedPath = true;
-      for (let i = 2; i + 1 < c.nums.length; i += 2) {
-        curPdf = mapLocalToPdf(c.nums[i], c.nums[i + 1]);
-        ops.push(lineTo(curPdf.x, curPdf.y));
-      }
-    } else if (c.cmd === 'L') {
-      for (let i = 0; i + 1 < c.nums.length; i += 2) {
-        curPdf = mapLocalToPdf(c.nums[i], c.nums[i + 1]);
-        ops.push(lineTo(curPdf.x, curPdf.y));
-        emittedPath = true;
-      }
-    } else if (c.cmd === 'Q') {
-      for (let i = 0; i + 3 < c.nums.length; i += 4) {
-        const pCp = mapLocalToPdf(c.nums[i], c.nums[i + 1]);
-        const pEnd = mapLocalToPdf(c.nums[i + 2], c.nums[i + 3]);
-        const c1 = {
-          x: curPdf.x + (2 / 3) * (pCp.x - curPdf.x),
-          y: curPdf.y + (2 / 3) * (pCp.y - curPdf.y),
-        };
-        const c2 = {
-          x: pEnd.x + (2 / 3) * (pCp.x - pEnd.x),
-          y: pEnd.y + (2 / 3) * (pCp.y - pEnd.y),
-        };
-        ops.push(appendBezierCurve(c1.x, c1.y, c2.x, c2.y, pEnd.x, pEnd.y));
-        curPdf = pEnd;
-        emittedPath = true;
-      }
-    } else if (c.cmd === 'C') {
-      for (let i = 0; i + 5 < c.nums.length; i += 6) {
-        const pC1 = mapLocalToPdf(c.nums[i], c.nums[i + 1]);
-        const pC2 = mapLocalToPdf(c.nums[i + 2], c.nums[i + 3]);
-        const pEnd = mapLocalToPdf(c.nums[i + 4], c.nums[i + 5]);
-        ops.push(appendBezierCurve(pC1.x, pC1.y, pC2.x, pC2.y, pEnd.x, pEnd.y));
-        curPdf = pEnd;
-        emittedPath = true;
-      }
-    } else if (c.cmd === 'Z') {
-      ops.push(closePath());
-      curPdf = startPdf;
-    }
-  }
-
-  if (emittedPath) {
-    ops.push(clip(), endPath());
-  }
-}
-
-function drawImageElementOnPage(
-  pdfPage: PDFPage,
-  pageMeta: PageMeta,
-  img: PDFImage,
-  el: ImageAddElement | ImageReplacementElement,
-): void {
-  const hasCropOrMask = Boolean(el.cropRect || el.clipMask?.unitSvgPath);
-  if (!hasCropOrMask) {
-    const placement = computePdfLibDrawPlacement(
-      { x: el.x, y: el.y, width: el.width, height: el.height },
-      el.rotation,
-      pageMeta,
-    );
-    drawPlacedImage(pdfPage, img, placement, el.opacity, el.flipX, el.flipY);
-    return;
-  }
-
-  const mapLocalToPdf = (lx: number, ly: number) => {
-    const visPt = elementLocalToPage(lx, ly, el, el.rotation);
+  const cmds: SvgPathCommand[] = [
+    { cmd: 'M', nums: [0, 0] },
+    { cmd: 'L', nums: [box.width, 0, box.width, box.height, 0, box.height] },
+    { cmd: 'Z', nums: [] },
+  ];
+  const mapLocal = (lx: number, ly: number) => {
+    const vis = elementLocalToPage(lx, ly, box, rotation);
     return pointBaseVisualToPdfUserSpace(
-      visPt.x,
-      visPt.y,
+      vis.x,
+      vis.y,
       pageMeta.cropBox,
       pageMeta.intrinsicRotation,
     );
   };
 
-  pdfPage.pushOperators(pushGraphicsState());
-
-  // 1. Intersect with exact element box [0..el.width] x [0..el.height] (crop window)
-  const p0 = mapLocalToPdf(0, 0);
-  const p1 = mapLocalToPdf(el.width, 0);
-  const p2 = mapLocalToPdf(el.width, el.height);
-  const p3 = mapLocalToPdf(0, el.height);
-  pdfPage.pushOperators(
-    moveTo(p0.x, p0.y),
-    lineTo(p1.x, p1.y),
-    lineTo(p2.x, p2.y),
-    lineTo(p3.x, p3.y),
-    closePath(),
-    clip(),
-    endPath(),
+  drawSvgCommandsAsPdfiumPath(
+    mod,
+    pagePtr,
+    cmds,
+    mapLocal,
+    {
+      fillColor:
+        style.isHighlight || (style.fillColor && style.fillColor !== 'transparent')
+          ? style.fillColor ?? '#fef08a'
+          : undefined,
+      fillAlpha: style.isHighlight ? Math.min(0.45, style.opacity) : style.opacity,
+      strokeColor: style.strokeColor,
+      strokeWidth: style.strokeWidth ?? 0,
+      strokeAlpha: style.opacity,
+    },
+    behindIndex,
   );
+}
 
-  // 2. Apply Illustrator vector clipping mask path inside screen coordinates if present
-  if (el.clipMask?.unitSvgPath) {
-    const scaled = scaleSvgPathCommands(
-      el.clipMask.unitSvgPath,
-      Math.max(1, el.width),
-      Math.max(1, el.height),
-      4,
-    );
-    const screenD = flipSvgPath(scaled, el.width, el.height, el.flipX, el.flipY, 4);
-    const clipOps: PDFOperator[] = [];
-    appendSvgClipOperators(clipOps, screenD, mapLocalToPdf);
-    if (clipOps.length > 0) {
-      pdfPage.pushOperators(...clipOps);
-    }
+function placePdfiumImage(
+  mod: PdfiumRuntimeModule,
+  docPtr: number,
+  pagePtr: number,
+  pageMeta: PageMeta,
+  bytes: Uint8Array,
+  mimeType: 'image/png' | 'image/jpeg',
+  box: RectBox,
+  rotationDegCW: number,
+  opacity: number,
+  flipX?: boolean,
+  flipY?: boolean,
+  behindIndex: { next: number } | null = null,
+  markTag?: string,
+): void {
+  const imgObj = mod.FPDFPageObj_NewImageObj(docPtr);
+  if (!imgObj) return;
+
+  const dataPtr = mod.pdfium.wasmExports.malloc(bytes.byteLength);
+  if (!dataPtr) {
+    mod.FPDFPageObj_Destroy(imgObj);
+    return;
+  }
+  mod.pdfium.HEAPU8.set(bytes, dataPtr);
+  const loaded =
+    mimeType === 'image/jpeg'
+      ? mod.EPDFImageObj_SetJpeg(0, 0, imgObj, dataPtr, bytes.byteLength)
+      : mod.EPDFImageObj_SetPng(0, 0, imgObj, dataPtr, bytes.byteLength);
+  mod.pdfium.wasmExports.free(dataPtr);
+
+  if (!loaded) {
+    mod.FPDFPageObj_Destroy(imgObj);
+    return;
   }
 
-  // 3. Draw underlying image aligned so `cropRect` fills [0..el.width] x [0..el.height]
-  const crop = el.cropRect ?? { x: 0, y: 0, width: 1, height: 1 };
-  const lw = el.width / Math.max(0.02, crop.width);
-  const lh = el.height / Math.max(0.02, crop.height);
-  const lx = -(crop.x / Math.max(0.02, crop.width)) * el.width;
-  const ly = -(crop.y / Math.max(0.02, crop.height)) * el.height;
-  const effLx = el.flipX ? el.width - (lx + lw) : lx;
-  const effLy = el.flipY ? el.height - (ly + lh) : ly;
+  // Transform [0..1]x[0..1] unit square (where (0,0)=image bottom-left, (1,0)=right, (0,1)=up)
+  // via local visual corners -> pointBaseVisualToPdfUserSpace
+  const mapUnitCorner = (u: number, v: number) => {
+    const effU = flipX ? 1 - u : u;
+    const effV = flipY ? v : 1 - v;
+    const vis = elementLocalToPage(effU * box.width, effV * box.height, box, rotationDegCW);
+    return pointBaseVisualToPdfUserSpace(
+      vis.x,
+      vis.y,
+      pageMeta.cropBox,
+      pageMeta.intrinsicRotation,
+    );
+  };
 
-  const imgCenterVis = elementLocalToPage(effLx + lw / 2, effLy + lh / 2, el, el.rotation);
-  const placement = computePdfLibDrawPlacement(
-    {
-      x: imgCenterVis.x - lw / 2,
-      y: imgCenterVis.y - lh / 2,
-      width: lw,
-      height: lh,
-    },
-    el.rotation,
-    pageMeta,
+  const p00 = mapUnitCorner(0, 0);
+  const p10 = mapUnitCorner(1, 0);
+  const p01 = mapUnitCorner(0, 1);
+
+  mod.FPDFImageObj_SetMatrix(
+    imgObj,
+    p10.x - p00.x,
+    p10.y - p00.y,
+    p01.x - p00.x,
+    p01.y - p00.y,
+    p00.x,
+    p00.y,
   );
-  drawPlacedImage(pdfPage, img, placement, el.opacity, el.flipX, el.flipY);
 
-  pdfPage.pushOperators(popGraphicsState());
+  if (opacity < 0.999) {
+    const alpha = Math.max(0, Math.min(255, Math.round(opacity * 255)));
+    mod.FPDFPageObj_SetFillColor(imgObj, 255, 255, 255, alpha);
+  }
+  if (markTag) {
+    mod.FPDFPageObj_AddMark(imgObj, markTag);
+  }
+
+  insertPageObjectOrdered(mod, pagePtr, imgObj, behindIndex);
 }
 
 function mapDisplayRotatedPointToBaseVisual(
@@ -1164,214 +1011,333 @@ function mapDisplayRotatedPointToBaseVisual(
   }
 }
 
+async function resolveFallbackFontAssetBytesInNode(
+  fileCandidates: string[],
+): Promise<Uint8Array | null> {
+  if (typeof process === 'undefined' || !process.versions?.node) {
+    return null;
+  }
+  try {
+    const [{ default: fs }, { default: path }] = await Promise.all([
+      import('node:fs'),
+      import('node:path'),
+    ]);
+    for (const rel of fileCandidates) {
+      const full = path.resolve(process.cwd(), rel);
+      if (fs.existsSync(full)) {
+        return new Uint8Array(fs.readFileSync(full));
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+const BUILTIN_NODE_FONT_FILES: Record<
+  FontCategory,
+  { regular: string[]; bold: string[]; italic: string[]; boldItalic: string[] }
+> = {
+  sans: {
+    regular: ['node_modules/@universal-office/font-files/liberationsans-regular.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSans.ttf'],
+    bold: ['node_modules/@universal-office/font-files/liberationsans-bold.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSans-Bold.ttf'],
+    italic: ['node_modules/@universal-office/font-files/liberationsans-italic.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSans-Oblique.ttf'],
+    boldItalic: ['node_modules/@universal-office/font-files/liberationsans-bolditalic.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSans-BoldOblique.ttf'],
+  },
+  calibri: {
+    regular: ['node_modules/@universal-office/font-files/carlito-regular.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSans.ttf'],
+    bold: ['node_modules/@universal-office/font-files/carlito-bold.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSans-Bold.ttf'],
+    italic: ['node_modules/@universal-office/font-files/carlito-italic.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSans-Oblique.ttf'],
+    boldItalic: ['node_modules/@universal-office/font-files/carlito-bolditalic.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSans-BoldOblique.ttf'],
+  },
+  cambria: {
+    regular: ['node_modules/@universal-office/font-files/caladea-regular.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSerif.ttf'],
+    bold: ['node_modules/@universal-office/font-files/caladea-bold.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSerif-Bold.ttf'],
+    italic: ['node_modules/@universal-office/font-files/caladea-italic.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSerif-Italic.ttf'],
+    boldItalic: ['node_modules/@universal-office/font-files/caladea-bolditalic.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSerif-BoldItalic.ttf'],
+  },
+  serif: {
+    regular: ['node_modules/@universal-office/font-files/liberationserif-regular.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSerif.ttf'],
+    bold: ['node_modules/@universal-office/font-files/liberationserif-bold.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSerif-Bold.ttf'],
+    italic: ['node_modules/@universal-office/font-files/liberationserif-italic.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSerif-Italic.ttf'],
+    boldItalic: ['node_modules/@universal-office/font-files/liberationserif-bolditalic.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSerif-BoldItalic.ttf'],
+  },
+  mono: {
+    regular: ['node_modules/@universal-office/font-files/liberationmono-regular.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSansMono.ttf'],
+    bold: ['node_modules/@universal-office/font-files/liberationmono-bold.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSansMono-Bold.ttf'],
+    italic: ['node_modules/@universal-office/font-files/liberationmono-italic.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSansMono-Oblique.ttf'],
+    boldItalic: ['node_modules/@universal-office/font-files/liberationmono-bolditalic.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSansMono-BoldOblique.ttf'],
+  },
+  script: {
+    regular: ['node_modules/@universal-office/font-files/liberationserif-italic.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSerif-Italic.ttf'],
+    bold: ['node_modules/@universal-office/font-files/liberationserif-bolditalic.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSerif-BoldItalic.ttf'],
+    italic: ['node_modules/@universal-office/font-files/liberationserif-italic.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSerif-Italic.ttf'],
+    boldItalic: ['node_modules/@universal-office/font-files/liberationserif-bolditalic.ttf', 'node_modules/dejavu-fonts-ttf/ttf/DejaVuSerif-BoldItalic.ttf'],
+  },
+};
+
+function selectPayloadVariant(
+  asset: FontAssetPayload,
+  bold: boolean,
+  italic: boolean,
+): Uint8Array | undefined {
+  if (bold && italic && asset.boldItalic) return asset.boldItalic;
+  if (bold && asset.bold) return asset.bold;
+  if (italic && asset.italic) return asset.italic;
+  return asset.regular;
+}
+
 /**
- * Compiles the edited multi-page document (including merges, reordering, rotations,
- * true stream redactions for edited text & moved/deleted images, custom text, images,
- * signatures, strokes, and annotations) into a single valid PDF byte buffer.
+ * Compiles edited PDFs completely on `@embedpdf/pdfium` + Rust `gp-wasm`:
+ * 1) Builds page sequence from source docs + blank pages (intrinsic rotations intact)
+ * 2) Applies D3 verified content-stream redactions (`gp_wasm.redact_pdf_bytes` + PDFium `FPDFText_*` assertion)
+ * 3) Renders Tier-1 behind-content objects + Tier 2-4 images, shapes, rich Unicode TTF text,
+ *    fountain-pen vector ink signatures, page numbers, and vector image clip masks
+ * 4) Applies user page rotations cleanly and serializes via `PDFiumExt_SaveAsCopy`.
  */
-export async function compilePdfDocument(
-  mupdf: MuPdfModule,
-  payload: CompilePdfPayload,
-): Promise<Uint8Array> {
-  if (payload.pages.length === 0) {
-    throw new Error('Cannot compile an empty document with zero pages.');
-  }
+export async function compilePdfDocument(payload: CompilePdfPayload): Promise<Uint8Array> {
+  const [mod, wasm] = await Promise.all([getSharedPdfium(), ensureRustCoreReady()]);
+  const sourceByteMap = new Map(payload.sourceDocs.map((d) => [d.id, d.bytes]));
 
-  // Stage 1: Load source documents and assemble selected pages in current order
-  const loadedSources = new Map<string, PDFDocument>();
-  for (const src of payload.sourceDocs) {
-    if (!src.bytes) {
-      throw new Error(`Missing source document bytes for "${src.id}" during compilation.`);
-    }
-    const doc = await PDFDocument.load(src.bytes, { ignoreEncryption: true });
-    loadedSources.set(src.id, doc);
-  }
-
-  const assembledDoc = await PDFDocument.create();
-  for (const pageMeta of payload.pages) {
-    const srcDoc = loadedSources.get(pageMeta.sourceDocId);
-    if (!srcDoc) {
-      throw new Error(`Missing source document "${pageMeta.sourceDocId}" during compilation.`);
-    }
-    const [copiedPage] = await assembledDoc.copyPages(srcDoc, [pageMeta.sourcePageIndex]);
-    assembledDoc.addPage(copiedPage);
-  }
-
-  const assembledBytes = await assembledDoc.save();
-
-  // Group elements by pageId
   const elementsByPage = new Map<string, CanvasElement[]>();
   for (const el of payload.elements) {
-    const list = elementsByPage.get(el.pageId) ?? [];
-    list.push(el);
-    elementsByPage.set(el.pageId, list);
+    const arr = elementsByPage.get(el.pageId) ?? [];
+    arr.push(el);
+    elementsByPage.set(el.pageId, arr);
   }
 
-  // Stage 2: Apply MuPDF Wasm content-stream redactions (removes original text / XObject images)
-  const redactedBytes = applyMupdfStreamRemovals(
-    mupdf,
-    assembledBytes,
-    payload.pages,
-    elementsByPage,
-  );
-
-  // Stage 3: Embed fonts, draw replacement/added elements, and apply final userRotation
-  const finalDoc = await PDFDocument.load(redactedBytes, { ignoreEncryption: true });
-  finalDoc.registerFontkit(fontkit);
-
-  // Auto-hydrate any referenced embedded PDF fonts from sourceDocs if not already in payload.fonts
-  const providedFonts: FontAssetPayload[] = [...(payload.fonts ?? [])];
-  const referencedEmbeddedIds = new Set<string>();
-  for (const el of payload.elements) {
-    if (
-      (el.kind === 'text-edit' || el.kind === 'text-add') &&
-      el.fontFamily.startsWith('embedded:') &&
-      !providedFonts.some((f) => f.family === el.fontFamily)
-    ) {
-      referencedEmbeddedIds.add(el.fontFamily);
-    }
+  // Step 1: Assemble pages cleanly with PDFium
+  const assembledDoc = mod.FPDF_CreateNewDocument();
+  if (!assembledDoc) {
+    throw new Error('PDFium failed creating output document.');
   }
-  if (referencedEmbeddedIds.size > 0) {
-    const neededDocIds = new Set<string>();
-    for (const fid of referencedEmbeddedIds) {
-      const parts = fid.split(':');
-      if (parts.length >= 2) neededDocIds.add(parts[1]);
-    }
-    for (const src of payload.sourceDocs) {
-      if (neededDocIds.has(src.id) && src.bytes) {
-        await extractEmbeddedFontsFromPdfBytes(src.id, src.bytes);
+  const openSourceDocs = new Map<string, { docPtr: number; freeData: () => void }>();
+
+  let assembledBytes: Uint8Array;
+  try {
+    for (let i = 0; i < payload.pages.length; i++) {
+      const pageMeta = payload.pages[i];
+      if (pageMeta.sourceDocId === '__blank__') {
+        const blankPage = mod.FPDFPage_New(
+          assembledDoc,
+          i,
+          pageMeta.baseWidth,
+          pageMeta.baseHeight,
+        );
+        if (blankPage) {
+          mod.FPDFPage_GenerateContent(blankPage);
+          mod.FPDF_ClosePage(blankPage);
+        }
+        continue;
       }
-    }
-    providedFonts.push(...getExtractedFontAssetPayloads([...referencedEmbeddedIds]));
-  }
 
-  const resolveCategoryAsset = (
-    family: FontFamilyOption,
-    fallback?: BuiltinFontFamilyOption,
-  ): FontAssetPayload | undefined => {
-    const eff = fallback ?? (isBuiltinFontFamily(family) ? family : undefined);
-    const categoryKey = `category:${getFontCategory(family, eff)}`;
-    return (
-      (eff ? providedFonts.find((f) => f.family === eff) : undefined) ??
-      providedFonts.find((f) => f.family === categoryKey) ??
-      providedFonts.find((f) => f.family === 'category:sans')
-    );
-  };
-
-  const resolveFontPayload = (
-    family: FontFamilyOption,
-    fallback?: BuiltinFontFamilyOption,
-  ): FontAssetPayload | undefined => {
-    if (providedFonts.length === 0) return undefined;
-    return (
-      providedFonts.find((f) => f.family === family) ??
-      resolveCategoryAsset(family, fallback)
-    );
-  };
-
-  const resolveFallbackPayload = (
-    family: FontFamilyOption,
-    fallback?: BuiltinFontFamilyOption,
-  ): FontAssetPayload | undefined => {
-    if (providedFonts.length === 0) return undefined;
-    const cat = getFontCategory(family, fallback);
-    const fbKey =
-      cat === 'cambria' || cat === 'serif'
-        ? 'fallback:serif'
-        : cat === 'mono'
-          ? 'fallback:mono'
-          : cat === 'script'
-            ? 'fallback:script'
-            : 'fallback:sans';
-    return (
-      providedFonts.find((f) => f.family === fbKey) ??
-      providedFonts.find((f) => f.family === 'fallback:sans')
-    );
-  };
-
-  const fontCache = new Map<string, EmbeddedFontEntry>();
-  const embedVariantFromPayload = async (
-    cacheKey: string,
-    asset: FontAssetPayload | undefined,
-    bold: boolean,
-    italic: boolean,
-  ): Promise<EmbeddedFontEntry | null> => {
-    const existing = fontCache.get(cacheKey);
-    if (existing) return existing;
-    if (!asset) return null;
-    const customBytes =
-      (bold && italic && asset.boldItalic) ||
-      (bold && asset.bold) ||
-      (italic && asset.italic) ||
-      asset.regular ||
-      asset.bold ||
-      asset.italic ||
-      asset.boldItalic;
-    if (!customBytes) return null;
-
-    let embedded: PDFFont;
-    try {
-      embedded = await finalDoc.embedFont(customBytes, { subset: true });
-    } catch {
-      try {
-        embedded = await finalDoc.embedFont(customBytes, { subset: false });
-      } catch {
-        return null;
+      const srcBytes = sourceByteMap.get(pageMeta.sourceDocId);
+      if (!srcBytes) {
+        throw new Error(`Missing source PDF bytes for document ID "${pageMeta.sourceDocId}".`);
       }
-    }
-    const entry: EmbeddedFontEntry = {
-      font: embedded,
-      supportedCodePoints: new Set(embedded.getCharacterSet()),
-    };
-    fontCache.set(cacheKey, entry);
-    return entry;
-  };
 
-  const getFontPair = async (
-    family: FontFamilyOption,
-    bold: boolean,
-    italic: boolean,
-    fallback?: BuiltinFontFamilyOption,
-  ): Promise<FontPairEntry> => {
-    const suffix = `${bold ? 'B' : 'N'}_${italic ? 'I' : 'N'}`;
-    const primaryAsset = resolveFontPayload(family, fallback);
-    let primary = await embedVariantFromPayload(
-      `pri:${primaryAsset?.family ?? family}_${suffix}`,
-      primaryAsset,
-      bold,
-      italic,
-    );
-    if (!primary) {
-      const catAsset = resolveCategoryAsset(family, fallback);
-      if (catAsset && catAsset !== primaryAsset) {
-        primary = await embedVariantFromPayload(
-          `pri:${catAsset.family}_${suffix}`,
-          catAsset,
-          bold,
-          italic,
+      let srcEntry = openSourceDocs.get(pageMeta.sourceDocId);
+      if (!srcEntry) {
+        srcEntry = loadPdfiumMemDoc(mod, srcBytes);
+        if (!srcEntry.docPtr) {
+          throw new Error(`PDFium failed loading source document "${pageMeta.sourceDocId}".`);
+        }
+        openSourceDocs.set(pageMeta.sourceDocId, srcEntry);
+      }
+
+      const okImport = mod.FPDF_ImportPages(
+        assembledDoc,
+        srcEntry.docPtr,
+        String(pageMeta.sourcePageIndex + 1),
+        i,
+      );
+      if (!okImport) {
+        throw new Error(
+          `PDFium failed importing page ${pageMeta.sourcePageIndex + 1} from "${pageMeta.sourceDocId}".`,
         );
       }
     }
-    if (!primary) {
-      const key = `std:${family}_${suffix}`;
-      const cached = fontCache.get(key);
-      if (!cached) {
-        throw new Error('STD_FALLBACK_ASYNC');
+
+    assembledBytes = savePdfiumDocToBytes(mod, assembledDoc);
+  } finally {
+    for (const entry of openSourceDocs.values()) {
+      mod.FPDF_CloseDocument(entry.docPtr);
+      entry.freeData();
+    }
+    mod.FPDF_CloseDocument(assembledDoc);
+  }
+
+  // Step 2: Apply Rust content-stream stripping (text-only / image-only / shape-only) + mandatory D3 redactions
+  const textRemovalRects: RedactionEntry[] = [];
+  const imageRemovalRects: RedactionEntry[] = [];
+  const shapeRemovalRects: RedactionEntry[] = [];
+  const blackRedactRects: RedactionEntry[] = [];
+
+  for (let i = 0; i < payload.pages.length; i++) {
+    const pageMeta = payload.pages[i];
+    if (pageMeta.sourceDocId === '__blank__') continue;
+    const els = elementsByPage.get(pageMeta.id) ?? [];
+
+    for (const el of els) {
+      if (el.kind === 'text-edit') {
+        const padX = Math.min(0.5, el.originalRect.width * 0.05);
+        const padY = Math.min(0.5, el.originalRect.height * 0.05);
+        textRemovalRects.push({
+          pageIndex: i,
+          x: el.originalRect.x + padX,
+          y: el.originalRect.y + padY,
+          width: Math.max(1, el.originalRect.width - padX * 2),
+          height: Math.max(1, el.originalRect.height - padY * 2),
+        });
+      } else if (el.kind === 'image-replacement') {
+        const padX = Math.min(0.5, el.originalRect.width * 0.02);
+        const padY = Math.min(0.5, el.originalRect.height * 0.02);
+        imageRemovalRects.push({
+          pageIndex: i,
+          x: el.originalRect.x + padX,
+          y: el.originalRect.y + padY,
+          width: Math.max(1, el.originalRect.width - padX * 2),
+          height: Math.max(1, el.originalRect.height - padY * 2),
+        });
+      } else if (el.kind === 'shape-replacement') {
+        shapeRemovalRects.push({
+          pageIndex: i,
+          x: el.originalRect.x,
+          y: el.originalRect.y,
+          width: el.originalRect.width,
+          height: el.originalRect.height,
+        });
+      } else if (el.kind === 'highlight' && el.shape === 'redact') {
+        blackRedactRects.push({
+          pageIndex: i,
+          x: el.x,
+          y: el.y,
+          width: el.width,
+          height: el.height,
+        });
       }
-      primary = cached;
+    }
+  }
+
+  let redactedBytes = assembledBytes;
+  if (
+    textRemovalRects.length > 0 ||
+    imageRemovalRects.length > 0 ||
+    shapeRemovalRects.length > 0
+  ) {
+    const res = wasm.strip_pdf_elements_bytes(
+      redactedBytes,
+      textRemovalRects,
+      imageRemovalRects,
+      shapeRemovalRects,
+    );
+    redactedBytes = res instanceof Uint8Array ? res : new Uint8Array(res);
+  }
+  if (blackRedactRects.length > 0) {
+    const res = wasm.redact_pdf_bytes(redactedBytes, blackRedactRects, [], true);
+    redactedBytes = res instanceof Uint8Array ? res : new Uint8Array(res);
+    const leaked = verifyRedactionsWithPdfium(mod, redactedBytes, blackRedactRects, payload.pages);
+    if (leaked > 0) {
+      throw new Error(
+        `Redaction verification failed: ${leaked} non-whitespace character(s) remain inside redacted area(s).`,
+      );
+    }
+  }
+
+  // Step 3: Draw added/edited elements directly on PDFium objects & save
+  const { docPtr: finalDoc, freeData: freeFinalData } = loadPdfiumMemDoc(mod, redactedBytes);
+  if (!finalDoc) {
+    throw new Error('PDFium failed reopening redacted document for element compilation.');
+  }
+
+  const scratchMatrixPtr = mod.pdfium.wasmExports.malloc(24);
+  if (!scratchMatrixPtr) {
+    mod.FPDF_CloseDocument(finalDoc);
+    freeFinalData();
+    throw new Error('Out of Wasm memory allocating transform matrix.');
+  }
+
+  const loadedFonts: PdfiumLoadedFont[] = [];
+  const fontCache = new Map<string, PdfiumLoadedFont>();
+  const fontAssetMap = new Map<string, FontAssetPayload>(
+    (payload.fonts ?? []).map((f) => [f.family, f]),
+  );
+
+  const loadTtfFont = (cacheKey: string, bytes: Uint8Array): PdfiumLoadedFont | null => {
+    const existing = fontCache.get(cacheKey);
+    if (existing) return existing;
+
+    const ptr = mod.pdfium.wasmExports.malloc(bytes.byteLength);
+    if (!ptr) return null;
+    mod.pdfium.HEAPU8.set(bytes, ptr);
+    const fontPtr = mod.FPDFText_LoadFont(finalDoc, ptr, bytes.byteLength, FPDF_FONT_TRUETYPE, true);
+    mod.pdfium.wasmExports.free(ptr);
+    if (!fontPtr) return null;
+
+    let supportedCodePoints: Set<number> | null = null;
+    try {
+      const meta = wasm.inspect_ttf_font(bytes) as { supportedCodePoints?: number[] } | null;
+      if (meta?.supportedCodePoints?.length) {
+        supportedCodePoints = new Set(meta.supportedCodePoints);
+      }
+    } catch {
+      supportedCodePoints = null;
     }
 
-    const fallbackAsset = resolveFallbackPayload(family, fallback);
-    const fbEntry = fallbackAsset
-      ? await embedVariantFromPayload(
-          `fb:${fallbackAsset.family}_${suffix}`,
-          fallbackAsset,
-          bold,
-          italic,
-        )
-      : null;
+    const entry: PdfiumLoadedFont = {
+      fontPtr,
+      supportedCodePoints,
+      glyphWidthCache: new Map(),
+    };
+    fontCache.set(cacheKey, entry);
+    loadedFonts.push(entry);
+    return entry;
+  };
 
-    return { primary, fallback: fbEntry };
+  const loadStdFont = (stdName: StandardPdfFontName): PdfiumLoadedFont => {
+    const key = `std:${stdName}`;
+    const existing = fontCache.get(key);
+    if (existing) return existing;
+    const fontPtr = mod.FPDFText_LoadStandardFont(finalDoc, stdName);
+    if (!fontPtr) {
+      throw new Error(`PDFium failed loading Standard14 font "${stdName}".`);
+    }
+    const entry: PdfiumLoadedFont = {
+      fontPtr,
+      supportedCodePoints: null,
+      glyphWidthCache: new Map(),
+    };
+    fontCache.set(key, entry);
+    loadedFonts.push(entry);
+    return entry;
+  };
+
+  const resolveBuiltinCategoryAsset = (
+    family: FontFamilyOption,
+    fallback?: BuiltinFontFamilyOption,
+  ): FontAssetPayload | undefined => {
+    const cat = getFontCategory(family, fallback);
+    if (family === 'DejaVuSans' && fontAssetMap.has('DejaVuSans')) return fontAssetMap.get('DejaVuSans');
+    if (family === 'DejaVuSansCondensed' && fontAssetMap.has('DejaVuSansCondensed'))
+      return fontAssetMap.get('DejaVuSansCondensed');
+    if (family === 'DejaVuSerif' && fontAssetMap.has('DejaVuSerif')) return fontAssetMap.get('DejaVuSerif');
+    if (family === 'DejaVuSerifCondensed' && fontAssetMap.has('DejaVuSerifCondensed'))
+      return fontAssetMap.get('DejaVuSerifCondensed');
+    if (family === 'DejaVuSansMono' && fontAssetMap.has('DejaVuSansMono'))
+      return fontAssetMap.get('DejaVuSansMono');
+    return fontAssetMap.get(`category:${cat}`) ?? fontAssetMap.get('category:sans');
+  };
+
+  const resolveFallbackCategoryAsset = (
+    family: FontFamilyOption,
+    fallback?: BuiltinFontFamilyOption,
+  ): FontAssetPayload | undefined => {
+    const cat = getFontCategory(family, fallback);
+    if (cat === 'mono') return fontAssetMap.get('fallback:mono') ?? fontAssetMap.get('fallback:sans');
+    if (cat === 'serif' || cat === 'cambria' || cat === 'script') {
+      return fontAssetMap.get('fallback:serif') ?? fontAssetMap.get('fallback:sans');
+    }
+    return fontAssetMap.get('fallback:sans');
   };
 
   const getFontPairSafe = async (
@@ -1379,371 +1345,718 @@ export async function compilePdfDocument(
     bold: boolean,
     italic: boolean,
     fallback?: BuiltinFontFamilyOption,
-  ): Promise<FontPairEntry> => {
-    try {
-      return await getFontPair(family, bold, italic, fallback);
-    } catch {
-      const key = `std:${fallback ?? family}_${bold ? 'B' : 'N'}_${italic ? 'I' : 'N'}`;
-      let stdEntry = fontCache.get(key);
-      if (!stdEntry) {
-        const std = getStandardPdfFont(family, bold, italic, fallback);
-        const embedded = await finalDoc.embedFont(std);
-        stdEntry = { font: embedded, supportedCodePoints: null };
-        fontCache.set(key, stdEntry);
+  ): Promise<PdfiumFontPair> => {
+    const suffix = `${bold ? 'B' : 'N'}_${italic ? 'I' : 'N'}`;
+    let primary: PdfiumLoadedFont | null = null;
+
+    if (family.startsWith('user:') || family.startsWith('embedded:')) {
+      const customAsset = fontAssetMap.get(family);
+      if (customAsset) {
+        const bytes = selectPayloadVariant(customAsset, bold, italic);
+        if (bytes) primary = loadTtfFont(`custom:${family}_${suffix}`, bytes);
       }
-      return { primary: stdEntry, fallback: null };
     }
-  };
 
-  const extractContentRefs = (page: PDFPage): PDFRef[] => {
-    const raw = page.node.get(PDFName.of('Contents'));
-    if (raw instanceof PDFRef) return [raw];
-    if (raw instanceof PDFArray) {
-      const refs: PDFRef[] = [];
-      for (let idx = 0; idx < raw.size(); idx++) {
-        const item = raw.get(idx);
-        if (item instanceof PDFRef) refs.push(item);
+    if (!primary && (isBuiltinFontFamily(family) || fallback)) {
+      const targetBuiltin = isBuiltinFontFamily(family) ? family : fallback!;
+      const catAsset = resolveBuiltinCategoryAsset(targetBuiltin, fallback);
+      if (catAsset) {
+        const bytes = selectPayloadVariant(catAsset, bold, italic);
+        if (bytes) primary = loadTtfFont(`cat:${catAsset.family}_${suffix}`, bytes);
       }
-      return refs;
     }
-    return [];
-  };
 
-  const imageCache = new Map<Uint8Array, Awaited<ReturnType<PDFDocument['embedPng']>>>();
-  const embedImageBytes = async (bytes: Uint8Array, mimeType: 'image/png' | 'image/jpeg') => {
-    const cached = imageCache.get(bytes);
-    if (cached) return cached;
-    const embedded =
-      mimeType === 'image/jpeg'
-        ? await finalDoc.embedJpg(bytes)
-        : await finalDoc.embedPng(bytes);
-    imageCache.set(bytes, embedded);
-    return embedded;
-  };
-
-  const finalPages = finalDoc.getPages();
-
-  for (let i = 0; i < payload.pages.length; i++) {
-    const pageMeta = payload.pages[i];
-    const pdfPage = finalPages[i];
-    const pageEls = [...(elementsByPage.get(pageMeta.id) ?? [])].sort(
-      (a, b) => getElementLayerTier(a) - getElementLayerTier(b) || a.zIndex - b.zIndex,
-    );
-
-    const behindEls = pageEls.filter(
-      (el) =>
-        ((el.kind === 'image' || el.kind === 'image-replacement') &&
-          el.behindContent === true &&
-          !(el.kind === 'image-replacement' && el.deleted)) ||
-        (el.kind === 'shape-replacement' && el.behindContent === true && !el.deleted) ||
-        ((el.kind === 'shape' || el.kind === 'path') && el.behindContent === true),
-    );
-    const behindIds = new Set(behindEls.map((el) => el.id));
-    const frontEls = pageEls.filter((el) => !behindIds.has(el.id));
-
-    // Prepend behindContent background/watermark layers before original page streams
-    if (behindEls.length > 0) {
-      const origRefs = extractContentRefs(pdfPage);
-      pdfPage.node.set(PDFName.of('Contents'), finalDoc.context.obj([]));
-
-      for (const el of behindEls) {
-        if (el.kind === 'image' || el.kind === 'image-replacement') {
-          const img = await embedImageBytes(el.bytes, el.mimeType);
-          drawImageElementOnPage(pdfPage, pageMeta, img, el);
-        } else if (el.kind === 'shape-replacement') {
-          drawRectShapeOnPage(
-            pdfPage,
-            pageMeta,
-            { x: el.x, y: el.y, width: el.width, height: el.height },
-            el.rotation,
-            {
-              fillColor: el.fillColor,
-              strokeColor: el.strokeColor,
-              strokeWidth: el.strokeWidth,
-              opacity: el.opacity,
-            },
-          );
-        } else if (el.kind === 'shape' || el.kind === 'path') {
-          drawVectorElementOnPage(pdfPage, pageMeta, el);
-        }
-      }
-
-      const bgRefs = extractContentRefs(pdfPage);
-      const qRef = finalDoc.context.register(finalDoc.context.flateStream('q\n'));
-      const QRef = finalDoc.context.register(finalDoc.context.flateStream('Q\n'));
-      pdfPage.node.set(
-        PDFName.of('Contents'),
-        finalDoc.context.obj([...bgRefs, qRef, ...origRefs, QRef]),
+    if (!primary) {
+      const cat = getFontCategory(family, fallback);
+      const variantKey: 'regular' | 'bold' | 'italic' | 'boldItalic' =
+        bold && italic ? 'boldItalic' : bold ? 'bold' : italic ? 'italic' : 'regular';
+      const nodeBytes = await resolveFallbackFontAssetBytesInNode(
+        BUILTIN_NODE_FONT_FILES[cat][variantKey],
       );
-      // Reset cached PDFPage stream pointer so foreground elements start a clean trailing stream
-      const internalPage = pdfPage as unknown as {
-        contentStream?: unknown;
-        contentStreamRef?: unknown;
-      };
-      internalPage.contentStream = undefined;
-      internalPage.contentStreamRef = undefined;
+      if (nodeBytes) {
+        primary = loadTtfFont(`node:${cat}_${variantKey}`, nodeBytes);
+      }
     }
 
-    for (const el of frontEls) {
-      switch (el.kind) {
-        case 'text-edit':
-        case 'text-add': {
-          if (el.kind === 'text-edit' && el.deleted) break;
-          const fallbackFam =
-            el.fallbackFontFamily ??
-            (el.originalFontName ? parsePdfFontMetadata(el.originalFontName).fontFamily : undefined);
-          await drawTextElementOnPage(pdfPage, pageMeta, el, (b, it) =>
-            getFontPairSafe(el.fontFamily, b, it, fallbackFam),
-          );
-          break;
+    if (!primary) {
+      const stdName = getStandardPdfFont(family, bold, italic, fallback);
+      primary = loadStdFont(stdName);
+    }
+
+    let fbEntry: PdfiumLoadedFont | null = null;
+    const fbAsset = resolveFallbackCategoryAsset(family, fallback);
+    if (fbAsset) {
+      const fbBytes = selectPayloadVariant(fbAsset, bold, italic);
+      if (fbBytes) fbEntry = loadTtfFont(`fb:${fbAsset.family}_${suffix}`, fbBytes);
+    } else if (typeof process !== 'undefined' && process.versions?.node) {
+      const cat = getFontCategory(family, fallback);
+      const fbCat: FontCategory =
+        cat === 'mono' ? 'mono' : cat === 'serif' || cat === 'cambria' || cat === 'script' ? 'serif' : 'sans';
+      const variantKey: 'regular' | 'bold' | 'italic' | 'boldItalic' =
+        bold && italic ? 'boldItalic' : bold ? 'bold' : italic ? 'italic' : 'regular';
+      const djFile = BUILTIN_NODE_FONT_FILES[fbCat][variantKey].slice(-1);
+      const nodeFbBytes = await resolveFallbackFontAssetBytesInNode(djFile);
+      if (nodeFbBytes) {
+        fbEntry = loadTtfFont(`nodefb:${fbCat}_${variantKey}`, nodeFbBytes);
+      }
+    }
+
+    return { primary, fallback: fbEntry };
+  };
+
+  const drawTextElementOnPage = async (
+    pagePtr: number,
+    pageMeta: PageMeta,
+    el: TextEditElement | TextAddElement,
+    behindIndex: { next: number } | null,
+  ) => {
+    if ((el.kind === 'text-edit' && el.deleted) || el.text.length === 0) {
+      return;
+    }
+
+    if (el.kind === 'text-add' && el.backgroundColor) {
+      drawRectOnPdfiumPage(
+        mod,
+        pagePtr,
+        pageMeta,
+        { x: el.x, y: el.y, width: el.width, height: el.height },
+        el.rotation,
+        { fillColor: el.backgroundColor, opacity: el.opacity },
+        behindIndex,
+      );
+    }
+
+    const runs = ensureRunsFromElement(el.text, el.runs, el.bold, el.italic);
+    const stylePairs = new Map<string, PdfiumFontPair>();
+    const styleKey = (b: boolean, i: boolean) => `${b ? 1 : 0}_${i ? 1 : 0}`;
+    const ensurePair = async (b: boolean, i: boolean) => {
+      const k = styleKey(b, i);
+      let p = stylePairs.get(k);
+      if (!p) {
+        p = await getFontPairSafe(el.fontFamily, b, i, el.fallbackFontFamily);
+        stylePairs.set(k, p);
+      }
+      return p;
+    };
+
+    await ensurePair(el.bold, el.italic);
+    for (const r of runs) {
+      await ensurePair(r.bold ?? el.bold, r.italic ?? el.italic);
+    }
+
+    const getPairSync = (b: boolean, i: boolean): PdfiumFontPair =>
+      stylePairs.get(styleKey(b, i)) ?? stylePairs.get(styleKey(el.bold, el.italic))!;
+
+    const charSpacing = el.letterSpacing ?? 0;
+    const hScale = el.horizontalScale && el.horizontalScale > 0 ? el.horizontalScale : 1;
+
+    const measurePiece = (
+      text: string,
+      bold: boolean,
+      italic: boolean,
+      script: TextScriptMode,
+    ): number => {
+      const scale = script === 'normal' ? 1 : 0.6;
+      const baseW = measureWithFontPair(mod, text, getPairSync(bold, italic), el.fontSize * scale);
+      return baseW * hScale + Math.max(0, text.length - 1) * charSpacing;
+    };
+
+    const explicitLineCount = el.text.split('\n').length;
+    const isSingleLine =
+      explicitLineCount === 1 &&
+      (el.renderedLineCount === 1 ||
+        (el.renderedLineCount === undefined &&
+          !el.widthResizedByUser &&
+          el.height < el.fontSize * el.lineHeight * 1.65));
+
+    const wrappedLines = buildWrappedRichLines(runs, el.width, measurePiece, el.bold, el.italic, {
+      disableSoftWrap: isSingleLine,
+      widthToleranceRatio: el.align === 'justify' && !isSingleLine ? 0 : 0.025,
+      widthTolerancePt: el.align === 'justify' && !isSingleLine ? 0.5 : 2.0,
+    });
+
+    const lineBoxHeight = el.fontSize * el.lineHeight;
+    const baselineFromLineTop =
+      el.fontSize * 0.85 + Math.max(0, (el.lineHeight - 1) * el.fontSize * 0.35);
+
+    const cx = el.x + el.width / 2;
+    const cy = el.y + el.height / 2;
+    const radCW = (el.rotation * Math.PI) / 180;
+    const cos = Math.cos(radCW);
+    const sin = Math.sin(radCW);
+
+    for (let li = 0; li < wrappedLines.length; li++) {
+      const line = wrappedLines[li];
+      if (line.pieces.length === 0) continue;
+
+      const scaledLineWidth = line.naturalWidth;
+      const fitScale =
+        scaledLineWidth > el.width + 0.5 ? Math.max(0.88, el.width / scaledLineWidth) : 1;
+      const effectiveHScale = hScale * fitScale;
+      const effectiveLineWidth = scaledLineWidth * fitScale;
+
+      let localStartX = 0;
+      if (el.align === 'center') {
+        localStartX = Math.max(0, (el.width - effectiveLineWidth) / 2);
+      } else if (el.align === 'right') {
+        localStartX = Math.max(0, el.width - effectiveLineWidth);
+      }
+
+      const shouldJustify =
+        el.align === 'justify' &&
+        !line.endsParagraph &&
+        line.spaceCount > 0 &&
+        el.width - effectiveLineWidth > 0.5 &&
+        effectiveLineWidth > el.width * 0.38;
+      const extraPerSpace = shouldJustify
+        ? (el.width - effectiveLineWidth) / line.spaceCount
+        : 0;
+
+      let cursorX = localStartX;
+      for (const piece of line.pieces) {
+        const piecePair = getPairSync(piece.bold, piece.italic);
+        const pieceSize = piece.script === 'normal' ? el.fontSize : el.fontSize * 0.6;
+        const scriptDeltaY =
+          piece.script === 'super'
+            ? -el.fontSize * 0.3
+            : piece.script === 'sub'
+              ? el.fontSize * 0.15
+              : 0;
+
+        if (piece.isSpace) {
+          cursorX +=
+            measureWithFontPair(mod, piece.text, piecePair, pieceSize) * effectiveHScale +
+            extraPerSpace * piece.text.length;
+          continue;
         }
-        case 'image':
-        case 'image-replacement': {
-          if (el.kind === 'image-replacement' && el.deleted) break;
-          const img = await embedImageBytes(el.bytes, el.mimeType);
-          drawImageElementOnPage(pdfPage, pageMeta, img, el);
-          break;
-        }
-        case 'signature': {
-          const sig: SignatureElement = el;
-          if (
-            !sig.realisticInk &&
-            sig.svgPaths &&
-            sig.svgPaths.length > 0 &&
-            sig.viewBoxWidth &&
-            sig.viewBoxHeight
-          ) {
-            const sx = sig.width / sig.viewBoxWidth;
-            const sy = sig.height / sig.viewBoxHeight;
-            for (const pathObj of sig.svgPaths) {
-              drawSvgBoxOnPage(
-                pdfPage,
+
+        const glyphSegs = splitTextByGlyphSupport(piece.text, piecePair);
+        for (const seg of glyphSegs) {
+          if (!seg.text) continue;
+          const localOffsetY = li * lineBoxHeight + baselineFromLineTop + scriptDeltaY;
+
+          if (Math.abs(charSpacing) > 0.01 && seg.text.length > 1) {
+            for (const ch of seg.text) {
+              const relX = -el.width / 2 + cursorX;
+              const relY = -el.height / 2 + localOffsetY;
+              const visX = cx + (relX * cos - relY * sin);
+              const visY = cy + (relX * sin + relY * cos);
+              emitTextRunAtVisualPoint(
+                mod,
+                finalDoc,
+                pagePtr,
                 pageMeta,
-                { x: sig.x, y: sig.y, width: sig.width, height: sig.height },
-                sig.rotation,
-                pathObj.d,
-                sx,
-                sy,
-                pathObj.color,
-                pathObj.strokeWidth * Math.min(sx, sy),
-                (pathObj.opacity ?? 1) * sig.opacity,
+                seg.entry.fontPtr,
+                pieceSize,
+                ch,
+                visX,
+                visY,
+                el.rotation,
+                effectiveHScale,
+                el.color,
+                el.opacity,
+                scratchMatrixPtr,
+                behindIndex,
               );
+              cursorX +=
+                measureFontWidth(mod, seg.entry, ch, pieceSize) * effectiveHScale +
+                charSpacing * effectiveHScale;
             }
           } else {
-            const img = await embedImageBytes(sig.pngBytes, 'image/png');
-            const placement = computePdfLibDrawPlacement(
-              { x: sig.x, y: sig.y, width: sig.width, height: sig.height },
-              sig.rotation,
+            const relX = -el.width / 2 + cursorX;
+            const relY = -el.height / 2 + localOffsetY;
+            const visX = cx + (relX * cos - relY * sin);
+            const visY = cy + (relX * sin + relY * cos);
+            emitTextRunAtVisualPoint(
+              mod,
+              finalDoc,
+              pagePtr,
               pageMeta,
+              seg.entry.fontPtr,
+              pieceSize,
+              seg.text,
+              visX,
+              visY,
+              el.rotation,
+              effectiveHScale,
+              el.color,
+              el.opacity,
+              scratchMatrixPtr,
+              behindIndex,
             );
-            drawPlacedImage(pdfPage, img, placement, sig.opacity);
+            cursorX +=
+              measureFontWidth(mod, seg.entry, seg.text, pieceSize) * effectiveHScale +
+              seg.text.length * charSpacing * effectiveHScale;
           }
-          break;
-        }
-        case 'stroke': {
-          const stroke: StrokeElement = el;
-          const d = pointsToSmoothSvgPath(stroke.points, stroke.width, stroke.height);
-          drawSvgBoxOnPage(
-            pdfPage,
-            pageMeta,
-            { x: stroke.x, y: stroke.y, width: stroke.width, height: stroke.height },
-            stroke.rotation,
-            d,
-            1,
-            1,
-            stroke.strokeColor,
-            stroke.strokeWidth,
-            stroke.opacity,
-          );
-          break;
-        }
-        case 'shape-replacement': {
-          const shp: ShapeReplacementElement = el;
-          if (shp.deleted) break;
-          drawRectShapeOnPage(
-            pdfPage,
-            pageMeta,
-            { x: shp.x, y: shp.y, width: shp.width, height: shp.height },
-            shp.rotation,
-            {
-              fillColor: shp.fillColor,
-              strokeColor: shp.strokeColor,
-              strokeWidth: shp.strokeWidth,
-              opacity: shp.opacity,
-            },
-          );
-          break;
-        }
-        case 'shape':
-        case 'path': {
-          drawVectorElementOnPage(pdfPage, pageMeta, el);
-          break;
-        }
-        case 'highlight': {
-          const h: HighlightElement = el;
-          if (h.shape === 'redact') {
-            // Already burned in via MuPDF Pass 3
-            break;
-          }
-          drawRectShapeOnPage(
-            pdfPage,
-            pageMeta,
-            { x: h.x, y: h.y, width: h.width, height: h.height },
-            h.rotation,
-            {
-              fillColor: h.fillColor,
-              strokeColor: h.strokeColor,
-              strokeWidth: h.strokeWidth,
-              opacity: h.opacity,
-              isHighlight: h.shape === 'highlight',
-            },
-          );
-          break;
         }
       }
     }
+  };
 
-    // Stamp dynamic page number when enabled
-    if (payload.pageNumbering?.enabled) {
-      const rot = normalizeRotation(pageMeta.userRotation);
-      const effW = rot === 90 || rot === 270 ? pageMeta.baseHeight : pageMeta.baseWidth;
-      const effH = rot === 90 || rot === 270 ? pageMeta.baseWidth : pageMeta.baseHeight;
-      const pgLayout = computePageNumberLayout(
-        effW,
-        effH,
-        i,
-        payload.pages.length,
-        payload.pageNumbering,
+  const drawImageOnPage = (
+    pagePtr: number,
+    pageIndex: number,
+    pageMeta: PageMeta,
+    el: ImageAddElement | ImageReplacementElement,
+    behindIndex: { next: number } | null,
+    clipCounter: { next: number },
+    clipPatches: Array<{
+      pageIndex: number;
+      markName: string;
+      evenOdd: boolean;
+      commands: Array<
+        | { op: 'move-to'; x: number; y: number }
+        | { op: 'line-to'; x: number; y: number }
+        | { op: 'curve-to'; cx1: number; cy1: number; cx2: number; cy2: number; x: number; y: number }
+        | { op: 'close' }
+      >;
+    }>,
+  ) => {
+    const hasCropOrMask = Boolean(el.cropRect || el.clipMask?.unitSvgPath);
+    if (!hasCropOrMask) {
+      placePdfiumImage(
+        mod,
+        finalDoc,
+        pagePtr,
+        pageMeta,
+        el.bytes,
+        el.mimeType,
+        { x: el.x, y: el.y, width: el.width, height: el.height },
+        el.rotation,
+        el.opacity,
+        el.flipX,
+        el.flipY,
+        behindIndex,
       );
-      if (pgLayout) {
-        const pair = await getFontPairSafe(payload.pageNumbering.fontFamily, false, false);
-        const fs = payload.pageNumbering.fontSize;
-        const labelW = measureWithFontPair(pgLayout.text, pair, fs);
-        const startDispX =
-          pgLayout.align === 'center'
-            ? pgLayout.x + Math.max(0, (pgLayout.width - labelW) / 2)
-            : pgLayout.align === 'right'
-              ? pgLayout.x + Math.max(0, pgLayout.width - labelW)
-              : pgLayout.x;
-        const baselineDispY = pgLayout.y + fs * 0.85;
+      return;
+    }
 
-        const basePt = mapDisplayRotatedPointToBaseVisual(
-          startDispX,
-          baselineDispY,
-          pageMeta.baseWidth,
-          pageMeta.baseHeight,
-          pageMeta.userRotation,
-        );
-        const rightPt = mapDisplayRotatedPointToBaseVisual(
-          startDispX + 1,
-          baselineDispY,
-          pageMeta.baseWidth,
-          pageMeta.baseHeight,
-          pageMeta.userRotation,
-        );
-        const pdfPt = pointBaseVisualToPdfUserSpace(
-          basePt.x,
-          basePt.y,
-          pageMeta.cropBox,
-          pageMeta.intrinsicRotation,
-        );
-        const pdfRight = pointBaseVisualToPdfUserSpace(
-          rightPt.x,
-          rightPt.y,
-          pageMeta.cropBox,
-          pageMeta.intrinsicRotation,
-        );
-        const angleCCW =
-          (Math.atan2(pdfRight.y - pdfPt.y, pdfRight.x - pdfPt.x) * 180) / Math.PI;
-        const textColor = pdfRgb(payload.pageNumbering.color);
-        let cxCursor = 0;
+    const mapLocalToPdf = (lx: number, ly: number) => {
+      const visPt = elementLocalToPage(lx, ly, el, el.rotation);
+      return pointBaseVisualToPdfUserSpace(
+        visPt.x,
+        visPt.y,
+        pageMeta.cropBox,
+        pageMeta.intrinsicRotation,
+      );
+    };
 
-        for (const seg of splitTextByGlyphSupport(pgLayout.text, pair)) {
-          if (!seg.text) continue;
-          const segDispX = startDispX + cxCursor;
-          const segBase = mapDisplayRotatedPointToBaseVisual(
-            segDispX,
-            baselineDispY,
-            pageMeta.baseWidth,
-            pageMeta.baseHeight,
-            pageMeta.userRotation,
-          );
-          const segPdf = pointBaseVisualToPdfUserSpace(
-            segBase.x,
-            segBase.y,
-            pageMeta.cropBox,
-            pageMeta.intrinsicRotation,
-          );
-          pdfPage.drawText(seg.text, {
-            x: segPdf.x,
-            y: segPdf.y,
-            size: fs,
-            font: seg.entry.font,
-            color: textColor,
-            opacity: payload.pageNumbering.opacity,
-            rotate: degrees(angleCCW),
-          });
-          try {
-            cxCursor += seg.entry.font.widthOfTextAtSize(seg.text, fs);
-          } catch {
-            cxCursor += seg.text.length * fs * 0.5;
-          }
-        }
+    // Build crop box & optional vector clip mask as two nested/sequential PDF clipping paths
+    const cropMarkTag = `GpClip${clipCounter.next++}`;
+    const commands = [];
+
+    if (el.clipMask?.unitSvgPath) {
+      const scaled = scaleSvgPathCommands(
+        el.clipMask.unitSvgPath,
+        Math.max(1, el.width),
+        Math.max(1, el.height),
+        4,
+      );
+      const screenD = flipSvgPath(scaled, el.width, el.height, el.flipX, el.flipY, 4);
+      const maskCmds = buildSvgClipCommandsInPdfSpace(screenD, mapLocalToPdf);
+      if (maskCmds.length > 0) {
+        commands.push(...maskCmds);
       }
     }
 
-    // Apply user rotation on top of intrinsic rotation
-    if (pageMeta.userRotation !== 0) {
-      const targetAngle = ((pageMeta.intrinsicRotation + pageMeta.userRotation) % 360) as RotationAngle;
-      pdfPage.setRotation(degrees(targetAngle));
+    if (commands.length === 0) {
+      const p0 = mapLocalToPdf(0, 0);
+      const p1 = mapLocalToPdf(el.width, 0);
+      const p2 = mapLocalToPdf(el.width, el.height);
+      const p3 = mapLocalToPdf(0, el.height);
+      commands.push(
+        { op: 'move-to' as const, x: p0.x, y: p0.y },
+        { op: 'line-to' as const, x: p1.x, y: p1.y },
+        { op: 'line-to' as const, x: p2.x, y: p2.y },
+        { op: 'line-to' as const, x: p3.x, y: p3.y },
+        { op: 'close' as const },
+      );
     }
+
+    clipPatches.push({
+      pageIndex,
+      markName: cropMarkTag,
+      evenOdd: false,
+      commands,
+    });
+
+    // Place underlying image aligned so `cropRect` fills `[0..el.width] x [0..el.height]`
+    const crop = el.cropRect ?? { x: 0, y: 0, width: 1, height: 1 };
+    const lw = el.width / Math.max(0.02, crop.width);
+    const lh = el.height / Math.max(0.02, crop.height);
+    const lx = -(crop.x / Math.max(0.02, crop.width)) * el.width;
+    const ly = -(crop.y / Math.max(0.02, crop.height)) * el.height;
+    const effLx = el.flipX ? el.width - (lx + lw) : lx;
+    const effLy = el.flipY ? el.height - (ly + lh) : ly;
+    const imgCenterVis = elementLocalToPage(effLx + lw / 2, effLy + lh / 2, el, el.rotation);
+
+    placePdfiumImage(
+      mod,
+      finalDoc,
+      pagePtr,
+      pageMeta,
+      el.bytes,
+      el.mimeType,
+      {
+        x: imgCenterVis.x - lw / 2,
+        y: imgCenterVis.y - lh / 2,
+        width: lw,
+        height: lh,
+      },
+      el.rotation,
+      el.opacity,
+      el.flipX,
+      el.flipY,
+      behindIndex,
+      cropMarkTag,
+    );
+  };
+
+  const clipPatches: Array<{
+    pageIndex: number;
+    markName: string;
+    evenOdd: boolean;
+    commands: Array<
+      | { op: 'move-to'; x: number; y: number }
+      | { op: 'line-to'; x: number; y: number }
+      | { op: 'curve-to'; cx1: number; cy1: number; cx2: number; cy2: number; x: number; y: number }
+      | { op: 'close' }
+    >;
+  }> = [];
+  const clipCounter = { next: 0 };
+
+  let savedBytes: Uint8Array;
+  try {
+    for (let i = 0; i < payload.pages.length; i++) {
+      const pageMeta = payload.pages[i];
+      const pagePtr = mod.FPDF_LoadPage(finalDoc, i);
+      if (!pagePtr) {
+        throw new Error(`PDFium failed loading page ${i + 1} for drawing.`);
+      }
+
+      try {
+        const pageEls = [...(elementsByPage.get(pageMeta.id) ?? [])].sort(
+          (a, b) => getLayerTierSafe(a) - getLayerTierSafe(b) || a.zIndex - b.zIndex,
+        );
+        const behindCounter = { next: 0 };
+        let modified = false;
+
+        for (const el of pageEls) {
+          const isBehind =
+            ((el.kind === 'image' || el.kind === 'image-replacement') &&
+              el.behindContent === true &&
+              !(el.kind === 'image-replacement' && el.deleted)) ||
+            (el.kind === 'shape-replacement' && el.behindContent === true && !el.deleted) ||
+            ((el.kind === 'shape' || el.kind === 'path') && el.behindContent === true);
+          const behindIndex = isBehind ? behindCounter : null;
+
+          switch (el.kind) {
+            case 'text-edit':
+            case 'text-add': {
+              await drawTextElementOnPage(pagePtr, pageMeta, el, behindIndex);
+              modified = true;
+              break;
+            }
+            case 'image-replacement': {
+              if (!el.deleted) {
+                drawImageOnPage(pagePtr, i, pageMeta, el, behindIndex, clipCounter, clipPatches);
+                modified = true;
+              }
+              break;
+            }
+            case 'image': {
+              drawImageOnPage(pagePtr, i, pageMeta, el, behindIndex, clipCounter, clipPatches);
+              modified = true;
+              break;
+            }
+            case 'signature': {
+              const sig: SignatureElement = el;
+              if (sig.svgPaths && sig.svgPaths.length > 0 && sig.viewBoxWidth && sig.viewBoxHeight) {
+                const sx = sig.width / Math.max(1, sig.viewBoxWidth);
+                const sy = sig.height / Math.max(1, sig.viewBoxHeight);
+                const mapLocal = (lx: number, ly: number) => {
+                  const vis = elementLocalToPage(lx * sx, ly * sy, sig, sig.rotation);
+                  return pointBaseVisualToPdfUserSpace(
+                    vis.x,
+                    vis.y,
+                    pageMeta.cropBox,
+                    pageMeta.intrinsicRotation,
+                  );
+                };
+                for (const sp of sig.svgPaths) {
+                  const cmds = parseSvgPathCommands(sp.d);
+                  const strokeAlpha = (sp.opacity ?? 1) * sig.opacity;
+                  drawSvgCommandsAsPdfiumPath(
+                    mod,
+                    pagePtr,
+                    cmds,
+                    mapLocal,
+                    sp.fill
+                      ? { fillColor: sp.color, fillAlpha: strokeAlpha }
+                      : {
+                          strokeColor: sp.color,
+                          strokeWidth: sp.strokeWidth * sx,
+                          strokeAlpha,
+                        },
+                    behindIndex,
+                  );
+                }
+              } else {
+                placePdfiumImage(
+                  mod,
+                  finalDoc,
+                  pagePtr,
+                  pageMeta,
+                  sig.pngBytes,
+                  'image/png',
+                  { x: sig.x, y: sig.y, width: sig.width, height: sig.height },
+                  sig.rotation,
+                  sig.opacity,
+                  false,
+                  false,
+                  behindIndex,
+                );
+              }
+              modified = true;
+              break;
+            }
+            case 'stroke': {
+              const stroke: StrokeElement = el;
+              const d = pointsToSmoothSvgPath(stroke.points, stroke.width, stroke.height);
+              const mapLocal = (lx: number, ly: number) => {
+                const vis = elementLocalToPage(lx, ly, stroke, stroke.rotation);
+                return pointBaseVisualToPdfUserSpace(
+                  vis.x,
+                  vis.y,
+                  pageMeta.cropBox,
+                  pageMeta.intrinsicRotation,
+                );
+              };
+              drawSvgCommandsAsPdfiumPath(
+                mod,
+                pagePtr,
+                parseSvgPathCommands(d),
+                mapLocal,
+                {
+                  strokeColor: stroke.strokeColor,
+                  strokeWidth: stroke.strokeWidth,
+                  strokeAlpha: stroke.opacity,
+                },
+                behindIndex,
+              );
+              modified = true;
+              break;
+            }
+            case 'shape-replacement': {
+              const shp: ShapeReplacementElement = el;
+              if (!shp.deleted) {
+                drawRectOnPdfiumPage(
+                  mod,
+                  pagePtr,
+                  pageMeta,
+                  { x: shp.x, y: shp.y, width: shp.width, height: shp.height },
+                  shp.rotation,
+                  {
+                    fillColor: shp.fillColor,
+                    strokeColor: shp.strokeColor,
+                    strokeWidth: shp.strokeWidth,
+                    opacity: shp.opacity,
+                  },
+                  behindIndex,
+                );
+                modified = true;
+              }
+              break;
+            }
+            case 'shape':
+            case 'path': {
+              const rawSvgPath =
+                el.kind === 'shape'
+                  ? shapeToSvgPath(el.shapeType, el.width, el.height, el.borderRadius ?? 0)
+                  : pathPointsToSvgPath(el.points, el.width, el.height, el.closed, el.smooth);
+              const svgPath =
+                el.kind === 'shape' && (el.flipX || el.flipY)
+                  ? flipSvgPath(rawSvgPath, el.width, el.height, el.flipX, el.flipY, 3)
+                  : rawSvgPath;
+              const fillColor = el.kind === 'shape' || el.closed ? el.fillColor : 'transparent';
+              const mapLocal = (lx: number, ly: number) => {
+                const vis = elementLocalToPage(lx, ly, el, el.rotation);
+                return pointBaseVisualToPdfUserSpace(
+                  vis.x,
+                  vis.y,
+                  pageMeta.cropBox,
+                  pageMeta.intrinsicRotation,
+                );
+              };
+              drawSvgCommandsAsPdfiumPath(
+                mod,
+                pagePtr,
+                parseSvgPathCommands(svgPath),
+                mapLocal,
+                {
+                  fillColor,
+                  fillAlpha: el.opacity,
+                  strokeColor: el.strokeColor,
+                  strokeWidth: el.strokeWidth,
+                  strokeAlpha: el.opacity,
+                  dashArray: strokeDashToArray(el.strokeDash, el.strokeWidth),
+                },
+                behindIndex,
+              );
+              modified = true;
+              break;
+            }
+            case 'highlight': {
+              const h: HighlightElement = el;
+              if (h.shape === 'redact') {
+                // Content stripped and solid black redaction box burned cleanly in Step 2
+                break;
+              }
+              drawRectOnPdfiumPage(
+                mod,
+                pagePtr,
+                pageMeta,
+                { x: h.x, y: h.y, width: h.width, height: h.height },
+                h.rotation,
+                {
+                  fillColor: h.fillColor,
+                  strokeColor: h.strokeColor,
+                  strokeWidth: h.strokeWidth,
+                  opacity: h.opacity,
+                  isHighlight: h.shape === 'highlight',
+                },
+                behindIndex,
+              );
+              modified = true;
+              break;
+            }
+          }
+        }
+
+        // Dynamic page numbering
+        if (payload.pageNumbering?.enabled) {
+          const rot = normalizeRotation(pageMeta.userRotation);
+          const effW = rot === 90 || rot === 270 ? pageMeta.baseHeight : pageMeta.baseWidth;
+          const effH = rot === 90 || rot === 270 ? pageMeta.baseWidth : pageMeta.baseHeight;
+          const pgLayout = computePageNumberLayout(
+            effW,
+            effH,
+            i,
+            payload.pages.length,
+            payload.pageNumbering,
+          );
+          if (pgLayout) {
+            const pair = await getFontPairSafe(payload.pageNumbering.fontFamily, false, false);
+            const safeTxt = filterTextForPdfFont(
+              pgLayout.text,
+              pair.primary.supportedCodePoints,
+            );
+            const textW = measureFontWidth(
+              mod,
+              pair.primary,
+              safeTxt,
+              payload.pageNumbering.fontSize,
+            );
+            let localX = 0;
+            if (pgLayout.align === 'center') {
+              localX = Math.max(0, (pgLayout.width - textW) / 2);
+            } else if (pgLayout.align === 'right') {
+              localX = Math.max(0, pgLayout.width - textW);
+            }
+            const dispX = pgLayout.x + localX;
+            const dispY = pgLayout.y + payload.pageNumbering.fontSize * 0.92;
+            const basePt = mapDisplayRotatedPointToBaseVisual(
+              dispX,
+              dispY,
+              pageMeta.baseWidth,
+              pageMeta.baseHeight,
+              rot,
+            );
+            emitTextRunAtVisualPoint(
+              mod,
+              finalDoc,
+              pagePtr,
+              pageMeta,
+              pair.primary.fontPtr,
+              payload.pageNumbering.fontSize,
+              safeTxt,
+              basePt.x,
+              basePt.y,
+              -rot,
+              1,
+              payload.pageNumbering.color,
+              payload.pageNumbering.opacity ?? 0.92,
+              scratchMatrixPtr,
+              null,
+            );
+            modified = true;
+          }
+        }
+
+        if (normalizeRotation(pageMeta.userRotation) !== 0) {
+          const totalRotDeg = normalizeRotation(
+            pageMeta.intrinsicRotation + pageMeta.userRotation,
+          );
+          mod.FPDFPage_SetRotation(pagePtr, Math.round(totalRotDeg / 90) % 4);
+          modified = true;
+        }
+
+        if (modified) {
+          mod.FPDFPage_GenerateContent(pagePtr);
+        }
+      } finally {
+        mod.FPDF_ClosePage(pagePtr);
+      }
+    }
+
+    savedBytes = savePdfiumDocToBytes(mod, finalDoc);
+  } finally {
+    for (const f of loadedFonts) {
+      mod.FPDFFont_Close(f.fontPtr);
+    }
+    mod.pdfium.wasmExports.free(scratchMatrixPtr);
+    mod.FPDF_CloseDocument(finalDoc);
+    freeFinalData();
   }
 
-  const savedBytes = await finalDoc.save({ useObjectStreams: true });
-
-  // Stage 4: Optional MuPDF Wasm garbage collection & stream compression
-  if (payload.optimizeWithMupdf !== false) {
-    const optDoc = mupdf.Document.openDocument(savedBytes, 'application/pdf');
-    try {
-      const optPdf = optDoc.asPDF();
-      if (optPdf) {
-        const optBuf = optPdf.saveToBuffer('garbage=3,compress');
-        try {
-          const raw = optBuf.asUint8Array();
-          const out = new Uint8Array(raw.byteLength);
-          out.set(raw);
-          return out;
-        } finally {
-          optBuf.destroy();
-        }
-      }
-    } finally {
-      optDoc.destroy();
-    }
+  // Step 4: Splice vector clipping paths cleanly for crop/mask images via gp_wasm
+  if (clipPatches.length > 0) {
+    const clipped = wasm.apply_pdf_clip_masks(savedBytes, clipPatches);
+    savedBytes = clipped instanceof Uint8Array ? clipped : new Uint8Array(clipped);
   }
 
   return savedBytes;
 }
 
+function getLayerTierSafe(el: CanvasElement): number {
+  if (el.layerOverride) return el.layerOverride;
+  if (el.kind === 'image' || el.kind === 'image-replacement' || el.kind === 'shape-replacement') {
+    return el.behindContent || el.isBackgroundLayer ? 1 : 2;
+  }
+  if ((el.kind === 'shape' || el.kind === 'path') && (el.behindContent || el.isBackgroundLayer)) {
+    return 1;
+  }
+  if (el.kind === 'text-edit' || el.kind === 'text-add') {
+    return 3;
+  }
+  return 4;
+}
+
 /**
  * Compiles one or more split/extract jobs and bundles multi-file outputs into a ZIP archive.
  */
-export async function splitPdfToZip(
-  mupdf: MuPdfModule,
-  payload: SplitPdfZipPayload,
-): Promise<Uint8Array> {
+export async function splitPdfToZip(payload: SplitPdfZipPayload): Promise<Uint8Array> {
   const zip = new JSZip();
 
   for (const job of payload.jobs) {
     const pageIds = new Set(job.pages.map((p) => p.id));
     const jobElements = payload.elements.filter((el) => pageIds.has(el.pageId));
-    const pdfBytes = await compilePdfDocument(mupdf, {
+    const pdfBytes = await compilePdfDocument({
       sourceDocs: payload.sourceDocs,
       pages: job.pages,
       elements: jobElements,
       fonts: payload.fonts,
       pageNumbering: payload.pageNumbering,
-      optimizeWithMupdf: true,
     });
     zip.file(job.filename, pdfBytes);
   }
@@ -1754,3 +2067,6 @@ export async function splitPdfToZip(
     compressionOptions: { level: 6 },
   });
 }
+
+// Keep unused type export from gp-wasm referenced cleanly for bundler tree-shaking
+export type { GpWasmModule };
