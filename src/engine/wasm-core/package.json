@@ -1,0 +1,16 @@
+{
+  "name": "gp-wasm",
+  "type": "module",
+  "version": "0.1.0",
+  "license": "MIT OR Apache-2.0",
+  "files": [
+    "gp_wasm_bg.wasm",
+    "gp_wasm.js",
+    "gp_wasm.d.ts"
+  ],
+  "main": "gp_wasm.js",
+  "types": "gp_wasm.d.ts",
+  "sideEffects": [
+    "./snippets/*"
+  ]
+}

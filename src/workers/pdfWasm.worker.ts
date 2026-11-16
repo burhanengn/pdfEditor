@@ -19,6 +19,7 @@ import {
   splitPdfToZip,
   type MuPdfModule,
 } from '@/engine/pdfCompiler';
+import { ensureRustCoreReady } from '@/engine/rustCoreBridge';
 import { extractTextBlocksFromMuPdfPage } from '@/engine/textExtractor';
 import { loadWorkerUnicodeFonts } from '@/engine/unicodeFonts';
 
@@ -30,7 +31,7 @@ async function getMuPdf(): Promise<MuPdfModule> {
       (globalThis as Record<string, unknown>).$libmupdf_wasm_Module = {
         locateFile: () => mupdfWasmUrl,
       };
-      const mod = await import('mupdf');
+      const [mod] = await Promise.all([import('mupdf'), ensureRustCoreReady()]);
       return (mod.default ?? mod) as MuPdfModule;
     })();
   }

@@ -1,0 +1,12 @@
+[package]
+name = "gp-engine"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gp-model = { path = "../gp-model" }
+gp-pdf = { path = "../gp-pdf" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }

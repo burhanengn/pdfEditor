@@ -1,0 +1,10 @@
+[package]
+name = "gp-text"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gp-model = { path = "../gp-model" }
+serde = { workspace = true }
+unicode-normalization = { workspace = true }

@@ -17,3 +17,11 @@ playwright/.cache/
 .env.*.local
 .DS_Store
 Thumbs.db
+
+# Rust / Native PDFium / Flutter build artifacts
+core/target/
+.pdfium-cache/
+mobile/.dart_tool/
+mobile/build/
+mobile/ios/Pods/
+mobile/android/.gradle/

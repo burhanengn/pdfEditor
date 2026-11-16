@@ -1,6 +1,7 @@
 /// <reference lib="webworker" />
 import pdfiumWasmUrl from '../../node_modules/@embedpdf/pdfium/dist/pdfium.wasm?url';
 import { PdfiumEngine } from '@/engine/pdfium/pdfiumEngine';
+import { ensureRustCoreReady } from '@/engine/rustCoreBridge';
 import type {
   PdfiumOpenResult,
   PdfLinkAnnotation,
@@ -66,9 +67,12 @@ const cancelledSearches = new Set<string>();
 
 async function ensureInit(): Promise<void> {
   if (!initPromise) {
-    initPromise = engine.init({
-      locateFile: () => pdfiumWasmUrl,
-    });
+    initPromise = Promise.all([
+      engine.init({
+        locateFile: () => pdfiumWasmUrl,
+      }),
+      ensureRustCoreReady(),
+    ]).then(() => undefined);
   }
   return initPromise;
 }

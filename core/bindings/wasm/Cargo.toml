@@ -1,0 +1,21 @@
+[package]
+name = "gp-wasm"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+gp-engine = { path = "../../crates/gp-engine" }
+gp-geom = { path = "../../crates/gp-geom" }
+gp-model = { path = "../../crates/gp-model" }
+gp-text = { path = "../../crates/gp-text" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde-wasm-bindgen = { workspace = true }
+wasm-bindgen = { workspace = true }
+
+[package.metadata.wasm-pack.profile.release]
+wasm-opt = ["-Os", "--enable-bulk-memory", "--enable-nontrapping-float-to-int"]

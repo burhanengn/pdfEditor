@@ -1,0 +1,9 @@
+[package]
+name = "gp-geom"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gp-model = { path = "../gp-model" }
+serde = { workspace = true }

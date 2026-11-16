@@ -35,11 +35,11 @@
 
 ## Faz F2 — Rust Çekirdek A (`gp-model`, `gp-geom`, `gp-text`, `bindings/wasm`)
 
-- [ ] **F2.1** Rust workspace kurulumu (`core/Cargo.toml`, `gp-model`, `gp-geom`, `gp-text`, `gp-pdf`, `gp-engine`, `bindings/wasm`)
-- [ ] **F2.2** `gp-model`: Doküman modeli (`PageMeta`, `CanvasElement`), `Command` + ters komut günlüğü ile undo/redo, seçim, `serde` oturum serileştirme
-- [ ] **F2.3** `gp-geom`: `coordinates.ts`, `snapGuides.ts`, `vectorShapes.ts`, `imageMask.ts` (`computeRotatedResizeRect`, hit-test, snapping, clipping mask) Rust portu + birim testleri
-- [ ] **F2.4** `gp-text`: `textExtractor.ts`, `richText.ts`, `fonts.ts`, `pageRange.ts`, `pageNumbers.ts` Rust portu + Türkçe arama katlama + birim testleri
-- [ ] **F2.5** `core/bindings/wasm` (`wasm-pack`) derlemesi, Web Worker entegrasyonu ve tüm mevcut Vitest eşdeğerlik testlerinin yeşil geçmesi
+- [x] **F2.1** Rust workspace kurulumu (`core/Cargo.toml`, `gp-model`, `gp-geom`, `gp-text`, `gp-pdf`, `gp-engine`, `bindings/wasm`)
+- [x] **F2.2** `gp-model`: Doküman modeli (`PageMeta`, `CanvasElement`), `Command` + ters komut günlüğü ile undo/redo, seçim, `serde` oturum serileştirme
+- [x] **F2.3** `gp-geom`: `coordinates.ts`, `snapGuides.ts`, `vectorShapes.ts`, `imageMask.ts` (`computeRotatedResizeRect`, hit-test, snapping, clipping mask) Rust portu + birim testleri
+- [x] **F2.4** `gp-text`: `textExtractor.ts`, `richText.ts`, `fonts.ts`, `pageRange.ts`, `pageNumbers.ts` Rust portu + Türkçe arama katlama + birim testleri
+- [x] **F2.5** `core/bindings/wasm` (`wasm-pack`) derlemesi, Web Worker entegrasyonu ve tüm mevcut Vitest eşdeğerlik testlerinin yeşil geçmesi
 
 ---
 
