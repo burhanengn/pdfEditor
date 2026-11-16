@@ -71,7 +71,7 @@ export function PageNumberingModal() {
               >
                 Sayfa Numarası Ekle (Dynamic Page Numbers)
               </h2>
-              <p className="text-[11px] text-slate-500 dark:text-slate-400">
+              <p className="text-xs text-slate-500 dark:text-slate-400">
                 Automatically updates when pages are reordered, duplicated, or deleted.
               </p>
             </div>
@@ -99,7 +99,7 @@ export function PageNumberingModal() {
                   type="button"
                   data-testid={`pgnum-pos-${opt.id}`}
                   onClick={() => setDraft((d) => ({ ...d, position: opt.id }))}
-                  className={`rounded-lg border px-2.5 py-2 text-[11px] font-medium transition ${
+                  className={`rounded-lg border px-2.5 py-2 text-xs font-medium transition ${
                     draft.position === opt.id
                       ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-300'
                       : 'border-slate-200 text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800'
@@ -284,7 +284,7 @@ export function PageNumberingModal() {
           </label>
 
           <div className="flex items-center justify-between rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 dark:border-slate-800 dark:bg-slate-950/60">
-            <span className="text-[11px] text-slate-500 dark:text-slate-400">Preview:</span>
+            <span className="text-xs text-slate-500 dark:text-slate-400">Preview:</span>
             <span
               data-testid="pgnum-sample-preview"
               style={{ color: draft.color }}

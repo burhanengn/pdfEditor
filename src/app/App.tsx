@@ -1,5 +1,5 @@
-import { useEffect, useRef } from 'react';
-import { AlertCircle, Loader2, X } from 'lucide-react';
+import { useEffect, useRef, useState } from 'react';
+import { AlertCircle, History, Loader2, Pencil, X } from 'lucide-react';
 import { RightInspector } from '@/components/inspector/RightInspector';
 import { MobileBottomDock } from '@/components/mobile/MobileBottomDock';
 import { MobileExportSheet } from '@/components/mobile/MobileExportSheet';
@@ -21,14 +21,27 @@ import {
 } from '@/components/viewport/DocumentViewport';
 import { exportCurrentPdf } from '@/engine/documentController';
 import { pdfjsService } from '@/engine/pdfjsService';
+import {
+  bindAutosaveAndBeforeUnload,
+  clearAutosaveSession,
+  loadAutosaveSession,
+  restoreAutosaveSession,
+  type RecoverableSessionSummary,
+} from '@/engine/sessionPersistence';
 import { wasmWorkerClient } from '@/engine/wasmWorkerClient';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { useI18n } from '@/i18n/useI18n';
 import { useEditorStore } from '@/store/useEditorStore';
 import { blobRegistry } from '@/utils/blobRegistry';
 import { loadUserCustomFonts } from '@/utils/customFontStorage';
 
 export default function App() {
+  const { t } = useI18n();
   const theme = useEditorStore((s) => s.theme);
+  const readingTheme = useEditorStore((s) => s.readingTheme);
+  const appMode = useEditorStore((s) => s.appMode);
+  const setAppMode = useEditorStore((s) => s.setAppMode);
+  const pages = useEditorStore((s) => s.pages);
   const isLoading = useEditorStore((s) => s.isLoading);
   const loadingMessage = useEditorStore((s) => s.loadingMessage);
   const errorBanner = useEditorStore((s) => s.errorBanner);
@@ -39,6 +52,8 @@ export default function App() {
   const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
   const isDesktopLg = useMediaQuery('(min-width: 1024px)');
   const prevSelectionLenRef = useRef(0);
+  const [recoverableSession, setRecoverableSession] =
+    useState<RecoverableSessionSummary | null>(null);
 
   const viewportRef = useRef<DocumentViewportHandle | null>(null);
 
@@ -68,12 +83,13 @@ export default function App() {
     }
   }, [selectedElementIds, isDesktopLg, setMobileSheet, setMobileInspectorSnap]);
 
-  // Sync Tailwind dark class
+  // Sync Tailwind dark & sepia theme classes
   useEffect(() => {
-    document.documentElement.classList.toggle('dark', theme === 'dark');
-  }, [theme]);
+    document.documentElement.classList.toggle('dark', theme === 'dark' && readingTheme !== 'sepia');
+    document.documentElement.classList.toggle('theme-sepia', readingTheme === 'sepia');
+  }, [theme, readingTheme]);
 
-  // Pre-warm Wasm Worker & hydrate user-uploaded custom fonts on mount
+  // Pre-warm Wasm Worker, hydrate user fonts, check session recovery, & bind autosave
   useEffect(() => {
     wasmWorkerClient.call('ping', {}).catch(() => {
       // Lazy retry on user action if pre-warm interrupted
@@ -87,7 +103,16 @@ export default function App() {
       .catch(() => {
         // Ignore IndexedDB unavailability
       });
+    loadAutosaveSession()
+      .then((summary) => {
+        if (summary && useEditorStore.getState().pages.length === 0) {
+          setRecoverableSession(summary);
+        }
+      })
+      .catch(() => {});
+    const unbindAutosave = bindAutosaveAndBeforeUnload();
     return () => {
+      unbindAutosave();
       blobRegistry.revokeAll();
       void pdfjsService.releaseAllDocuments();
     };
@@ -114,6 +139,12 @@ export default function App() {
       }
 
       if (isTyping) return;
+
+      if (!mod && e.key.toLowerCase() === 'e' && state.pages.length > 0) {
+        e.preventDefault();
+        state.setAppMode(state.appMode === 'view' ? 'edit' : 'view');
+        return;
+      }
 
       if (mod && e.key.toLowerCase() === 'z') {
         e.preventDefault();
@@ -206,6 +237,47 @@ export default function App() {
     <div className="flex h-dvh w-screen flex-col overflow-hidden overscroll-none bg-slate-100 text-slate-900 dark:bg-slate-950 dark:text-slate-100">
       <TopToolbar />
 
+      {recoverableSession && pages.length === 0 && (
+        <div
+          data-testid="session-recovery-banner"
+          role="region"
+          aria-label={t('action.resumeSession')}
+          className="flex flex-wrap items-center justify-between gap-2 border-b border-blue-500/30 bg-blue-50 px-4 py-2 text-xs text-slate-900 dark:bg-blue-950/60 dark:text-slate-100"
+        >
+          <div className="flex items-center gap-2">
+            <History className="h-4 w-4 shrink-0 text-blue-600 dark:text-blue-400" />
+            <span className="font-medium">
+              {t('session.recoveryPrompt', { name: recoverableSession.documentName })}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              data-testid="session-recovery-resume-btn"
+              onClick={() => {
+                const target = recoverableSession;
+                setRecoverableSession(null);
+                void restoreAutosaveSession(target);
+              }}
+              className="min-h-[36px] rounded-lg bg-blue-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-blue-500"
+            >
+              {t('action.resumeSession')}
+            </button>
+            <button
+              type="button"
+              data-testid="session-recovery-discard-btn"
+              onClick={() => {
+                setRecoverableSession(null);
+                void clearAutosaveSession();
+              }}
+              className="min-h-[36px] rounded-lg border border-slate-300 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+            >
+              {t('action.discardSession')}
+            </button>
+          </div>
+        </div>
+      )}
+
       {errorBanner && (
         <div
           role="alert"
@@ -231,8 +303,21 @@ export default function App() {
           onScrollToPage={(idx) => viewportRef.current?.scrollToPage(idx)}
         />
         <DocumentViewport ref={viewportRef} />
-        {isDesktopLg && <RightInspector variant="desktop" />}
+        {isDesktopLg && appMode === 'edit' && <RightInspector variant="desktop" />}
       </div>
+
+      {pages.length > 0 && appMode === 'view' && (
+        <button
+          type="button"
+          data-testid="mobile-edit-fab"
+          onClick={() => setAppMode('edit')}
+          aria-label={t('action.editPdf')}
+          className="fixed bottom-20 right-4 z-30 inline-flex min-h-[48px] items-center gap-2 rounded-full bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-xl hover:bg-blue-500 md:hidden"
+        >
+          <Pencil className="h-5 w-5" />
+          <span>{t('action.editPdf')}</span>
+        </button>
+      )}
 
       {!isDesktopLg && mobileSheet === 'inspector' && <MobileInspectorSheet />}
       <MobileBottomDock />

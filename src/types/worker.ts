@@ -2,6 +2,7 @@ import type { CanvasElement } from './elements';
 import type {
   DetectedTextBlock,
   DetectedVectorShape,
+  ExtractedPdfFont,
   PageMeta,
   RectBox,
   RotationAngle,
@@ -29,12 +30,14 @@ export interface VectorGeometry {
 export interface InspectPdfPayload {
   bytes: Uint8Array;
   password?: string;
+  sourceDocId?: string;
 }
 
 export interface InspectPdfResult {
   status: 'ok' | 'needs-password' | 'invalid-password';
   decryptedBytes?: Uint8Array;
   wasEncrypted: boolean;
+  registeredInWorker?: boolean;
   pageCount: number;
   pages: Array<{
     sourcePageIndex: number;
@@ -46,9 +49,28 @@ export interface InspectPdfResult {
   }>;
 }
 
+export interface RegisterSourceDocPayload {
+  sourceDocId: string;
+  bytes: Uint8Array;
+}
+
+export interface ReleaseSourceDocPayload {
+  sourceDocId: string;
+}
+
+export interface ExtractEmbeddedFontsPayload {
+  sourceDocId: string;
+  bytes?: Uint8Array;
+}
+
+export interface ExtractEmbeddedFontsResult {
+  fonts: ExtractedPdfFont[];
+  assets: FontAssetPayload[];
+}
+
 export interface CompileSourceDocInput {
   id: string;
-  bytes: Uint8Array;
+  bytes?: Uint8Array;
 }
 
 export interface FontAssetPayload {
@@ -61,7 +83,7 @@ export interface FontAssetPayload {
 
 export interface ExtractPageTextPayload {
   sourceDocId: string;
-  bytes: Uint8Array;
+  bytes?: Uint8Array;
   sourcePageIndex: number;
   pageId: string;
   horizontalRules?: HorizontalRule[];
@@ -71,7 +93,7 @@ export interface ExtractPageTextPayload {
 
 export interface PrepareCleanPagePayload {
   sourceDocId: string;
-  bytes: Uint8Array;
+  bytes?: Uint8Array;
   sourcePageIndex: number;
   textRects: RectBox[];
   imageRects: RectBox[];
@@ -103,7 +125,13 @@ export interface SplitPdfZipPayload {
 
 export interface WorkerRequestMap {
   ping: { payload: Record<string, never>; result: { ready: true; mupdfLoaded: boolean } };
+  registerSourceDoc: { payload: RegisterSourceDocPayload; result: { ok: true } };
+  releaseSourceDoc: { payload: ReleaseSourceDocPayload; result: { ok: true } };
   inspectPdf: { payload: InspectPdfPayload; result: InspectPdfResult };
+  extractEmbeddedFonts: {
+    payload: ExtractEmbeddedFontsPayload;
+    result: ExtractEmbeddedFontsResult;
+  };
   extractPageText: { payload: ExtractPageTextPayload; result: { textBlocks: DetectedTextBlock[] } };
   prepareCleanPage: { payload: PrepareCleanPagePayload; result: { bytes: Uint8Array } };
   compilePdf: { payload: CompilePdfPayload; result: { bytes: Uint8Array } };

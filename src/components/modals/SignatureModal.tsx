@@ -521,7 +521,7 @@ export function SignatureModal() {
                   setRealisticInk(next);
                   redrawCanvas(next);
                 }}
-                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-[11px] font-medium transition ${
+                className={`inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium transition ${
                   realisticInk
                     ? 'border-blue-500/60 bg-blue-50 text-blue-700 dark:border-blue-500/50 dark:bg-blue-950/60 dark:text-blue-200'
                     : 'border-slate-300 text-slate-600 dark:border-slate-700 dark:text-slate-400'
@@ -670,7 +670,7 @@ export function SignatureModal() {
                       >
                         {typedText || 'Signature'}
                       </span>
-                      <span className="mt-1 text-[10px] text-slate-400">{style.label}</span>
+                      <span className="mt-1 text-xs text-slate-400">{style.label}</span>
                     </button>
                   ))}
                 </div>
@@ -684,7 +684,7 @@ export function SignatureModal() {
                   <span className="text-xs font-medium text-slate-700 dark:text-slate-300">
                     Kağıda atılmış imza fotoğrafı veya görsel seçin (PNG, JPG, WebP)
                   </span>
-                  <span className="mt-0.5 text-[10px] text-slate-400">
+                  <span className="mt-0.5 text-xs text-slate-400">
                     Gölge, kağıt dokusu ve sarı/gri arka planı akıllıca temizler
                   </span>
                   <input
@@ -701,7 +701,7 @@ export function SignatureModal() {
 
                 <div className="grid grid-cols-1 gap-2 rounded-xl border border-slate-200 bg-slate-50/80 p-3 text-xs dark:border-slate-800 dark:bg-slate-950/60 sm:grid-cols-2">
                   <div>
-                    <span className="mb-1 block text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                    <span className="mb-1 block text-xs font-medium text-slate-500 dark:text-slate-400">
                       Arka Plan Temizleme Modu
                     </span>
                     <div className="flex flex-wrap gap-1">
@@ -717,7 +717,7 @@ export function SignatureModal() {
                           type="button"
                           data-testid={`signature-extract-mode-${opt.id}`}
                           onClick={() => setUploadExtractMode(opt.id)}
-                          className={`rounded-md border px-2 py-1 text-[11px] font-medium transition ${
+                          className={`rounded-md border px-2 py-1 text-xs font-medium transition ${
                             uploadExtractMode === opt.id
                               ? 'border-blue-500 bg-blue-600 text-white'
                               : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'
@@ -731,7 +731,7 @@ export function SignatureModal() {
 
                   {uploadExtractMode === 'smart' && (
                     <div>
-                      <div className="mb-1 flex items-center justify-between text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                      <div className="mb-1 flex items-center justify-between text-xs font-medium text-slate-500 dark:text-slate-400">
                         <span>Mürekkep Hassasiyeti</span>
                         <span>{Math.round(uploadSensitivity * 100)}%</span>
                       </div>
@@ -751,14 +751,14 @@ export function SignatureModal() {
                   {uploadExtractMode !== 'none' && (
                     <div className="flex flex-wrap items-center justify-between gap-2 sm:col-span-2">
                       <div className="flex flex-wrap items-center gap-1.5">
-                        <span className="text-[11px] font-medium text-slate-500 dark:text-slate-400">
+                        <span className="text-xs font-medium text-slate-500 dark:text-slate-400">
                           Mürekkep Rengi:
                         </span>
                         <button
                           type="button"
                           data-testid="signature-extract-tint-original"
                           onClick={() => setUploadInkTint('original')}
-                          className={`rounded-full border px-2 py-0.5 text-[10px] font-medium transition ${
+                          className={`rounded-full border px-2 py-0.5 text-xs font-medium transition ${
                             uploadInkTint === 'original'
                               ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
                               : 'border-slate-200 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300'
@@ -783,7 +783,7 @@ export function SignatureModal() {
                         ))}
                       </div>
 
-                      <label className="flex items-center gap-1.5 text-[11px] text-slate-600 dark:text-slate-300">
+                      <label className="flex items-center gap-1.5 text-xs text-slate-600 dark:text-slate-300">
                         <input
                           type="checkbox"
                           checked={uploadAutoCrop}
@@ -807,7 +807,7 @@ export function SignatureModal() {
                       data-testid="signature-upload-preview"
                       className="max-h-28 object-contain"
                     />
-                    <span className="absolute bottom-1.5 right-2 rounded bg-slate-900/75 px-1.5 py-0.5 text-[9px] font-medium text-white">
+                    <span className="absolute bottom-1.5 right-2 rounded bg-slate-900/75 px-1.5 py-0.5 text-xs font-medium text-white">
                       {uploadedPreview.width}×{uploadedPreview.height}px
                     </span>
                   </div>
@@ -854,7 +854,7 @@ export function SignatureModal() {
                       setBatchScopeMode(e.target.value as SignatureBatchScope['mode'])
                     }
                     aria-label="Apply scope"
-                    className="rounded border border-slate-300 bg-white px-2 py-1 text-[11px] text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                    className="rounded border border-slate-300 bg-white px-2 py-1 text-xs text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
                   >
                     <option value="all">All Pages (1–{pages.length})</option>
                     <option value="except-first">Exclude Cover (2–{pages.length})</option>
@@ -866,7 +866,7 @@ export function SignatureModal() {
                       value={batchRangeExpr}
                       onChange={(e) => setBatchRangeExpr(e.target.value)}
                       placeholder="e.g. 2-4, 6"
-                      className="w-24 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
+                      className="w-24 rounded border border-slate-300 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100"
                     />
                   )}
                 </div>
@@ -875,7 +875,7 @@ export function SignatureModal() {
                   disabled={!canCreate}
                   data-testid="signature-apply-all-btn"
                   onClick={handleCreateAndApplyAll}
-                  className="inline-flex items-center gap-1 rounded-md border border-blue-500/40 bg-blue-600/10 px-2.5 py-1 text-[11px] font-medium text-blue-700 hover:bg-blue-600/20 disabled:opacity-40 dark:text-blue-300"
+                  className="inline-flex items-center gap-1 rounded-md border border-blue-500/40 bg-blue-600/10 px-2.5 py-1 text-xs font-medium text-blue-700 hover:bg-blue-600/20 disabled:opacity-40 dark:text-blue-300"
                 >
                   Apply to Selected Pages
                 </button>
@@ -889,7 +889,7 @@ export function SignatureModal() {
               <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-500 dark:text-slate-400">
                 Vault ({savedSignatures.length})
               </h3>
-              <div className="inline-flex rounded bg-slate-200/80 p-0.5 text-[10px] dark:bg-slate-800">
+              <div className="inline-flex rounded bg-slate-200/80 p-0.5 text-xs dark:bg-slate-800">
                 {(['all', 'signature', 'initials'] as const).map((f) => (
                   <button
                     key={f}
@@ -930,7 +930,7 @@ export function SignatureModal() {
                         <span className="block truncate text-xs font-medium text-slate-700 dark:text-slate-200">
                           {sig.label}
                         </span>
-                        <span className="text-[10px] text-slate-400">
+                        <span className="text-xs text-slate-400">
                           {(sig.variant ?? 'signature') === 'initials' ? 'Paraf' : 'İmza'}
                           {sig.realisticInk ? ' • Wet Ink' : ''}
                         </span>
@@ -940,7 +940,7 @@ export function SignatureModal() {
                           <button
                             type="button"
                             onClick={() => enterInteractivePlacement(sig)}
-                            className="rounded bg-blue-600 px-2 py-1 text-[11px] font-medium text-white hover:bg-blue-500"
+                            className="rounded bg-blue-600 px-2 py-1 text-xs font-medium text-white hover:bg-blue-500"
                           >
                             Place
                           </button>

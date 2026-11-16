@@ -316,14 +316,14 @@ export function PathNodeEditorOverlay({
           left: `${Math.max(8, Math.min(baseWidth * zoom - 190, avgDispX - 85))}px`,
           top: `${Math.max(8, topMostDispY - 38)}px`,
         }}
-        className="pointer-events-auto flex items-center gap-2 rounded-full border border-blue-500/40 bg-slate-900/95 px-2.5 py-1 text-[11px] font-medium text-white shadow-xl"
+        className="pointer-events-auto flex items-center gap-2 rounded-full border border-blue-500/40 bg-slate-900/95 px-2.5 py-1 text-xs font-medium text-white shadow-xl"
       >
         <span className="text-slate-300">Nokta Düzenle</span>
         <button
           type="button"
           data-testid="finish-path-edit-btn"
           onClick={onClose}
-          className="inline-flex items-center gap-1 rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-blue-500"
+          className="inline-flex items-center gap-1 rounded-full bg-blue-600 px-2 py-0.5 text-xs font-semibold text-white hover:bg-blue-500"
         >
           <Check className="h-3 w-3" />
           Tamam

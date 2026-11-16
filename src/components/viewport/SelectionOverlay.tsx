@@ -420,7 +420,7 @@ export function SelectionOverlay({
             data-testid={`locked-badge-${element.id}`}
             onPointerDown={(e) => e.stopPropagation()}
             style={{ zIndex: 515 }}
-            className="absolute -top-7 left-0 flex items-center gap-1.5 rounded-md bg-amber-500 px-2 py-0.5 text-[10px] font-semibold text-slate-950 shadow"
+            className="absolute -top-7 left-0 flex items-center gap-1.5 rounded-md bg-amber-500 px-2 py-0.5 text-xs font-semibold text-slate-950 shadow"
           >
             <Lock className="h-3 w-3 shrink-0" />
             <span>Kilitli</span>
@@ -432,7 +432,7 @@ export function SelectionOverlay({
                   e.stopPropagation();
                   onUnlockElement();
                 }}
-                className="inline-flex items-center gap-0.5 rounded bg-slate-900/90 px-1.5 py-0.5 text-[9px] font-semibold text-amber-200 hover:bg-slate-900"
+                className="inline-flex items-center gap-0.5 rounded bg-slate-900/90 px-1.5 py-0.5 text-xs font-semibold text-amber-200 hover:bg-slate-900"
               >
                 <Unlock className="h-2.5 w-2.5" />
                 Kilidi Aç
@@ -470,7 +470,7 @@ export function SelectionOverlay({
               top: -54,
               transform: 'translateX(-50%)',
             }}
-            className="rounded bg-slate-900 px-1.5 py-0.5 text-[10px] font-semibold text-white shadow"
+            className="rounded bg-slate-900 px-1.5 py-0.5 text-xs font-semibold text-white shadow"
           >
             {liveAngle.toFixed(0)}°
           </div>

@@ -830,6 +830,29 @@ export async function registerExtractedPdfFontsInBrowser(
   }
 }
 
+export function populateExtractedFontRegistry(
+  fonts: ExtractedPdfFont[],
+  assets: FontAssetPayload[],
+): void {
+  const assetMap = new Map<string, FontAssetPayload>();
+  for (const a of assets) {
+    assetMap.set(a.family, a);
+  }
+  for (const font of fonts) {
+    const asset = assetMap.get(font.id);
+    if (!asset) continue;
+    extractedFontRegistry.set(font.id, {
+      meta: font,
+      variants: {
+        regular: asset.regular,
+        bold: asset.bold,
+        italic: asset.italic,
+        boldItalic: asset.boldItalic,
+      },
+    });
+  }
+}
+
 export function getExtractedFontAssetPayloads(fontIds?: string[]): FontAssetPayload[] {
   const out: FontAssetPayload[] = [];
   for (const [id, rec] of extractedFontRegistry.entries()) {

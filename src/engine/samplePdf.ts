@@ -23,7 +23,7 @@ function createGradientPngBytes(): Uint8Array {
 
       ctx.fillStyle = '#ffffff';
       ctx.font = 'bold 20px sans-serif';
-      ctx.fillText('AetherPDF Asset', 20, 62);
+      ctx.fillText('gullacpdf Asset', 20, 62);
       ctx.font = '13px sans-serif';
       ctx.fillStyle = 'rgba(255,255,255,0.9)';
       ctx.fillText('Embedded Raster XObject', 20, 88);
@@ -93,7 +93,7 @@ export async function generateSamplePdfBytes(): Promise<Uint8Array> {
   const embeddedImg = await doc.embedPng(imgBytes);
   p1.drawImage(embeddedImg, { x: 48, y: 410, width: 240, height: 140 });
 
-  p1.drawText('Document Reference: AETHER-2026-04', {
+  p1.drawText('Document Reference: GULLAC-2026-04', {
     x: 315,
     y: 525,
     size: 11,

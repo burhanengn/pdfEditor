@@ -48,6 +48,8 @@ import {
   type OpenPathSnapHit,
 } from '@/engine/vectorShapes';
 import { wasmWorkerClient } from '@/engine/wasmWorkerClient';
+import { perfMetrics } from '@/engine/perfMetrics';
+import { getSourceDocBytes } from '@/engine/sourceDocRegistry';
 import { useEditorStore } from '@/store/useEditorStore';
 import { createId } from '@/utils/id';
 import { ImageCropOverlay } from './ImageCropOverlay';
@@ -103,7 +105,10 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const layerRef = useRef<HTMLDivElement | null>(null);
 
-  const sourceBytes = useEditorStore((s) => s.sourceDocs[page.sourceDocId]?.bytes);
+  const sourceByteLength = useEditorStore((s) => s.sourceDocs[page.sourceDocId]?.byteLength ?? 0);
+  const sourceBytes = getSourceDocBytes(page.sourceDocId);
+  const appMode = useEditorStore((s) => s.appMode);
+  const analysisRequested = useEditorStore((s) => Boolean(s.analysisRequestedPages[page.id]));
   const toolMode = useEditorStore((s) => s.toolMode);
   const allElements = useEditorStore((s) => s.elements);
   const userFonts = useEditorStore((s) => s.userFonts);
@@ -365,7 +370,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
 
   // Prepare clean stripped 1-page PDF in MuPDF Worker whenever original text or images are edited/deleted
   useEffect(() => {
-    if (!sourceBytes) return;
+    if (!sourceByteLength) return;
     const reqKey = stripRequest.key;
     if (!reqKey) {
       setCleanPreview((prev) => {
@@ -381,7 +386,6 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
     wasmWorkerClient
       .call('prepareCleanPage', {
         sourceDocId: page.sourceDocId,
-        bytes: sourceBytes,
         sourcePageIndex: page.sourcePageIndex,
         textRects,
         imageRects,
@@ -404,7 +408,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
     return () => {
       cancelled = true;
     };
-  }, [sourceBytes, page.id, page.sourceDocId, page.sourcePageIndex, stripRequest.key]);
+  }, [sourceByteLength, page.id, page.sourceDocId, page.sourcePageIndex, stripRequest.key]);
 
   // Release stripped preview proxy on unmount
   useEffect(() => {
@@ -476,6 +480,9 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
               setCanvasPaperTransparent(true);
             }
             setRenderedStripKey(targetStripKeyForRender);
+            if (pageIndex === 0) {
+              perfMetrics.recordFirstPagePainted();
+            }
           }
         })
         .catch(() => {
@@ -506,15 +513,18 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   ]);
 
   // Lazily extract MuPDF StructuredText paragraphs + PDF.js XObject images & table rules
+  // ONLY when user has edit intent (appMode === 'edit' or explicit page analysis request) (F0.4).
   useEffect(() => {
-    if (!sourceBytes || extraction) return;
+    const activeBytes = getSourceDocBytes(page.sourceDocId);
+    if (!activeBytes || extraction) return;
+    if (appMode !== 'edit' && !analysisRequested) return;
     let cancelled = false;
 
     (async () => {
       const { images, shapes, horizontalRules, verticalRules, cellRects } =
         await pdfjsService.extractPageImagesAndRules(
           page.sourceDocId,
-          sourceBytes,
+          activeBytes,
           page.sourcePageIndex,
           page.id,
         );
@@ -523,7 +533,6 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       try {
         const { textBlocks } = await wasmWorkerClient.call('extractPageText', {
           sourceDocId: page.sourceDocId,
-          bytes: sourceBytes,
           sourcePageIndex: page.sourcePageIndex,
           pageId: page.id,
           horizontalRules,
@@ -543,7 +552,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       } catch {
         const fallback = await pdfjsService.extractPageContent(
           page.sourceDocId,
-          sourceBytes,
+          activeBytes,
           page.sourcePageIndex,
           page.id,
         );
@@ -565,7 +574,16 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
     return () => {
       cancelled = true;
     };
-  }, [page.id, page.sourceDocId, page.sourcePageIndex, sourceBytes, extraction, setPageExtraction]);
+  }, [
+    page.id,
+    page.sourceDocId,
+    page.sourcePageIndex,
+    sourceByteLength,
+    appMode,
+    analysisRequested,
+    extraction,
+    setPageExtraction,
+  ]);
 
   const isBaseStripped =
     stripRequest.key.length > 0 && renderedStripKey === stripRequest.key;
@@ -869,6 +887,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   };
 
   const handleLayerContextMenu = (e: ReactMouseEvent<HTMLDivElement>) => {
+    if (useEditorStore.getState().appMode !== 'edit') return;
     e.preventDefault();
     e.stopPropagation();
     setActivePage(page.id);
@@ -957,6 +976,12 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
       const pt = getBasePointFromEvent(e.clientX, e.clientY);
       placeSignatureAt(page.id, pt.x, pt.y);
       setHoverBasePoint(null);
+      return;
+    }
+
+    if (storeState.appMode === 'view' && toolMode === 'select') {
+      selectElements([]);
+      setEditingTextElementId(null);
       return;
     }
 
@@ -2052,7 +2077,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   };
 
   const renderDetectedOverlays = () => {
-    if (toolMode !== 'select' || pendingSignaturePlacement || !extraction) return null;
+    if (appMode !== 'edit' || toolMode !== 'select' || pendingSignaturePlacement || !extraction) return null;
 
     return (
       <>
@@ -2466,7 +2491,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
                 top: `${Math.max(8, dispPts[dispPts.length - 1].y + 14)}px`,
                 zIndex: 540,
               }}
-              className="flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900/95 px-2.5 py-1 text-[11px] font-medium text-white shadow-xl"
+              className="flex items-center gap-1.5 rounded-full border border-slate-700 bg-slate-900/95 px-2.5 py-1 text-xs font-medium text-white shadow-xl"
             >
               <button
                 type="button"
@@ -2475,7 +2500,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
                   ev.stopPropagation();
                   finishPenDraft(false);
                 }}
-                className="inline-flex items-center gap-1 rounded-full bg-blue-600 px-2 py-0.5 text-[10px] font-semibold text-white hover:bg-blue-500"
+                className="inline-flex items-center gap-1 rounded-full bg-blue-600 px-2 py-0.5 text-xs font-semibold text-white hover:bg-blue-500"
               >
                 <Check className="h-3 w-3" />
                 Tamamla
@@ -2489,7 +2514,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
                   setPenStartSnap(null);
                   setPenHoverSnap(null);
                 }}
-                className="inline-flex items-center gap-0.5 rounded-full bg-slate-700 px-2 py-0.5 text-[10px] text-slate-200 hover:bg-slate-600"
+                className="inline-flex items-center gap-0.5 rounded-full bg-slate-700 px-2 py-0.5 text-xs text-slate-200 hover:bg-slate-600"
               >
                 <X className="h-3 w-3" />
                 İptal
@@ -2566,7 +2591,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
           alt="Signature placement preview"
           className="h-full w-full object-fill"
         />
-        <span className="absolute -top-5 left-0 rounded bg-blue-600 px-1.5 py-0.5 text-[10px] font-medium text-white shadow whitespace-nowrap">
+        <span className="absolute -top-5 left-0 rounded bg-blue-600 px-1.5 py-0.5 text-xs font-medium text-white shadow whitespace-nowrap">
           Click to place (Esc to cancel)
         </span>
       </div>
@@ -2840,7 +2865,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
         )}
       </div>
 
-      <div className="mt-1.5 text-[11px] font-medium text-slate-500 dark:text-slate-400">
+      <div className="mt-1.5 text-xs font-medium text-slate-500 dark:text-slate-400">
         Page {pageIndex + 1}
       </div>
     </div>

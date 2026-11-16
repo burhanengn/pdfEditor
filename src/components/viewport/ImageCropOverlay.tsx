@@ -278,7 +278,7 @@ export function ImageCropOverlay({
       <div
         onPointerDown={(e) => e.stopPropagation()}
         style={{ transform: `rotate(${-frame.rotation}deg)` }}
-        className="absolute -bottom-12 left-1/2 flex -translate-x-1/2 items-center gap-1 whitespace-nowrap rounded-full border border-slate-700 bg-slate-900/95 px-2 py-1 text-[11px] text-white shadow-xl backdrop-blur"
+        className="absolute -bottom-12 left-1/2 flex -translate-x-1/2 items-center gap-1 whitespace-nowrap rounded-full border border-slate-700 bg-slate-900/95 px-2 py-1 text-xs text-white shadow-xl backdrop-blur"
       >
         <button
           type="button"

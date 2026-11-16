@@ -13,6 +13,10 @@ export type ToolMode =
 
 export type ZoomMode = 'custom' | 'fit-width' | 'fit-page';
 
+export type AppMode = 'view' | 'edit';
+
+export type ReadingTheme = 'light' | 'dark' | 'sepia';
+
 export type ThemeMode = 'dark' | 'light';
 
 export type BuiltinFontFamilyOption =
@@ -85,7 +89,16 @@ export interface TextRun {
 export interface SourceDocument {
   id: string;
   name: string;
-  bytes: Uint8Array;
+  byteLength: number;
+  wasEncrypted: boolean;
+  pageCount: number;
+}
+
+export interface SourceDocumentInput {
+  id: string;
+  name: string;
+  bytes?: Uint8Array;
+  byteLength?: number;
   wasEncrypted: boolean;
   pageCount: number;
 }

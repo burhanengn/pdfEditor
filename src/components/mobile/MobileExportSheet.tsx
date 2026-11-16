@@ -36,7 +36,7 @@ export function MobileExportSheet() {
             <h2 className="truncate text-sm font-semibold text-slate-900 dark:text-slate-100">
               Dışa Aktar & Paylaş
             </h2>
-            <p className="truncate text-[11px] text-slate-500 dark:text-slate-400">
+            <p className="truncate text-xs text-slate-500 dark:text-slate-400">
               {documentName} • {pages.length} sayfa
             </p>
           </div>

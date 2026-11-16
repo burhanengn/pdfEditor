@@ -12,6 +12,7 @@ import { FilePlus } from 'lucide-react';
 import { insertBlankPageInDocument, mergePdfFile } from '@/engine/documentController';
 import { useEditorStore } from '@/store/useEditorStore';
 import { ThumbnailItem } from '@/components/sidebar/ThumbnailItem';
+import { VirtualThumbnailGrid } from '@/components/sidebar/VirtualThumbnailGrid';
 
 export function PageOrganizeModal() {
   const open = useEditorStore((s) => s.organizeModalOpen);
@@ -146,8 +147,14 @@ export function PageOrganizeModal() {
           </div>
         </div>
 
-        <div className="grid flex-1 grid-cols-2 gap-4 overflow-y-auto bg-slate-100 p-6 dark:bg-slate-950 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
-          {pages.map((page, index) => (
+        <VirtualThumbnailGrid
+          pages={pages}
+          minColumnWidthPx={185}
+          maxColumns={5}
+          estimateRowHeightPx={270}
+          gapPx={16}
+          className="bg-slate-100 p-6 dark:bg-slate-950"
+          renderItem={(page, index) => (
             <div
               key={page.id}
               draggable
@@ -188,8 +195,8 @@ export function PageOrganizeModal() {
                 onDelete={() => deletePages([page.id])}
               />
             </div>
-          ))}
-        </div>
+          )}
+        />
       </div>
     </div>
   );

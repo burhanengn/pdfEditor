@@ -1,3 +1,5 @@
+@import './styles/tokens.css';
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
@@ -11,6 +13,9 @@
     width: 100%;
     overflow: hidden;
     overscroll-behavior: none;
+    font-family: var(--gp-font-sans);
+    font-size: var(--gp-text-body-size);
+    line-height: var(--gp-text-body-line);
   }
 
   * {
@@ -26,15 +31,15 @@
   padding-bottom: env(safe-area-inset-bottom, 0px);
 }
 
-/* Enlarged invisible 36x36px touch hit zone on coarse pointers / phones while keeping 10px visual handles crisp */
+/* Enlarged invisible 44x44px touch hit zone on coarse pointers / phones while keeping 12-14px visual handles crisp */
 @media (pointer: coarse), (max-width: 767px) {
   .touch-handle-target::after {
     content: '';
     position: absolute;
     left: 50%;
     top: 50%;
-    width: 36px;
-    height: 36px;
+    width: 44px;
+    height: 44px;
     transform: translate(-50%, -50%);
     background: transparent;
   }

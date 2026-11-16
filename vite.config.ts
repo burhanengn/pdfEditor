@@ -24,10 +24,10 @@ export default defineConfig({
         'icons/apple-touch-icon.png',
       ],
       manifest: {
-        name: 'gullacpdf — Wasm PDF Studio',
+        name: 'gullacpdf — Client-Side PDF Studio',
         short_name: 'gullacpdf',
         description:
-          'gullacpdf (GüllaçPdf) — Client-side Wasm PDF editor for text, images, signatures, and page management.',
+          'gullacpdf — Zero-backend client-side PDF viewer and editor for text, images, signatures, and page management.',
         theme_color: '#2563EB',
         background_color: '#0F172A',
         display: 'standalone',

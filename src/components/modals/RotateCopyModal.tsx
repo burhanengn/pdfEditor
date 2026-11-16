@@ -74,7 +74,7 @@ export function RotateCopyModal() {
               >
                 Döndürme Açısı (°)
               </label>
-              <span className="text-[11px] text-slate-400">
+              <span className="text-xs text-slate-400">
                 Pozitif = Saat yönü, Negatif = Saat tersi
               </span>
             </div>
@@ -94,7 +94,7 @@ export function RotateCopyModal() {
                     key={deg}
                     type="button"
                     onClick={() => setAngleDeg(deg)}
-                    className={`rounded-md border px-2 py-1 text-[11px] font-medium transition ${
+                    className={`rounded-md border px-2 py-1 text-xs font-medium transition ${
                       angleDeg === deg
                         ? 'border-blue-500 bg-blue-600 text-white'
                         : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
@@ -115,7 +115,7 @@ export function RotateCopyModal() {
               >
                 Kopya Adedi
               </label>
-              <span className="text-[11px] text-slate-400">
+              <span className="text-xs text-slate-400">
                 Örn: 45° × 7 kopya = 8’li rozet
               </span>
             </div>
@@ -136,7 +136,7 @@ export function RotateCopyModal() {
                     key={n}
                     type="button"
                     onClick={() => setCopies(n)}
-                    className={`rounded-md border px-2.5 py-1 text-[11px] font-medium transition ${
+                    className={`rounded-md border px-2.5 py-1 text-xs font-medium transition ${
                       copies === n
                         ? 'border-blue-500 bg-blue-600 text-white'
                         : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
@@ -160,7 +160,7 @@ export function RotateCopyModal() {
                   type="button"
                   data-testid={`rotate-copy-pivot-${opt.id}`}
                   onClick={() => setPivot(opt.id)}
-                  className={`rounded-lg border px-1.5 py-1.5 text-[11px] font-medium transition ${
+                  className={`rounded-lg border px-1.5 py-1.5 text-xs font-medium transition ${
                     pivot === opt.id
                       ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
                       : 'border-slate-200 bg-white text-slate-600 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300'

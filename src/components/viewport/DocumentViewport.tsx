@@ -618,7 +618,7 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
             type="button"
             data-testid="banner-cancel-signature-btn"
             onClick={cancelPendingSignaturePlacement}
-            className="shrink-0 rounded-full bg-white/15 px-2.5 py-1 text-[11px] font-semibold text-sky-200 hover:bg-white/25"
+            className="shrink-0 rounded-full bg-white/15 px-2.5 py-1 text-xs font-semibold text-sky-200 hover:bg-white/25"
           >
             İptal
           </button>
@@ -668,7 +668,7 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
                 Load Sample PDF
               </button>
             </div>
-            <div className="mt-3 flex flex-wrap items-center justify-center gap-1.5 text-[11px]">
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-1.5 text-xs">
               <span className="text-slate-400 dark:text-slate-500">Sayfa boyutu:</span>
               {(
                 [

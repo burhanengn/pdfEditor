@@ -59,7 +59,7 @@ export function MobileInspectorSheet() {
         className="z-30 flex items-center justify-between gap-2 border-t border-slate-200 bg-white/95 px-3 py-1.5 shadow-lg backdrop-blur dark:border-slate-800 dark:bg-slate-950/95 lg:hidden"
       >
         <div className="flex items-center gap-1.5 overflow-x-auto">
-          <span className="shrink-0 rounded-md bg-blue-500/15 px-2 py-1 text-[11px] font-semibold text-blue-600 dark:text-blue-400">
+          <span className="shrink-0 rounded-md bg-blue-500/15 px-2 py-1 text-xs font-semibold text-blue-600 dark:text-blue-400">
             {label}
           </span>
 
@@ -133,7 +133,7 @@ export function MobileInspectorSheet() {
             <>
               {selectedEl.kind === 'shape-replacement' && (
                 <label className="flex min-h-[40px] items-center gap-1 rounded-lg border border-slate-200 bg-slate-50 px-2 dark:border-slate-700 dark:bg-slate-900">
-                  <span className="text-[11px] font-medium text-slate-600 dark:text-slate-300">
+                  <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
                     Renk
                   </span>
                   <input

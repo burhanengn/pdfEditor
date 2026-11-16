@@ -76,7 +76,7 @@ export function ThumbnailSidebar({ onScrollToPage }: ThumbnailSidebarProps) {
             title="Aktif sayfanın ardından boş sayfa ekle"
             data-testid="sidebar-add-blank-page-btn"
             onClick={() => void insertBlankPageInDocument()}
-            className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[11px] font-medium text-emerald-600 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/50"
+            className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs font-medium text-emerald-600 hover:bg-emerald-50 dark:text-emerald-400 dark:hover:bg-emerald-950/50"
           >
             <FilePlus className="h-3.5 w-3.5" />
             + Boş
@@ -85,7 +85,7 @@ export function ThumbnailSidebar({ onScrollToPage }: ThumbnailSidebarProps) {
             type="button"
             title="Merge PDF into document"
             onClick={() => mergeInputRef.current?.click()}
-            className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-[11px] font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950/50"
+            className="inline-flex items-center gap-1 rounded px-1.5 py-1 text-xs font-medium text-blue-600 hover:bg-blue-50 dark:text-blue-400 dark:hover:bg-blue-950/50"
           >
             <FilePlus2 className="h-3.5 w-3.5" />
             Merge
@@ -111,7 +111,7 @@ export function ThumbnailSidebar({ onScrollToPage }: ThumbnailSidebarProps) {
             type="button"
             data-testid="sidebar-blank-start-btn"
             onClick={() => void createBlankDocument()}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-50 px-2.5 py-1.5 text-[11px] font-semibold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-700/50 dark:bg-emerald-950/50 dark:text-emerald-300 dark:hover:bg-emerald-900/60"
+            className="inline-flex items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-50 px-2.5 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-100 dark:border-emerald-700/50 dark:bg-emerald-950/50 dark:text-emerald-300 dark:hover:bg-emerald-900/60"
           >
             <FilePlus className="h-3.5 w-3.5" />
             Boş Sayfa ile Başla

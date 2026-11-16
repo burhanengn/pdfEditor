@@ -1,0 +1,127 @@
+:root {
+  --gp-font-sans: system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --gp-font-mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+
+  /* 4px spacing grid */
+  --gp-space-1: 4px;
+  --gp-space-2: 8px;
+  --gp-space-3: 12px;
+  --gp-space-4: 16px;
+  --gp-space-5: 20px;
+  --gp-space-6: 24px;
+  --gp-space-8: 32px;
+  --gp-space-11: 44px;
+  --gp-space-12: 48px;
+  --gp-space-14: 56px;
+
+  /* Typography scale — minimum 12px enforced */
+  --gp-text-title-l-size: 20px;
+  --gp-text-title-l-line: 28px;
+  --gp-text-title-m-size: 16px;
+  --gp-text-title-m-line: 24px;
+  --gp-text-body-size: 14px;
+  --gp-text-body-line: 20px;
+  --gp-text-label-size: 13px;
+  --gp-text-label-line: 18px;
+  --gp-text-caption-size: 12px;
+  --gp-text-caption-line: 16px;
+
+  /* Component tokens */
+  --gp-toolbar-height: 48px;
+  --gp-desktop-toolbar-height: 56px;
+  --gp-sheet-radius: 16px;
+  --gp-touch-min: 44px;
+  --gp-handle-size: 12px;
+  --gp-motion-duration: 180ms;
+
+  /* Light semantic theme */
+  --gp-surface: #f8fafc;
+  --gp-surface-raised: #ffffff;
+  --gp-surface-overlay: #ffffff;
+  --gp-paper-backdrop: #e2e8f0;
+  --gp-text-primary: #0f172a;
+  --gp-text-secondary: #475569;
+  --gp-text-disabled: #94a3b8;
+  --gp-border: #cbd5e1;
+  --gp-border-subtle: #e2e8f0;
+  --gp-accent: #2563eb;
+  --gp-accent-hover: #1d4ed8;
+  --gp-accent-fg: #ffffff;
+  --gp-danger: #dc2626;
+  --gp-success: #16a34a;
+  --gp-warning: #d97706;
+  --gp-focus-ring: #2563eb;
+}
+
+@media (max-width: 767px) {
+  :root {
+    --gp-text-body-size: 16px;
+    --gp-text-body-line: 24px;
+    --gp-text-label-size: 14px;
+    --gp-text-label-line: 20px;
+  }
+}
+
+@media (pointer: coarse) {
+  :root {
+    --gp-handle-size: 14px;
+  }
+}
+
+:root.dark {
+  --gp-surface: #090d16;
+  --gp-surface-raised: #0f172a;
+  --gp-surface-overlay: #1e293b;
+  --gp-paper-backdrop: #0f172a;
+  --gp-text-primary: #f8fafc;
+  --gp-text-secondary: #cbd5e1;
+  --gp-text-disabled: #64748b;
+  --gp-border: #334155;
+  --gp-border-subtle: #1e293b;
+  --gp-accent: #3b82f6;
+  --gp-accent-hover: #60a5fa;
+  --gp-accent-fg: #ffffff;
+  --gp-danger: #ef4444;
+  --gp-success: #22c55e;
+  --gp-warning: #f59e0b;
+  --gp-focus-ring: #60a5fa;
+}
+
+:root.theme-sepia {
+  --gp-surface: #2b241c;
+  --gp-surface-raised: #362d23;
+  --gp-surface-overlay: #42372b;
+  --gp-paper-backdrop: #231d16;
+  --gp-text-primary: #faf3e8;
+  --gp-text-secondary: #d9c9b2;
+  --gp-text-disabled: #8c7d6a;
+  --gp-border: #5a4b3c;
+  --gp-border-subtle: #473b2e;
+  --gp-accent: #3b82f6;
+  --gp-accent-hover: #60a5fa;
+  --gp-accent-fg: #ffffff;
+  --gp-danger: #f87171;
+  --gp-success: #4ade80;
+  --gp-warning: #fbbf24;
+  --gp-focus-ring: #93c5fd;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --gp-motion-duration: 0ms;
+  }
+}
+
+@media (prefers-contrast: more) {
+  :root {
+    --gp-border: #475569;
+  }
+  :root.dark {
+    --gp-border: #94a3b8;
+  }
+}
+
+.gp-focus-ring:focus-visible {
+  outline: 2px solid var(--gp-focus-ring);
+  outline-offset: 2px;
+}

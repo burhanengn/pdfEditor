@@ -1199,6 +1199,9 @@ export async function compilePdfDocument(
   // Stage 1: Load source documents and assemble selected pages in current order
   const loadedSources = new Map<string, PDFDocument>();
   for (const src of payload.sourceDocs) {
+    if (!src.bytes) {
+      throw new Error(`Missing source document bytes for "${src.id}" during compilation.`);
+    }
     const doc = await PDFDocument.load(src.bytes, { ignoreEncryption: true });
     loadedSources.set(src.id, doc);
   }
@@ -1254,7 +1257,7 @@ export async function compilePdfDocument(
       if (parts.length >= 2) neededDocIds.add(parts[1]);
     }
     for (const src of payload.sourceDocs) {
-      if (neededDocIds.has(src.id)) {
+      if (neededDocIds.has(src.id) && src.bytes) {
         await extractEmbeddedFontsFromPdfBytes(src.id, src.bytes);
       }
     }

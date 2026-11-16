@@ -1,5 +1,5 @@
 import type { ImageAddElement } from '@/types/elements';
-import type { PageMeta, SourceDocument, ToolMode } from '@/types/pdf';
+import type { AppMode, PageMeta, SourceDocumentInput, ToolMode } from '@/types/pdf';
 import { generateBlankPdfBytes, type BlankPagePreset } from './blankPdf';
 import { getDisplayDimensions } from './coordinates';
 import { useEditorStore } from '@/store/useEditorStore';
@@ -11,12 +11,15 @@ import {
 } from '@/utils/customFontStorage';
 import { createId } from '@/utils/id';
 import {
-  extractEmbeddedFontsFromPdfBytes,
   getExtractedFontAssetPayloads,
+  populateExtractedFontRegistry,
   registerExtractedPdfFontsInBrowser,
 } from './embeddedFontExtractor';
 import { parsePageRangeExpression } from './pageRange';
 import { pdfjsService } from './pdfjsService';
+import { perfMetrics } from './perfMetrics';
+import { markSessionCleanSnapshot } from './sessionPersistence';
+import { getSourceDocBytes } from './sourceDocRegistry';
 import { wasmWorkerClient } from './wasmWorkerClient';
 
 function triggerDownload(bytes: Uint8Array, filename: string, mimeType: string): void {
@@ -59,17 +62,43 @@ function buildPagesFromInspect(
   }));
 }
 
+function hydrateEmbeddedFontsInBackground(sourceDocId: string): void {
+  wasmWorkerClient
+    .call('extractEmbeddedFonts', { sourceDocId })
+    .then(async ({ fonts, assets }) => {
+      if (fonts.length === 0) return;
+      // Ignore stale extraction if document has already been unloaded
+      if (!useEditorStore.getState().sourceDocs[sourceDocId]) return;
+      populateExtractedFontRegistry(fonts, assets);
+      await registerExtractedPdfFontsInBrowser(fonts);
+      useEditorStore.getState().setExtractedFontsForDoc(sourceDocId, fonts);
+    })
+    .catch(() => {
+      // Non-fatal: built-in fallback fonts remain usable
+    });
+}
+
 export async function openPdfBytes(
   fileName: string,
   bytes: Uint8Array,
   password?: string,
+  options?: { initialMode?: AppMode },
 ): Promise<void> {
+  perfMetrics.markDocOpenStart(fileName);
   const store = useEditorStore.getState();
-  store.setLoading(true, `Inspecting ${fileName} in Wasm…`);
+  const previousDocIds = Object.keys(store.sourceDocs);
+  store.setLoading(true, `Inspecting ${fileName}…`);
   store.setErrorBanner(null);
 
   try {
-    const result = await wasmWorkerClient.call('inspectPdf', { bytes, password });
+    const sourceDocId = createId('src');
+    const transferCopy = bytes.slice();
+    const result = await wasmWorkerClient.call(
+      'inspectPdf',
+      { bytes: transferCopy, password, sourceDocId },
+      120_000,
+      [transferCopy.buffer],
+    );
     if (result.status === 'needs-password' || result.status === 'invalid-password') {
       store.setPasswordPrompt({
         fileName,
@@ -80,9 +109,12 @@ export async function openPdfBytes(
       return;
     }
 
+    for (const oldId of previousDocIds) {
+      void wasmWorkerClient.releaseSourceDoc(oldId);
+    }
+
     const effectiveBytes = result.decryptedBytes ?? bytes;
-    const sourceDocId = createId('src');
-    const sourceDoc: SourceDocument = {
+    const sourceDoc: SourceDocumentInput = {
       id: sourceDocId,
       name: fileName,
       bytes: effectiveBytes,
@@ -91,11 +123,10 @@ export async function openPdfBytes(
     };
     const pages = buildPagesFromInspect(sourceDocId, result.pages);
     await pdfjsService.releaseAllDocuments();
-    store.loadInitialDocument(sourceDoc, pages);
+    store.loadInitialDocument(sourceDoc, pages, { initialMode: options?.initialMode });
+    markSessionCleanSnapshot();
 
-    const extractedFonts = await extractEmbeddedFontsFromPdfBytes(sourceDocId, effectiveBytes);
-    await registerExtractedPdfFontsInBrowser(extractedFonts);
-    useEditorStore.getState().setExtractedFontsForDoc(sourceDocId, extractedFonts);
+    hydrateEmbeddedFontsInBackground(sourceDocId);
   } catch (err) {
     store.setErrorBanner(err instanceof Error ? err.message : 'Failed to open PDF document.');
   } finally {
@@ -118,7 +149,14 @@ export async function mergePdfBytes(
   store.setErrorBanner(null);
 
   try {
-    const result = await wasmWorkerClient.call('inspectPdf', { bytes, password });
+    const sourceDocId = createId('src');
+    const transferCopy = bytes.slice();
+    const result = await wasmWorkerClient.call(
+      'inspectPdf',
+      { bytes: transferCopy, password, sourceDocId },
+      120_000,
+      [transferCopy.buffer],
+    );
     if (result.status === 'needs-password' || result.status === 'invalid-password') {
       store.setPasswordPrompt({
         fileName,
@@ -130,8 +168,7 @@ export async function mergePdfBytes(
     }
 
     const effectiveBytes = result.decryptedBytes ?? bytes;
-    const sourceDocId = createId('src');
-    const sourceDoc: SourceDocument = {
+    const sourceDoc: SourceDocumentInput = {
       id: sourceDocId,
       name: fileName,
       bytes: effectiveBytes,
@@ -141,9 +178,7 @@ export async function mergePdfBytes(
     const pages = buildPagesFromInspect(sourceDocId, result.pages);
     store.appendMergedDocument(sourceDoc, pages, insertAt);
 
-    const extractedFonts = await extractEmbeddedFontsFromPdfBytes(sourceDocId, effectiveBytes);
-    await registerExtractedPdfFontsInBrowser(extractedFonts);
-    useEditorStore.getState().setExtractedFontsForDoc(sourceDocId, extractedFonts);
+    hydrateEmbeddedFontsInBackground(sourceDocId);
   } catch (err) {
     store.setErrorBanner(err instanceof Error ? err.message : 'Failed to merge PDF document.');
   } finally {
@@ -184,7 +219,7 @@ export async function createBlankDocument(options?: {
     height: options?.height,
     pageCount: 1,
   });
-  await openPdfBytes(options?.fileName ?? 'Bos-Belge.pdf', bytes);
+  await openPdfBytes(options?.fileName ?? 'Bos-Belge.pdf', bytes, undefined, { initialMode: 'edit' });
   if (options?.initialToolMode) {
     useEditorStore.getState().setToolMode(options.initialToolMode);
   }
@@ -284,36 +319,61 @@ export async function removeUserCustomFont(fontId: string): Promise<void> {
   useEditorStore.getState().setUserFonts(nextFonts);
 }
 
+function buildWorkerSourceDocRefs(usedDocIds: Set<string>): {
+  sourceDocs: Array<{ id: string; bytes?: Uint8Array }>;
+  transfer: Transferable[];
+} {
+  const transfer: Transferable[] = [];
+  const sourceDocs: Array<{ id: string; bytes?: Uint8Array }> = [];
+  for (const id of usedDocIds) {
+    if (wasmWorkerClient.isSourceDocRegistered(id)) {
+      sourceDocs.push({ id });
+    } else {
+      const raw = getSourceDocBytes(id);
+      if (raw) {
+        const copy = raw.slice();
+        transfer.push(copy.buffer);
+        sourceDocs.push({ id, bytes: copy });
+      }
+    }
+  }
+  return { sourceDocs, transfer };
+}
+
 export async function compileCurrentDocumentBytes(): Promise<Uint8Array> {
   const state = useEditorStore.getState();
   const usedDocIds = new Set(state.pages.map((p) => p.sourceDocId));
-  const sourceDocs = [...usedDocIds]
-    .map((id) => state.sourceDocs[id])
-    .filter(Boolean)
-    .map((d) => ({ id: d.id, bytes: d.bytes }));
+  const { sourceDocs, transfer } = buildWorkerSourceDocRefs(usedDocIds);
   const customFonts = collectCustomExportFontPayloads(state.elements, state.pageNumbering);
 
-  const { bytes } = await wasmWorkerClient.call('compilePdf', {
-    sourceDocs,
-    pages: state.pages,
-    elements: state.elements,
-    fonts: customFonts.length > 0 ? customFonts : undefined,
-    optimizeWithMupdf: true,
-    pageNumbering: state.pageNumbering,
-  });
+  const { bytes } = await wasmWorkerClient.call(
+    'compilePdf',
+    {
+      sourceDocs,
+      pages: state.pages,
+      elements: state.elements,
+      fonts: customFonts.length > 0 ? customFonts : undefined,
+      optimizeWithMupdf: true,
+      pageNumbering: state.pageNumbering,
+    },
+    120_000,
+    transfer,
+  );
   return bytes;
 }
 
 export async function exportCurrentPdf(): Promise<void> {
   const store = useEditorStore.getState();
   if (store.pages.length === 0) return;
-  store.setLoading(true, 'Compiling & optimizing PDF in Wasm Worker…');
+  store.setLoading(true, 'Preparing PDF…');
   store.setErrorBanner(null);
 
   try {
     const bytes = await compileCurrentDocumentBytes();
     const baseName = store.documentName.replace(/\.pdf$/i, '') || 'document';
     triggerDownload(bytes, `${baseName}-edited.pdf`, 'application/pdf');
+    useEditorStore.getState().markDocumentSaved();
+    markSessionCleanSnapshot();
   } catch (err) {
     store.setErrorBanner(err instanceof Error ? err.message : 'Failed to export PDF.');
   } finally {
@@ -393,13 +453,10 @@ export async function exportSplitDocuments(
   }
 
   const usedDocIds = new Set(store.pages.map((p) => p.sourceDocId));
-  const sourceDocs = [...usedDocIds]
-    .map((id) => store.sourceDocs[id])
-    .filter(Boolean)
-    .map((d) => ({ id: d.id, bytes: d.bytes }));
+  const { sourceDocs, transfer } = buildWorkerSourceDocRefs(usedDocIds);
   const baseName = store.documentName.replace(/\.pdf$/i, '') || 'document';
 
-  store.setLoading(true, 'Extracting & bundling pages in Wasm Worker…');
+  store.setLoading(true, 'Extracting & bundling pages…');
   store.setErrorBanner(null);
 
   try {
@@ -408,14 +465,19 @@ export async function exportSplitDocuments(
       const selectedIds = new Set(selectedPages.map((p) => p.id));
       const selectedEls = store.elements.filter((el) => selectedIds.has(el.pageId));
       const customFonts = collectCustomExportFontPayloads(selectedEls, store.pageNumbering);
-      const { bytes } = await wasmWorkerClient.call('compilePdf', {
-        sourceDocs,
-        pages: selectedPages,
-        elements: selectedEls,
-        fonts: customFonts.length > 0 ? customFonts : undefined,
-        optimizeWithMupdf: true,
-        pageNumbering: store.pageNumbering,
-      });
+      const { bytes } = await wasmWorkerClient.call(
+        'compilePdf',
+        {
+          sourceDocs,
+          pages: selectedPages,
+          elements: selectedEls,
+          fonts: customFonts.length > 0 ? customFonts : undefined,
+          optimizeWithMupdf: true,
+          pageNumbering: store.pageNumbering,
+        },
+        120_000,
+        transfer,
+      );
       triggerDownload(bytes, `${baseName}-extracted.pdf`, 'application/pdf');
       return;
     }
@@ -434,13 +496,18 @@ export async function exportSplitDocuments(
           }));
 
     const customFonts = collectCustomExportFontPayloads(store.elements, store.pageNumbering);
-    const { zipBytes } = await wasmWorkerClient.call('splitPdfZip', {
-      sourceDocs,
-      elements: store.elements,
-      jobs,
-      fonts: customFonts.length > 0 ? customFonts : undefined,
-      pageNumbering: store.pageNumbering,
-    });
+    const { zipBytes } = await wasmWorkerClient.call(
+      'splitPdfZip',
+      {
+        sourceDocs,
+        elements: store.elements,
+        jobs,
+        fonts: customFonts.length > 0 ? customFonts : undefined,
+        pageNumbering: store.pageNumbering,
+      },
+      120_000,
+      transfer,
+    );
     triggerDownload(zipBytes, `${baseName}-split.zip`, 'application/zip');
   } finally {
     useEditorStore.getState().setLoading(false, '');

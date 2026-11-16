@@ -237,25 +237,25 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
         <div className="space-y-5 p-4 text-xs">
           <div className="grid grid-cols-2 gap-2 rounded-lg bg-slate-50 p-3 dark:bg-slate-900">
             <div>
-              <div className="text-[10px] text-slate-400">Width</div>
+              <div className="text-xs text-slate-400">Width</div>
               <div className="font-semibold text-slate-800 dark:text-slate-200">
                 {Math.round(activePage.baseWidth)} pt
               </div>
             </div>
             <div>
-              <div className="text-[10px] text-slate-400">Height</div>
+              <div className="text-xs text-slate-400">Height</div>
               <div className="font-semibold text-slate-800 dark:text-slate-200">
                 {Math.round(activePage.baseHeight)} pt
               </div>
             </div>
             <div>
-              <div className="text-[10px] text-slate-400">Rotation</div>
+              <div className="text-xs text-slate-400">Rotation</div>
               <div className="font-semibold text-slate-800 dark:text-slate-200">
                 {(activePage.intrinsicRotation + activePage.userRotation) % 360}°
               </div>
             </div>
             <div>
-              <div className="text-[10px] text-slate-400">Overlays</div>
+              <div className="text-xs text-slate-400">Overlays</div>
               <div className="font-semibold text-slate-800 dark:text-slate-200">
                 {elements.filter((e) => e.pageId === activePage.id).length}
               </div>
@@ -263,14 +263,14 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
           </div>
 
           <div className="space-y-2">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
               Page Actions
             </div>
             <div className="grid grid-cols-3 gap-1.5">
               <button
                 type="button"
                 onClick={() => rotatePages([activePage.id], -90)}
-                className="flex flex-col items-center gap-1 rounded-lg border border-slate-200 py-2 text-[11px] font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900"
+                className="flex flex-col items-center gap-1 rounded-lg border border-slate-200 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900"
               >
                 <RotateCcw className="h-3.5 w-3.5" />
                 90° CCW
@@ -278,7 +278,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
               <button
                 type="button"
                 onClick={() => rotatePages([activePage.id], 90)}
-                className="flex flex-col items-center gap-1 rounded-lg border border-slate-200 py-2 text-[11px] font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900"
+                className="flex flex-col items-center gap-1 rounded-lg border border-slate-200 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900"
               >
                 <RotateCw className="h-3.5 w-3.5" />
                 90° CW
@@ -286,7 +286,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
               <button
                 type="button"
                 onClick={() => rotatePages([activePage.id], 180)}
-                className="flex flex-col items-center gap-1 rounded-lg border border-slate-200 py-2 text-[11px] font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900"
+                className="flex flex-col items-center gap-1 rounded-lg border border-slate-200 py-2 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900"
               >
                 <RotateCw className="h-3.5 w-3.5" />
                 180°
@@ -338,7 +338,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
           {extraction && (
             <>
               <div className="space-y-1.5">
-                <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400">
                   <span>Detected Text ({extraction.textBlocks.length})</span>
                 </div>
                 <div className="max-h-40 space-y-1 overflow-y-auto pr-1">
@@ -350,24 +350,24 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                       className="flex w-full items-center gap-2 rounded-md border border-slate-200 px-2 py-1.5 text-left hover:border-blue-400 hover:bg-blue-50/40 dark:border-slate-800 dark:hover:bg-slate-900"
                     >
                       <TypeIcon className="h-3 w-3 shrink-0 text-blue-500" />
-                      <span className="truncate text-[11px] text-slate-700 dark:text-slate-300">
+                      <span className="truncate text-xs text-slate-700 dark:text-slate-300">
                         {blk.text}
                       </span>
                       {editedBlocks.has(blk.id) && (
-                        <span className="ml-auto shrink-0 rounded bg-blue-500/15 px-1 text-[9px] text-blue-500">
+                        <span className="ml-auto shrink-0 rounded bg-blue-500/15 px-1 text-xs text-blue-500">
                           Edited
                         </span>
                       )}
                     </button>
                   ))}
                   {extraction.textBlocks.length === 0 && (
-                    <p className="text-[11px] text-slate-400">No text blocks detected on page.</p>
+                    <p className="text-xs text-slate-400">No text blocks detected on page.</p>
                   )}
                 </div>
               </div>
 
               <div className="space-y-1.5">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
                   Embedded Images ({extraction.images.length})
                 </div>
                 <div className="max-h-36 space-y-1 overflow-y-auto pr-1">
@@ -379,24 +379,24 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                       className="flex w-full items-center gap-2 rounded-md border border-slate-200 px-2 py-1.5 text-left hover:border-emerald-400 hover:bg-emerald-50/40 dark:border-slate-800 dark:hover:bg-slate-900"
                     >
                       <ImageIcon className="h-3.5 w-3.5 shrink-0 text-emerald-500" />
-                      <span className="truncate text-[11px] text-slate-700 dark:text-slate-300">
+                      <span className="truncate text-xs text-slate-700 dark:text-slate-300">
                         Image #{i + 1} ({img.pixelWidth}×{img.pixelHeight})
                       </span>
                       {promotedImages.has(img.id) && (
-                        <span className="ml-auto shrink-0 rounded bg-emerald-500/15 px-1 text-[9px] text-emerald-500">
+                        <span className="ml-auto shrink-0 rounded bg-emerald-500/15 px-1 text-xs text-emerald-500">
                           Active
                         </span>
                       )}
                     </button>
                   ))}
                   {extraction.images.length === 0 && (
-                    <p className="text-[11px] text-slate-400">No embedded XObject images.</p>
+                    <p className="text-xs text-slate-400">No embedded XObject images.</p>
                   )}
                 </div>
               </div>
 
               <div className="space-y-1.5">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
                   Background Shapes ({(extraction.shapes ?? []).length})
                 </div>
                 <div className="max-h-36 space-y-1 overflow-y-auto pr-1">
@@ -415,32 +415,32 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                           borderColor: shp.strokeColor ?? undefined,
                         }}
                       />
-                      <span className="truncate text-[11px] text-slate-700 dark:text-slate-300">
+                      <span className="truncate text-xs text-slate-700 dark:text-slate-300">
                         Shape #{i + 1} ({Math.round(shp.width)}×{Math.round(shp.height)})
                       </span>
                       {promotedShapes.has(shp.id) && (
-                        <span className="ml-auto shrink-0 rounded bg-indigo-500/15 px-1 text-[9px] text-indigo-500">
+                        <span className="ml-auto shrink-0 rounded bg-indigo-500/15 px-1 text-xs text-indigo-500">
                           Active
                         </span>
                       )}
                     </button>
                   ))}
                   {(extraction.shapes ?? []).length === 0 && (
-                    <p className="text-[11px] text-slate-400">No vector background shapes detected.</p>
+                    <p className="text-xs text-slate-400">No vector background shapes detected.</p>
                   )}
                 </div>
               </div>
 
               <div className="space-y-1.5 border-t border-slate-200 pt-3 dark:border-slate-800">
                 <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                  <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
                     Custom Fonts ({userFonts.length})
                   </span>
                   <button
                     type="button"
                     data-testid="upload-custom-font-btn"
                     onClick={() => fontInputRef.current?.click()}
-                    className="inline-flex items-center gap-1 rounded border border-slate-200 px-2 py-0.5 text-[10px] font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                    className="inline-flex items-center gap-1 rounded border border-slate-200 px-2 py-0.5 text-xs font-medium text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
                   >
                     <Upload className="h-3 w-3" />
                     Add Font
@@ -458,7 +458,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                 {fontFeedback && (
                   <p
                     data-testid="font-upload-status"
-                    className={`rounded px-2 py-1 text-[10px] ${
+                    className={`rounded px-2 py-1 text-xs ${
                       fontFeedback.kind === 'err'
                         ? 'bg-red-500/10 text-red-600 dark:text-red-400'
                         : 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
@@ -472,10 +472,10 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                     {docExtractedFonts.map((ef) => (
                       <div
                         key={ef.id}
-                        className="flex items-center justify-between rounded bg-slate-100 px-2 py-1 text-[10px] text-slate-700 dark:bg-slate-900 dark:text-slate-300"
+                        className="flex items-center justify-between rounded bg-slate-100 px-2 py-1 text-xs text-slate-700 dark:bg-slate-900 dark:text-slate-300"
                       >
                         <span className="truncate">{ef.displayName}</span>
-                        <span className="ml-1 shrink-0 text-[9px] text-emerald-600 dark:text-emerald-400">
+                        <span className="ml-1 shrink-0 text-xs text-emerald-600 dark:text-emerald-400">
                           Extracted
                         </span>
                       </div>
@@ -487,7 +487,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                     {userFonts.map((uf) => (
                       <div
                         key={uf.id}
-                        className="flex items-center justify-between rounded bg-blue-500/10 px-2 py-1 text-[10px] text-blue-700 dark:text-blue-300"
+                        className="flex items-center justify-between rounded bg-blue-500/10 px-2 py-1 text-xs text-blue-700 dark:text-blue-300"
                       >
                         <span className="truncate">{uf.name}</span>
                         <button
@@ -503,7 +503,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                   </div>
                 )}
                 {docExtractedFonts.length === 0 && userFonts.length === 0 && (
-                  <p className="text-[10px] text-slate-400">
+                  <p className="text-xs text-slate-400">
                     Upload .ttf / .otf / .woff fonts to match custom PDF typography cleanly.
                   </p>
                 )}
@@ -538,7 +538,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
     <SelectedWrapper {...selectedWrapperProps}>
       <div className="flex items-center justify-between border-b border-slate-200 px-4 py-3 dark:border-slate-800">
         <div>
-          <div className="text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+          <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
             Selected Element
           </div>
           <div className="text-xs font-semibold capitalize text-slate-900 dark:text-slate-100">
@@ -569,7 +569,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
             const isOpenCut = masks[0].kind === 'path' && !masks[0].closed;
             return (
               <div className="space-y-2 rounded-xl border border-indigo-500/40 bg-indigo-50/70 p-2.5 dark:bg-indigo-950/30">
-                <div className="text-[11px] font-semibold text-indigo-700 dark:text-indigo-300">
+                <div className="text-xs font-semibold text-indigo-700 dark:text-indigo-300">
                   Görsel + Maske Seçildi
                 </div>
                 {isOpenCut ? (
@@ -578,7 +578,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                       type="button"
                       data-testid="inspector-clip-pair-a"
                       onClick={() => applyImageClippingMask(imgs[0].id, masks[0].id, 'a')}
-                      className="flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-indigo-500"
+                      className="flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500"
                     >
                       <Scissors className="h-3 w-3" />
                       1. Tarafı Kırp
@@ -587,7 +587,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                       type="button"
                       data-testid="inspector-clip-pair-b"
                       onClick={() => applyImageClippingMask(imgs[0].id, masks[0].id, 'b')}
-                      className="flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-[11px] font-semibold text-white shadow-sm hover:bg-indigo-500"
+                      className="flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-indigo-500"
                     >
                       <Scissors className="h-3 w-3" />
                       2. Tarafı Kırp
@@ -614,13 +614,13 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
           selectedEl.kind === 'image' ||
           selectedEl.kind === 'image-replacement') && (
           <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-2.5 dark:border-slate-800 dark:bg-slate-900/60">
-            <div className="flex items-center justify-between text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            <div className="flex items-center justify-between text-xs font-semibold uppercase tracking-wider text-slate-400">
               <span>Dönüştür &amp; Kopyala</span>
               <button
                 type="button"
                 data-testid="inspector-duplicate-btn"
                 onClick={() => duplicateElements(selectedElementIds)}
-                className="inline-flex items-center gap-1 rounded bg-white px-2 py-0.5 text-[10px] font-medium normal-case text-slate-700 shadow-sm hover:text-blue-600 dark:bg-slate-800 dark:text-slate-200"
+                className="inline-flex items-center gap-1 rounded bg-white px-2 py-0.5 text-xs font-medium normal-case text-slate-700 shadow-sm hover:text-blue-600 dark:bg-slate-800 dark:text-slate-200"
               >
                 <Copy className="h-3 w-3" />
                 Çoğalt
@@ -631,7 +631,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                 type="button"
                 data-testid="inspector-reflect-x-btn"
                 onClick={() => reflectElements(selectedElementIds, 'horizontal')}
-                className="inline-flex items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:border-blue-400 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                className="inline-flex items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:border-blue-400 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
               >
                 <FlipHorizontal2 className="h-3.5 w-3.5" />
                 Yatay Yansıt
@@ -640,7 +640,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                 type="button"
                 data-testid="inspector-reflect-y-btn"
                 onClick={() => reflectElements(selectedElementIds, 'vertical')}
-                className="inline-flex items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-[11px] font-medium text-slate-700 hover:border-blue-400 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                className="inline-flex items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-700 hover:border-blue-400 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
               >
                 <FlipVertical2 className="h-3.5 w-3.5" />
                 Dikey Yansıt
@@ -651,7 +651,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                 type="button"
                 data-testid="inspector-rotate-n90-btn"
                 onClick={() => rotateElements(selectedElementIds, -90)}
-                className="inline-flex items-center justify-center gap-1 rounded-md border border-slate-200 bg-white py-1 text-[11px] font-medium text-slate-700 hover:border-blue-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                className="inline-flex items-center justify-center gap-1 rounded-md border border-slate-200 bg-white py-1 text-xs font-medium text-slate-700 hover:border-blue-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
               >
                 <RotateCcw className="h-3 w-3" />
                 -90°
@@ -660,7 +660,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                 type="button"
                 data-testid="inspector-rotate-90-btn"
                 onClick={() => rotateElements(selectedElementIds, 90)}
-                className="inline-flex items-center justify-center gap-1 rounded-md border border-slate-200 bg-white py-1 text-[11px] font-medium text-slate-700 hover:border-blue-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                className="inline-flex items-center justify-center gap-1 rounded-md border border-slate-200 bg-white py-1 text-xs font-medium text-slate-700 hover:border-blue-400 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
               >
                 <RotateCw className="h-3 w-3" />
                 +90°
@@ -669,7 +669,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                 type="button"
                 data-testid="inspector-rotate-copy-btn"
                 onClick={() => openRotateCopyDialog(selectedElementIds)}
-                className="inline-flex items-center justify-center gap-1 rounded-md bg-blue-600 py-1 text-[11px] font-semibold text-white hover:bg-blue-500"
+                className="inline-flex items-center justify-center gap-1 rounded-md bg-blue-600 py-1 text-xs font-semibold text-white hover:bg-blue-500"
               >
                 Döndür &amp; Kopyala
               </button>
@@ -685,7 +685,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
             const m = matches[0];
             return (
               <div className="space-y-1.5 rounded-xl border border-indigo-500/40 bg-indigo-50/70 p-2.5 dark:bg-indigo-950/30">
-                <div className="text-[11px] font-semibold text-indigo-700 dark:text-indigo-300">
+                <div className="text-xs font-semibold text-indigo-700 dark:text-indigo-300">
                   Alttaki Görseli Kırp (Illustrator Maske)
                 </div>
                 {m.isOpenLineCut ? (
@@ -693,7 +693,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                     <button
                       type="button"
                       onClick={() => applyImageClippingMask(m.image.id, selectedEl.id, 'a')}
-                      className="inline-flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-500"
+                      className="inline-flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500"
                     >
                       <Scissors className="h-3 w-3" />
                       1. Taraf
@@ -701,7 +701,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                     <button
                       type="button"
                       onClick={() => applyImageClippingMask(m.image.id, selectedEl.id, 'b')}
-                      className="inline-flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-500"
+                      className="inline-flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500"
                     >
                       <Scissors className="h-3 w-3" />
                       2. Taraf
@@ -732,7 +732,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
             if (selectedPaths.length < 2) return null;
             return (
               <div className="space-y-2 rounded-xl border border-blue-500/40 bg-blue-50/70 p-2.5 dark:bg-blue-950/30">
-                <div className="text-[11px] font-semibold text-blue-700 dark:text-blue-300">
+                <div className="text-xs font-semibold text-blue-700 dark:text-blue-300">
                   {selectedPaths.length} Çizgi / Yol Seçildi
                 </div>
                 <button
@@ -752,13 +752,13 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
         {isText && (
           <div className="space-y-3">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
                 Typography
               </span>
               <button
                 type="button"
                 onClick={() => setEditingTextElementId(selectedEl.id)}
-                className="inline-flex items-center gap-1 rounded bg-blue-500/10 px-2 py-0.5 text-[11px] font-medium text-blue-600 hover:bg-blue-500/20 dark:text-blue-400"
+                className="inline-flex items-center gap-1 rounded bg-blue-500/10 px-2 py-0.5 text-xs font-medium text-blue-600 hover:bg-blue-500/20 dark:text-blue-400"
               >
                 <Edit3 className="h-3 w-3" />
                 Edit Inline
@@ -766,7 +766,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
             </div>
 
             <div>
-              <label className="mb-1 block text-[11px] text-slate-500 dark:text-slate-400">
+              <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                 Text Content
               </label>
               <textarea
@@ -780,14 +780,14 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
 
             <div>
               <div className="mb-1 flex items-center justify-between">
-                <label className="text-[11px] text-slate-500 dark:text-slate-400">
+                <label className="text-xs text-slate-500 dark:text-slate-400">
                   Font Family
                 </label>
                 <button
                   type="button"
                   data-testid="upload-custom-font-btn"
                   onClick={() => fontInputRef.current?.click()}
-                  className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] font-medium text-blue-600 hover:bg-blue-500/10 dark:text-blue-400"
+                  className="inline-flex items-center gap-0.5 rounded px-1.5 py-0.5 text-xs font-medium text-blue-600 hover:bg-blue-500/10 dark:text-blue-400"
                 >
                   <Plus className="h-3 w-3" />
                   Add Font
@@ -865,7 +865,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
             {fontFeedback && (
               <div
                 data-testid="font-upload-status"
-                className={`rounded-lg px-2.5 py-1.5 text-[11px] ${
+                className={`rounded-lg px-2.5 py-1.5 text-xs ${
                   fontFeedback.kind === 'err'
                     ? 'border border-red-400/50 bg-red-50 text-red-700 dark:border-red-500/40 dark:bg-red-950/40 dark:text-red-300'
                     : 'border border-emerald-400/50 bg-emerald-50 text-emerald-800 dark:border-emerald-500/40 dark:bg-emerald-950/40 dark:text-emerald-200'
@@ -889,7 +889,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                 return (
                   <div
                     data-testid="inspector-custom-font-active"
-                    className="rounded-lg border border-emerald-400/50 bg-emerald-50 px-2.5 py-2 text-[11px] text-emerald-900 dark:border-emerald-500/40 dark:bg-emerald-950/50 dark:text-emerald-200"
+                    className="rounded-lg border border-emerald-400/50 bg-emerald-50 px-2.5 py-2 text-xs text-emerald-900 dark:border-emerald-500/40 dark:bg-emerald-950/50 dark:text-emerald-200"
                   >
                     {fontStatus.status === 'user-complete'
                       ? `Custom font (${fontStatus.label}) active — full local editing & export.`
@@ -905,7 +905,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                 return (
                   <div
                     data-testid="inspector-custom-font-warning"
-                    className="space-y-1.5 rounded-lg border border-amber-400/50 bg-amber-50 px-2.5 py-2 text-[11px] text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/50 dark:text-amber-200"
+                    className="space-y-1.5 rounded-lg border border-amber-400/50 bg-amber-50 px-2.5 py-2 text-xs text-amber-900 dark:border-amber-500/40 dark:bg-amber-950/50 dark:text-amber-200"
                   >
                     <div>
                       {fontStatus.status === 'fallback' ? (
@@ -925,7 +925,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                     <button
                       type="button"
                       onClick={() => fontInputRef.current?.click()}
-                      className="inline-flex items-center gap-1 rounded bg-amber-600/20 px-2 py-0.5 text-[10px] font-medium hover:bg-amber-600/30"
+                      className="inline-flex items-center gap-1 rounded bg-amber-600/20 px-2 py-0.5 text-xs font-medium hover:bg-amber-600/30"
                     >
                       <Upload className="h-3 w-3" />
                       Upload matching .ttf / .otf font
@@ -938,7 +938,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
 
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="mb-1 block text-[11px] text-slate-500 dark:text-slate-400">
+                <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                   Size (pt)
                 </label>
                 <input
@@ -954,7 +954,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                 />
               </div>
               <div>
-                <label className="mb-1 block text-[11px] text-slate-500 dark:text-slate-400">
+                <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                   Line Height
                 </label>
                 <input
@@ -975,7 +975,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
 
             <div className="grid grid-cols-2 gap-2">
               <div>
-                <label className="mb-1 block text-[11px] text-slate-500 dark:text-slate-400">
+                <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                   Char Spacing (pt)
                 </label>
                 <input
@@ -993,7 +993,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                 />
               </div>
               <div>
-                <label className="mb-1 block text-[11px] text-slate-500 dark:text-slate-400">
+                <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                   Width Scale
                 </label>
                 <input
@@ -1167,7 +1167,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
             </div>
 
             <div>
-              <label className="mb-1.5 block text-[11px] text-slate-500 dark:text-slate-400">
+              <label className="mb-1.5 block text-xs text-slate-500 dark:text-slate-400">
                 Text Color
               </label>
               <div className="flex items-center gap-1.5">
@@ -1198,7 +1198,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
         {/* Stroke / Highlight Style */}
         {selectedEl.kind === 'stroke' && (
           <div className="space-y-3">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
               Stroke Style
             </div>
             <div className="flex items-center gap-1.5">
@@ -1219,7 +1219,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
               />
             </div>
             <div>
-              <label className="mb-1 flex justify-between text-[11px] text-slate-500">
+              <label className="mb-1 flex justify-between text-xs text-slate-500">
                 <span>Stroke Width</span>
                 <span>{selectedEl.strokeWidth} pt</span>
               </label>
@@ -1238,11 +1238,11 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
 
         {selectedEl.kind === 'shape-replacement' && (
           <div className="space-y-3">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
               Background Shape Style
             </div>
             <div>
-              <div className="mb-1 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+              <div className="mb-1 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
                 <span>Fill Color</span>
                 <button
                   type="button"
@@ -1253,7 +1253,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                         selectedEl.fillColor === 'transparent' ? '#142447' : 'transparent',
                     })
                   }
-                  className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${
+                  className={`rounded border px-1.5 py-0.5 text-xs font-medium ${
                     selectedEl.fillColor === 'transparent'
                       ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-blue-400'
                       : 'border-slate-200 text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800'
@@ -1292,7 +1292,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
             </div>
 
             <div>
-              <div className="mb-1 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+              <div className="mb-1 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
                 <span>Border</span>
                 <button
                   type="button"
@@ -1307,7 +1307,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                           },
                     )
                   }
-                  className="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                  className="rounded border border-slate-200 px-1.5 py-0.5 text-xs font-medium text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
                 >
                   {selectedEl.strokeColor && selectedEl.strokeWidth > 0 ? 'Remove Border' : 'Add Border'}
                 </button>
@@ -1342,7 +1342,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                   }}
                   className="w-full accent-blue-600"
                 />
-                <span className="w-10 text-right text-[11px] text-slate-500 dark:text-slate-400">
+                <span className="w-10 text-right text-xs text-slate-500 dark:text-slate-400">
                   {selectedEl.strokeWidth}pt
                 </span>
               </div>
@@ -1352,12 +1352,12 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
 
         {selectedEl.kind === 'shape' && (
           <div className="space-y-3">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
               Vector Shape Style
             </div>
 
             <div>
-              <label className="mb-1 block text-[11px] text-slate-500 dark:text-slate-400">
+              <label className="mb-1 block text-xs text-slate-500 dark:text-slate-400">
                 Şekil Tipi
               </label>
               <div className="grid grid-cols-5 gap-1">
@@ -1375,7 +1375,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                     type="button"
                     data-testid={`inspector-shape-type-${opt.id}`}
                     onClick={() => patchSelected({ shapeType: opt.id })}
-                    className={`rounded border py-1 text-[10px] font-medium ${
+                    className={`rounded border py-1 text-xs font-medium ${
                       selectedEl.shapeType === opt.id
                         ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
                         : 'border-slate-200 text-slate-600 dark:border-slate-700 dark:text-slate-300'
@@ -1389,7 +1389,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
 
             {selectedEl.shapeType === 'rect' && (
               <div>
-                <label className="mb-1 flex justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                <label className="mb-1 flex justify-between text-xs text-slate-500 dark:text-slate-400">
                   <span>Köşe Yuvarlatma (Border Radius)</span>
                   <span>{Math.round(selectedEl.borderRadius ?? 0)}pt</span>
                 </label>
@@ -1410,7 +1410,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
             )}
 
             <div>
-              <div className="mb-1 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+              <div className="mb-1 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
                 <span>Dolgu Rengi (Fill)</span>
                 <button
                   type="button"
@@ -1421,7 +1421,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                         selectedEl.fillColor === 'transparent' ? '#3b82f6' : 'transparent',
                     })
                   }
-                  className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${
+                  className={`rounded border px-1.5 py-0.5 text-xs font-medium ${
                     selectedEl.fillColor === 'transparent'
                       ? 'border-blue-500 bg-blue-500/10 text-blue-600 dark:text-blue-400'
                       : 'border-slate-200 text-slate-500 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800'
@@ -1459,14 +1459,14 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
             </div>
 
             <div>
-              <div className="mb-1 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+              <div className="mb-1 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
                 <span>Kenarlık (Stroke)</span>
                 <select
                   value={selectedEl.strokeDash ?? 'solid'}
                   onChange={(e) =>
                     patchSelected({ strokeDash: e.target.value as VectorStrokeDash })
                   }
-                  className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
                 >
                   <option value="solid">Düz</option>
                   <option value="dashed">Kesikli</option>
@@ -1500,7 +1500,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                   onChange={(e) => patchSelected({ strokeWidth: Number(e.target.value) })}
                   className="w-full accent-blue-600"
                 />
-                <span className="w-10 text-right text-[11px] text-slate-500 dark:text-slate-400">
+                <span className="w-10 text-right text-xs text-slate-500 dark:text-slate-400">
                   {selectedEl.strokeWidth}pt
                 </span>
               </div>
@@ -1539,7 +1539,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
 
             return (
               <div className="space-y-3">
-                <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
                   Vector Path ({selectedEl.points.length} Nokta)
                 </div>
 
@@ -1552,7 +1552,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                         editingPathElementId === selectedEl.id ? null : selectedEl.id,
                       )
                     }
-                    className={`flex items-center justify-center gap-1 rounded-lg border py-1.5 text-[11px] font-medium transition ${
+                    className={`flex items-center justify-center gap-1 rounded-lg border py-1.5 text-xs font-medium transition ${
                       editingPathElementId === selectedEl.id
                         ? 'border-blue-500 bg-blue-600 text-white'
                         : 'border-slate-200 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900'
@@ -1566,7 +1566,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                     type="button"
                     data-testid="inspector-path-closed-toggle"
                     onClick={() => patchSelected({ closed: !selectedEl.closed })}
-                    className={`rounded-lg border py-1.5 text-[11px] font-medium transition ${
+                    className={`rounded-lg border py-1.5 text-xs font-medium transition ${
                       selectedEl.closed
                         ? 'border-emerald-500 bg-emerald-500/15 text-emerald-700 dark:text-emerald-300'
                         : 'border-slate-200 text-slate-700 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-900'
@@ -1581,7 +1581,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                     type="button"
                     data-testid="inspector-join-nearest-path-btn"
                     onClick={() => joinVectorPaths([selectedEl.id, nearestPeer!.id])}
-                    className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-blue-500/40 bg-blue-500/10 py-1.5 text-[11px] font-semibold text-blue-600 hover:bg-blue-500/20 dark:text-blue-300"
+                    className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-blue-500/40 bg-blue-500/10 py-1.5 text-xs font-semibold text-blue-600 hover:bg-blue-500/20 dark:text-blue-300"
                   >
                     <Link2 className="h-3.5 w-3.5" />
                     En Yakın Çizgiyle Birleştir
@@ -1592,7 +1592,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                   type="button"
                   data-testid="inspector-path-smooth-toggle"
                   onClick={() => patchSelected({ smooth: !selectedEl.smooth })}
-                  className={`flex w-full items-center justify-center gap-1.5 rounded-lg border py-1.5 text-[11px] font-medium transition ${
+                  className={`flex w-full items-center justify-center gap-1.5 rounded-lg border py-1.5 text-xs font-medium transition ${
                     selectedEl.smooth
                       ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
                       : 'border-slate-200 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-900'
@@ -1602,14 +1602,14 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                 </button>
 
                 <div>
-                  <div className="mb-1 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                  <div className="mb-1 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
                     <span>Çizgi Rengi &amp; Kalınlık</span>
                     <select
                       value={selectedEl.strokeDash ?? 'solid'}
                       onChange={(e) =>
                         patchSelected({ strokeDash: e.target.value as VectorStrokeDash })
                       }
-                      className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-[10px] dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                      className="rounded border border-slate-200 bg-white px-1.5 py-0.5 text-xs dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
                     >
                       <option value="solid">Düz</option>
                       <option value="dashed">Kesikli</option>
@@ -1634,7 +1634,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                       onChange={(e) => patchSelected({ strokeWidth: Number(e.target.value) })}
                       className="w-full accent-blue-600"
                     />
-                    <span className="w-10 text-right text-[11px] text-slate-500 dark:text-slate-400">
+                    <span className="w-10 text-right text-xs text-slate-500 dark:text-slate-400">
                       {selectedEl.strokeWidth}pt
                     </span>
                   </div>
@@ -1642,7 +1642,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
 
                 {selectedEl.closed && (
                   <div>
-                    <div className="mb-1 flex items-center justify-between text-[11px] text-slate-500 dark:text-slate-400">
+                    <div className="mb-1 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">
                       <span>İç Dolgu (Kapalı Yol)</span>
                       <button
                         type="button"
@@ -1652,7 +1652,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                               selectedEl.fillColor === 'transparent' ? '#3b82f6' : 'transparent',
                           })
                         }
-                        className="rounded border border-slate-200 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 dark:border-slate-700 dark:text-slate-300"
+                        className="rounded border border-slate-200 px-1.5 py-0.5 text-xs font-medium text-slate-600 dark:border-slate-700 dark:text-slate-300"
                       >
                         {selectedEl.fillColor === 'transparent' ? 'Boş ✓' : 'İçini Boşalt'}
                       </button>
@@ -1686,7 +1686,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
 
         {selectedEl.kind === 'highlight' && (
           <div className="space-y-3">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
               Annotation Style
             </div>
             <div className="flex items-center gap-1.5">
@@ -1712,7 +1712,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
         {/* Image / Signature Options */}
         {isImageLike && (
           <div className="space-y-2.5">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
               Asset Options
             </div>
             <div className="flex items-center justify-between rounded-lg bg-slate-50 px-3 py-2 dark:bg-slate-900">
@@ -1720,7 +1720,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
               <button
                 type="button"
                 onClick={() => patchSelected({ aspectLocked: !selectedEl.aspectLocked })}
-                className="inline-flex items-center gap-1 rounded bg-white px-2 py-1 text-[11px] font-medium shadow-sm dark:bg-slate-800"
+                className="inline-flex items-center gap-1 rounded bg-white px-2 py-1 text-xs font-medium shadow-sm dark:bg-slate-800"
               >
                 {selectedEl.aspectLocked ? (
                   <>
@@ -1741,7 +1741,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                 const overlapMasks = findOverlappingMasksForImage(selectedEl, elements);
                 return (
                   <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5 dark:border-slate-800 dark:bg-slate-900">
-                    <div className="text-[11px] font-medium text-slate-700 dark:text-slate-200">
+                    <div className="text-xs font-medium text-slate-700 dark:text-slate-200">
                       Görsel Kırpma &amp; Maskeleme
                     </div>
                     <button
@@ -1760,7 +1760,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                           <button
                             type="button"
                             onClick={() => applyImageClippingMask(selectedEl.id, m.mask.id, 'a')}
-                            className="inline-flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-500"
+                            className="inline-flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500"
                           >
                             <Scissors className="h-3 w-3" />
                             Çizgiyle Kırp 1
@@ -1768,7 +1768,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                           <button
                             type="button"
                             onClick={() => applyImageClippingMask(selectedEl.id, m.mask.id, 'b')}
-                            className="inline-flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-[11px] font-semibold text-white hover:bg-indigo-500"
+                            className="inline-flex items-center justify-center gap-1 rounded-lg bg-indigo-600 px-2 py-1.5 text-xs font-semibold text-white hover:bg-indigo-500"
                           >
                             <Scissors className="h-3 w-3" />
                             Çizgiyle Kırp 2
@@ -1793,7 +1793,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                         type="button"
                         data-testid="inspector-flip-cut-side-btn"
                         onClick={() => flipImageClipMaskSide(selectedEl.id)}
-                        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-indigo-400/50 bg-indigo-50 px-2.5 py-1 text-[11px] font-medium text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-500/15 dark:text-indigo-300"
+                        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-indigo-400/50 bg-indigo-50 px-2.5 py-1 text-xs font-medium text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-500/15 dark:text-indigo-300"
                       >
                         <RefreshCw className="h-3 w-3" />
                         Diğer Tarafı Tut
@@ -1805,7 +1805,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                         type="button"
                         data-testid="inspector-release-mask-btn"
                         onClick={() => releaseImageCropAndMask(selectedEl.id, true)}
-                        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-amber-400/60 bg-amber-50 px-2.5 py-1 text-[11px] font-medium text-amber-800 hover:bg-amber-100 dark:bg-amber-500/15 dark:text-amber-300"
+                        className="flex w-full items-center justify-center gap-1.5 rounded-lg border border-amber-400/60 bg-amber-50 px-2.5 py-1 text-xs font-medium text-amber-800 hover:bg-amber-100 dark:bg-amber-500/15 dark:text-amber-300"
                       >
                         Kırpmayı / Maskeyi Çöz
                       </button>
@@ -1818,7 +1818,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
               pages.length > 1 && (
                 <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5 dark:border-slate-800 dark:bg-slate-900">
                   <div className="flex items-center justify-between">
-                    <span className="text-[11px] font-medium text-slate-700 dark:text-slate-200">
+                    <span className="text-xs font-medium text-slate-700 dark:text-slate-200">
                       Her Sayfaya Ekle (Repeat Header/Watermark)
                     </span>
                   </div>
@@ -1827,7 +1827,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                       value={repeatScope}
                       onChange={(e) => setRepeatScope(e.target.value as 'all' | 'odd' | 'even')}
                       data-testid="inspector-repeat-scope"
-                      className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                      className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
                     >
                       <option value="all">All Pages (1–{pages.length})</option>
                       <option value="odd">Odd Pages Only</option>
@@ -1844,19 +1844,19 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                         );
                         setBatchFeedback('Applied to selected pages.');
                       }}
-                      className="inline-flex items-center gap-1 rounded bg-blue-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-blue-500"
+                      className="inline-flex items-center gap-1 rounded bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-500"
                     >
                       <Repeat className="h-3 w-3" />
                       Repeat
                     </button>
                   </div>
                   {selectedEl.repeatGroupId && (
-                    <div className="flex items-center justify-between pt-0.5 text-[10px] text-emerald-700 dark:text-emerald-400">
+                    <div className="flex items-center justify-between pt-0.5 text-xs text-emerald-700 dark:text-emerald-400">
                       <span>Linked across {selectedEl.repeatScope ?? 'all'} pages</span>
                       <button
                         type="button"
                         onClick={() => unlinkRepeatingImage(selectedEl.id)}
-                        className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-[10px] text-slate-600 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"
+                        className="inline-flex items-center gap-1 rounded border border-slate-300 bg-white px-1.5 py-0.5 text-xs text-slate-600 hover:text-slate-900 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300"
                       >
                         <Link2Off className="h-2.5 w-2.5" />
                         Unlink Page
@@ -1868,7 +1868,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
 
             {selectedEl.kind === 'signature' && pages.length > 1 && (
               <div className="space-y-2 rounded-lg border border-slate-200 bg-slate-50 p-2.5 dark:border-slate-800 dark:bg-slate-900">
-                <div className="text-[11px] font-medium text-slate-700 dark:text-slate-200">
+                <div className="text-xs font-medium text-slate-700 dark:text-slate-200">
                   Apply {selectedEl.variant === 'initials' ? 'Paraf' : 'Signature'} to Pages
                 </div>
                 <div className="flex items-center gap-1.5">
@@ -1877,7 +1877,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                     onChange={(e) =>
                       setSigBatchMode(e.target.value as SignatureBatchScope['mode'])
                     }
-                    className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-[11px] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                    className="flex-1 rounded border border-slate-300 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
                   >
                     <option value="all">All Pages</option>
                     <option value="except-first">Exclude Cover Page</option>
@@ -1896,7 +1896,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                       );
                       setBatchFeedback(`Placed on ${count} other page(s).`);
                     }}
-                    className="rounded bg-blue-600 px-2.5 py-1 text-[11px] font-medium text-white hover:bg-blue-500"
+                    className="rounded bg-blue-600 px-2.5 py-1 text-xs font-medium text-white hover:bg-blue-500"
                   >
                     Apply
                   </button>
@@ -1907,14 +1907,14 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                     value={sigBatchRange}
                     onChange={(e) => setSigBatchRange(e.target.value)}
                     placeholder="e.g. 2-4, 6"
-                    className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-[11px] dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
+                    className="w-full rounded border border-slate-300 bg-white px-2 py-1 text-xs dark:border-slate-700 dark:bg-slate-950 dark:text-slate-100"
                   />
                 )}
               </div>
             )}
 
             {batchFeedback && (
-              <div className="text-[10px] font-medium text-blue-600 dark:text-blue-400">
+              <div className="text-xs font-medium text-blue-600 dark:text-blue-400">
                 {batchFeedback}
               </div>
             )}
@@ -1923,7 +1923,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
 
         {/* Opacity */}
         <div>
-          <label className="mb-1 flex justify-between text-[11px] text-slate-500 dark:text-slate-400">
+          <label className="mb-1 flex justify-between text-xs text-slate-500 dark:text-slate-400">
             <span>Opacity</span>
             <span>{Math.round(selectedEl.opacity * 100)}%</span>
           </label>
@@ -1941,12 +1941,12 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
 
         {/* Geometry: X / Y / W / H / Rotation */}
         <div className="space-y-2 border-t border-slate-200 pt-4 dark:border-slate-800">
-          <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+          <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
             Layout & Transform (pt)
           </div>
           <div className="grid grid-cols-2 gap-2">
             <div>
-              <label className="mb-0.5 block text-[10px] text-slate-400">X</label>
+              <label className="mb-0.5 block text-xs text-slate-400">X</label>
               <input
                 type="number"
                 value={Math.round(selectedEl.x)}
@@ -1956,7 +1956,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
               />
             </div>
             <div>
-              <label className="mb-0.5 block text-[10px] text-slate-400">Y</label>
+              <label className="mb-0.5 block text-xs text-slate-400">Y</label>
               <input
                 type="number"
                 value={Math.round(selectedEl.y)}
@@ -1966,7 +1966,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
               />
             </div>
             <div>
-              <label className="mb-0.5 block text-[10px] text-slate-400">Width</label>
+              <label className="mb-0.5 block text-xs text-slate-400">Width</label>
               <input
                 type="number"
                 min={8}
@@ -1984,7 +1984,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
               />
             </div>
             <div>
-              <label className="mb-0.5 block text-[10px] text-slate-400">Height</label>
+              <label className="mb-0.5 block text-xs text-slate-400">Height</label>
               <input
                 type="number"
                 min={8}
@@ -2000,7 +2000,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
 
           <div className="flex items-end gap-2">
             <div className="flex-1">
-              <label className="mb-0.5 block text-[10px] text-slate-400">Rotation (°)</label>
+              <label className="mb-0.5 block text-xs text-slate-400">Rotation (°)</label>
               <input
                 type="number"
                 value={Math.round(selectedEl.rotation)}
@@ -2012,7 +2012,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
             <button
               type="button"
               onClick={() => patchSelected({ rotation: 0 })}
-              className="rounded-md border border-slate-200 px-2.5 py-1 text-[11px] text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-900"
+              className="rounded-md border border-slate-200 px-2.5 py-1 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-900"
             >
               Reset 0°
             </button>
@@ -2022,12 +2022,12 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
         {/* Layer Order */}
         <div className="space-y-2 border-t border-slate-200 pt-4 dark:border-slate-800">
           <div className="flex items-center justify-between">
-            <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
               Layer Order
             </span>
             <span
               data-testid="inspector-layer-tier-badge"
-              className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300"
+              className="rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300"
             >
               Tier {getElementLayerTier(selectedEl)}
             </span>
@@ -2037,7 +2037,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
               type="button"
               title="Bring to Front"
               onClick={() => bringToFront([selectedEl.id])}
-              className="flex flex-col items-center rounded border border-slate-200 py-1.5 text-[10px] text-slate-600 hover:bg-slate-100 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900"
+              className="flex flex-col items-center rounded border border-slate-200 py-1.5 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900"
             >
               <ArrowUpToLine className="h-3.5 w-3.5" />
               Front
@@ -2046,7 +2046,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
               type="button"
               title="Bring Forward"
               onClick={() => stepLayer([selectedEl.id], 'forward')}
-              className="flex flex-col items-center rounded border border-slate-200 py-1.5 text-[10px] text-slate-600 hover:bg-slate-100 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900"
+              className="flex flex-col items-center rounded border border-slate-200 py-1.5 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900"
             >
               <ArrowUp className="h-3.5 w-3.5" />
               Fwd
@@ -2055,7 +2055,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
               type="button"
               title="Send Backward"
               onClick={() => stepLayer([selectedEl.id], 'backward')}
-              className="flex flex-col items-center rounded border border-slate-200 py-1.5 text-[10px] text-slate-600 hover:bg-slate-100 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900"
+              className="flex flex-col items-center rounded border border-slate-200 py-1.5 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900"
             >
               <ArrowDown className="h-3.5 w-3.5" />
               Back
@@ -2064,7 +2064,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
               type="button"
               title="Send to Back"
               onClick={() => sendToBack([selectedEl.id])}
-              className="flex flex-col items-center rounded border border-slate-200 py-1.5 text-[10px] text-slate-600 hover:bg-slate-100 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900"
+              className="flex flex-col items-center rounded border border-slate-200 py-1.5 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-800 dark:text-slate-300 dark:hover:bg-slate-900"
             >
               <ArrowDownToLine className="h-3.5 w-3.5" />
               Bottom
@@ -2076,7 +2076,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
               data-testid="inspector-lock-layer-toggle"
               aria-pressed={!!selectedEl.locked}
               onClick={() => patchSelected({ locked: !selectedEl.locked })}
-              className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium transition ${
+              className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
                 selectedEl.locked
                   ? 'border-amber-500 bg-amber-500/15 text-amber-600 dark:text-amber-300'
                   : 'border-slate-200 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-900'
@@ -2106,7 +2106,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                   data-testid="inspector-background-layer-toggle"
                   aria-pressed={!!selectedEl.isBackgroundLayer}
                   onClick={() => patchSelected({ isBackgroundLayer: !selectedEl.isBackgroundLayer })}
-                  className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium transition ${
+                  className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
                     selectedEl.isBackgroundLayer
                       ? 'border-amber-500 bg-amber-500/15 text-amber-600 dark:text-amber-300'
                       : 'border-slate-200 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-900'
@@ -2120,7 +2120,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                   data-testid="inspector-behind-content-toggle"
                   aria-pressed={!!selectedEl.behindContent}
                   onClick={() => patchSelected({ behindContent: !selectedEl.behindContent })}
-                  className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-[11px] font-medium transition ${
+                  className={`flex w-full items-center justify-center gap-1.5 rounded-lg border px-2.5 py-1.5 text-xs font-medium transition ${
                     selectedEl.behindContent
                       ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
                       : 'border-slate-200 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-900'

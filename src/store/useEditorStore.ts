@@ -19,6 +19,7 @@ import {
   type VectorStrokeDash,
 } from '@/types/elements';
 import type {
+  AppMode,
   DetectedImageObject,
   DetectedTextBlock,
   DetectedVectorShape,
@@ -27,14 +28,17 @@ import type {
   PageMeta,
   PageNumberingConfig,
   Point,
+  ReadingTheme,
   RectBox,
   RotationAngle,
   SourceDocument,
+  SourceDocumentInput,
   ThemeMode,
   ToolMode,
   UserCustomFont,
   ZoomMode,
 } from '@/types/pdf';
+import { clearSourceDocBytes, setSourceDocBytes } from '@/engine/sourceDocRegistry';
 import { normalizeRotation } from '@/engine/coordinates';
 import {
   applyCropSubRectToElement,
@@ -135,6 +139,12 @@ interface EditorState {
   pageNumbering: PageNumberingConfig | null;
 
   toolMode: ToolMode;
+  appMode: AppMode;
+  readingTheme: ReadingTheme;
+  analysisRequestedPages: Record<string, boolean>;
+  lastSavedAt: number | null;
+  lastSavedChangeCounter: number;
+  changeCounter: number;
   zoom: number;
   zoomMode: ZoomMode;
   theme: ThemeMode;
@@ -182,7 +192,11 @@ interface EditorState {
 
   // Actions
   setTheme: (theme: ThemeMode) => void;
+  setReadingTheme: (theme: ReadingTheme) => void;
   toggleTheme: () => void;
+  setAppMode: (mode: AppMode) => void;
+  requestPageAnalysis: (pageId: string) => void;
+  markDocumentSaved: () => void;
   setToolMode: (mode: ToolMode) => void;
   setZoom: (zoom: number, mode?: ZoomMode) => void;
   setZoomMode: (mode: ZoomMode) => void;
@@ -218,8 +232,12 @@ interface EditorState {
   setSelectBackgroundMode: (enabled: boolean) => void;
   setPageNumbering: (config: PageNumberingConfig | null) => void;
 
-  loadInitialDocument: (doc: SourceDocument, pages: PageMeta[]) => void;
-  appendMergedDocument: (doc: SourceDocument, newPages: PageMeta[], insertAt?: number) => void;
+  loadInitialDocument: (
+    doc: SourceDocumentInput,
+    pages: PageMeta[],
+    options?: { initialMode?: AppMode },
+  ) => void;
+  appendMergedDocument: (doc: SourceDocumentInput, newPages: PageMeta[], insertAt?: number) => void;
   resetDocument: () => void;
 
   setPageExtraction: (pageId: string, result: PageExtractionResult) => void;
@@ -708,6 +726,12 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   pageNumbering: null,
 
   toolMode: 'select',
+  appMode: 'view',
+  readingTheme: 'dark',
+  analysisRequestedPages: {},
+  lastSavedAt: null,
+  lastSavedChangeCounter: 0,
+  changeCounter: 0,
   zoom: 1,
   zoomMode: 'fit-width',
   theme: 'dark',
@@ -753,11 +777,50 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   canUndo: false,
   canRedo: false,
 
-  setTheme: (theme) => set({ theme }),
-  toggleTheme: () => set((s) => ({ theme: s.theme === 'dark' ? 'light' : 'dark' })),
+  setTheme: (theme) => set({ theme, readingTheme: theme }),
+  setReadingTheme: (readingTheme) =>
+    set({
+      readingTheme,
+      theme: readingTheme === 'dark' ? 'dark' : 'light',
+    }),
+  toggleTheme: () =>
+    set((s) => {
+      const next = s.theme === 'dark' ? 'light' : 'dark';
+      return { theme: next, readingTheme: next };
+    }),
+  setAppMode: (appMode) =>
+    set((s) => ({
+      appMode,
+      ...(appMode === 'view'
+        ? {
+            toolMode: 'select' as ToolMode,
+            selectedElementIds: [],
+            editingTextElementId: null,
+            editingPathElementId: null,
+            croppingImageElementId: null,
+            pendingSignaturePlacement: null,
+            contextMenu: null,
+          }
+        : {}),
+      ...(appMode === 'edit' && s.activePageId
+        ? { analysisRequestedPages: { ...s.analysisRequestedPages, [s.activePageId]: true } }
+        : {}),
+    })),
+  requestPageAnalysis: (pageId) =>
+    set((s) =>
+      s.analysisRequestedPages[pageId]
+        ? s
+        : { analysisRequestedPages: { ...s.analysisRequestedPages, [pageId]: true } },
+    ),
+  markDocumentSaved: () =>
+    set((s) => ({
+      lastSavedAt: Date.now(),
+      lastSavedChangeCounter: s.changeCounter,
+    })),
   setToolMode: (toolMode) =>
     set({
       toolMode,
+      ...(toolMode !== 'select' ? { appMode: 'edit' as AppMode } : {}),
       pendingSignaturePlacement: null,
       ...(toolMode !== 'select'
         ? {
@@ -831,17 +894,32 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     });
   },
 
-  loadInitialDocument: (doc, pages) => {
+  loadInitialDocument: (doc, pages, options) => {
     blobRegistry.revokeScope('doc');
     blobRegistry.revokeScope('cache');
+    clearSourceDocBytes();
+    if (doc.bytes) {
+      setSourceDocBytes(doc.id, doc.bytes);
+    }
+    const meta: SourceDocument = {
+      id: doc.id,
+      name: doc.name,
+      byteLength: doc.bytes?.byteLength ?? doc.byteLength ?? 0,
+      wasEncrypted: doc.wasEncrypted,
+      pageCount: doc.pageCount,
+    };
+    const initialMode: AppMode = options?.initialMode ?? 'view';
     set({
       documentName: doc.name,
-      sourceDocs: { [doc.id]: doc },
+      sourceDocs: { [doc.id]: meta },
       pages,
       elements: [],
       pageExtractions: {},
       extractingPages: {},
+      analysisRequestedPages: {},
       extractedFonts: [],
+      appMode: initialMode,
+      toolMode: 'select',
       activePageId: pages[0]?.id ?? null,
       selectedPageIds: pages[0] ? [pages[0].id] : [],
       lastSelectedPageId: pages[0]?.id ?? null,
@@ -858,6 +936,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       transactionBaseline: null,
       canUndo: false,
       canRedo: false,
+      lastSavedAt: null,
+      lastSavedChangeCounter: 0,
+      changeCounter: 0,
       errorBanner: null,
       passwordPrompt: null,
     });
@@ -865,6 +946,16 @@ export const useEditorStore = create<EditorState>((set, get) => ({
 
   appendMergedDocument: (doc, newPages, insertAt) => {
     const state = get();
+    if (doc.bytes) {
+      setSourceDocBytes(doc.id, doc.bytes);
+    }
+    const meta: SourceDocument = {
+      id: doc.id,
+      name: doc.name,
+      byteLength: doc.bytes?.byteLength ?? doc.byteLength ?? 0,
+      wasEncrypted: doc.wasEncrypted,
+      pageCount: doc.pageCount,
+    };
     const snapshot = cloneSnapshot(state.pages, state.elements, state.pageNumbering);
     const nextPages = [...state.pages];
     const index =
@@ -874,7 +965,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     nextPages.splice(index, 0, ...newPages);
     const nextPast = pushSnapshot(state.past, snapshot);
     set({
-      sourceDocs: { ...state.sourceDocs, [doc.id]: doc },
+      sourceDocs: { ...state.sourceDocs, [doc.id]: meta },
       pages: nextPages,
       activePageId: newPages[0]?.id ?? state.activePageId,
       selectedPageIds: newPages.map((p) => p.id),
@@ -883,12 +974,14 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       future: [],
       canUndo: nextPast.length > 0,
       canRedo: false,
+      changeCounter: state.changeCounter + 1,
     });
   },
 
   resetDocument: () => {
     blobRegistry.revokeScope('doc');
     blobRegistry.revokeScope('cache');
+    clearSourceDocBytes();
     set({
       documentName: 'Untitled.pdf',
       sourceDocs: {},
@@ -896,7 +989,10 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       elements: [],
       pageExtractions: {},
       extractingPages: {},
+      analysisRequestedPages: {},
       extractedFonts: [],
+      appMode: 'view',
+      toolMode: 'select',
       activePageId: null,
       selectedPageIds: [],
       lastSelectedPageId: null,
@@ -913,6 +1009,9 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       transactionBaseline: null,
       canUndo: false,
       canRedo: false,
+      lastSavedAt: null,
+      lastSavedChangeCounter: 0,
+      changeCounter: 0,
     });
   },
 

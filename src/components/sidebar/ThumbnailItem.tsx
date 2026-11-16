@@ -3,6 +3,7 @@ import { Copy, RotateCw, Trash2 } from 'lucide-react';
 import type { PageMeta } from '@/types/pdf';
 import { getDisplayDimensions } from '@/engine/coordinates';
 import { pdfjsService } from '@/engine/pdfjsService';
+import { getSourceDocBytes } from '@/engine/sourceDocRegistry';
 import { useEditorStore } from '@/store/useEditorStore';
 
 interface ThumbnailItemProps {
@@ -31,12 +32,13 @@ export function ThumbnailItem({
   onDelete,
 }: ThumbnailItemProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const sourceBytes = useEditorStore((s) => s.sourceDocs[page.sourceDocId]?.bytes);
+  const sourceByteLength = useEditorStore((s) => s.sourceDocs[page.sourceDocId]?.byteLength ?? 0);
 
   const dims = getDisplayDimensions(page.baseWidth, page.baseHeight, page.userRotation, scale);
 
   useEffect(() => {
     const canvas = canvasRef.current;
+    const sourceBytes = getSourceDocBytes(page.sourceDocId);
     if (!canvas || !sourceBytes) return;
 
     const handle = pdfjsService.renderPageToCanvas({
@@ -56,7 +58,7 @@ export function ThumbnailItem({
     return () => {
       handle.cancel();
     };
-  }, [page.sourceDocId, page.sourcePageIndex, page.userRotation, scale, sourceBytes]);
+  }, [page.sourceDocId, page.sourcePageIndex, page.userRotation, scale, sourceByteLength]);
 
   return (
     <div
@@ -92,11 +94,11 @@ export function ThumbnailItem({
       </div>
 
       <div className="mt-1.5 flex w-full items-center justify-between px-1">
-        <span className="text-[11px] font-medium text-slate-600 dark:text-slate-300">
+        <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
           Page {pageIndex + 1}
         </span>
         {page.userRotation !== 0 && (
-          <span className="rounded bg-slate-200 px-1 text-[10px] text-slate-600 dark:bg-slate-800 dark:text-slate-400">
+          <span className="rounded bg-slate-200 px-1 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-400">
             {page.userRotation}°
           </span>
         )}

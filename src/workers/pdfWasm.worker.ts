@@ -1,7 +1,17 @@
 /// <reference lib="webworker" />
 import type * as MuPdfNamespace from 'mupdf';
 import mupdfWasmUrl from '../../node_modules/mupdf/dist/mupdf-wasm.wasm?url';
-import type { WorkerEnvelope, WorkerMethod, WorkerResponse } from '@/types/worker';
+import type {
+  CompileSourceDocInput,
+  WorkerEnvelope,
+  WorkerMethod,
+  WorkerResponse,
+} from '@/types/worker';
+import {
+  extractEmbeddedFontsFromPdfBytes,
+  getExtractedFontAssetPayloads,
+  clearExtractedFontsForDoc,
+} from '@/engine/embeddedFontExtractor';
 import {
   compilePdfDocument,
   inspectPdfDocument,
@@ -27,20 +37,34 @@ async function getMuPdf(): Promise<MuPdfModule> {
   return mupdfPromise;
 }
 
+const registeredSourceBytes = new Map<string, Uint8Array>();
+
 // LRU cache of open source MuPDF documents (max 6) so per-page text extraction and
 // live clean-page preview rendering execute in milliseconds without re-parsing large PDFs.
 const MAX_CACHED_DOCS = 6;
 const sourceDocCache = new Map<string, MuPdfNamespace.Document>();
 
+function resolveDocBytes(sourceDocId: string, inlineBytes?: Uint8Array): Uint8Array {
+  if (inlineBytes) {
+    registeredSourceBytes.set(sourceDocId, inlineBytes);
+    return inlineBytes;
+  }
+  const existing = registeredSourceBytes.get(sourceDocId);
+  if (!existing) {
+    throw new Error(`SOURCE_DOC_NOT_REGISTERED:${sourceDocId}`);
+  }
+  return existing;
+}
+
 function getOrOpenCachedSourceDoc(
   mupdf: MuPdfModule,
   sourceDocId: string,
-  bytes: Uint8Array,
+  inlineBytes?: Uint8Array,
 ): MuPdfNamespace.Document {
+  const bytes = resolveDocBytes(sourceDocId, inlineBytes);
   const cacheKey = `${sourceDocId}:${bytes.byteLength}`;
   const existing = sourceDocCache.get(cacheKey);
   if (existing) {
-    // Refresh LRU recency
     sourceDocCache.delete(cacheKey);
     sourceDocCache.set(cacheKey, existing);
     return existing;
@@ -62,6 +86,28 @@ function getOrOpenCachedSourceDoc(
   return doc;
 }
 
+function releaseDocHandles(sourceDocId: string): void {
+  registeredSourceBytes.delete(sourceDocId);
+  clearExtractedFontsForDoc(sourceDocId);
+  for (const [cacheKey, doc] of [...sourceDocCache.entries()]) {
+    if (cacheKey.startsWith(`${sourceDocId}:`)) {
+      sourceDocCache.delete(cacheKey);
+      try {
+        doc.destroy();
+      } catch {
+        // Ignore
+      }
+    }
+  }
+}
+
+function hydrateSourceDocs(inputs: CompileSourceDocInput[]): Array<{ id: string; bytes: Uint8Array }> {
+  return inputs.map((src) => ({
+    id: src.id,
+    bytes: resolveDocBytes(src.id, src.bytes),
+  }));
+}
+
 self.onmessage = async (event: MessageEvent<WorkerEnvelope>) => {
   const { id, method, payload } = event.data;
 
@@ -75,13 +121,58 @@ self.onmessage = async (event: MessageEvent<WorkerEnvelope>) => {
         result = { ready: true, mupdfLoaded: Boolean(mupdf) };
         break;
       }
+      case 'registerSourceDoc': {
+        const p = payload as WorkerEnvelope<'registerSourceDoc'>['payload'];
+        registeredSourceBytes.set(p.sourceDocId, p.bytes);
+        result = { ok: true };
+        break;
+      }
+      case 'releaseSourceDoc': {
+        const p = payload as WorkerEnvelope<'releaseSourceDoc'>['payload'];
+        releaseDocHandles(p.sourceDocId);
+        result = { ok: true };
+        break;
+      }
       case 'inspectPdf': {
         const p = payload as WorkerEnvelope<'inspectPdf'>['payload'];
         const res = await inspectPdfDocument(mupdf, p.bytes, p.password);
-        if (res.decryptedBytes) {
+        let registeredInWorker = false;
+        if (res.status === 'ok' && p.sourceDocId) {
+          const workerBytes = res.decryptedBytes ?? p.bytes;
+          registeredSourceBytes.set(p.sourceDocId, workerBytes);
+          registeredInWorker = true;
+          if (res.decryptedBytes) {
+            // Keep workerBytes in worker and send a copy to main thread (until F1 moves raster to PDFium worker)
+            const copyForMain = res.decryptedBytes.slice();
+            res.decryptedBytes = copyForMain;
+            transfer.push(copyForMain.buffer);
+          }
+        } else if (res.decryptedBytes) {
           transfer.push(res.decryptedBytes.buffer);
         }
-        result = res;
+        result = { ...res, registeredInWorker };
+        break;
+      }
+      case 'extractEmbeddedFonts': {
+        const p = payload as WorkerEnvelope<'extractEmbeddedFonts'>['payload'];
+        const bytes = resolveDocBytes(p.sourceDocId, p.bytes);
+        const fonts = await extractEmbeddedFontsFromPdfBytes(p.sourceDocId, bytes);
+        const rawAssets = getExtractedFontAssetPayloads(fonts.map((f) => f.id));
+        const assets = rawAssets.map((a) => {
+          const cloned = {
+            family: a.family,
+            regular: a.regular ? a.regular.slice() : undefined,
+            bold: a.bold ? a.bold.slice() : undefined,
+            italic: a.italic ? a.italic.slice() : undefined,
+            boldItalic: a.boldItalic ? a.boldItalic.slice() : undefined,
+          };
+          if (cloned.regular) transfer.push(cloned.regular.buffer);
+          if (cloned.bold) transfer.push(cloned.bold.buffer);
+          if (cloned.italic) transfer.push(cloned.italic.buffer);
+          if (cloned.boldItalic) transfer.push(cloned.boldItalic.buffer);
+          return cloned;
+        });
+        result = { fonts, assets };
         break;
       }
       case 'extractPageText': {
@@ -123,8 +214,10 @@ self.onmessage = async (event: MessageEvent<WorkerEnvelope>) => {
         const p = payload as WorkerEnvelope<'compilePdf'>['payload'];
         const unicodeFonts = await loadWorkerUnicodeFonts();
         const mergedFonts = p.fonts ? [...p.fonts, ...unicodeFonts] : unicodeFonts;
+        const hydratedDocs = hydrateSourceDocs(p.sourceDocs);
         const bytes = await compilePdfDocument(mupdf, {
           ...p,
+          sourceDocs: hydratedDocs,
           fonts: mergedFonts,
         });
         transfer.push(bytes.buffer);
@@ -135,8 +228,10 @@ self.onmessage = async (event: MessageEvent<WorkerEnvelope>) => {
         const p = payload as WorkerEnvelope<'splitPdfZip'>['payload'];
         const unicodeFonts = await loadWorkerUnicodeFonts();
         const mergedFonts = p.fonts ? [...p.fonts, ...unicodeFonts] : unicodeFonts;
+        const hydratedDocs = hydrateSourceDocs(p.sourceDocs);
         const zipBytes = await splitPdfToZip(mupdf, {
           ...p,
+          sourceDocs: hydratedDocs,
           fonts: mergedFonts,
         });
         transfer.push(zipBytes.buffer);

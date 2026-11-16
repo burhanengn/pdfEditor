@@ -15,6 +15,7 @@ import { FilePlus } from 'lucide-react';
 import { insertBlankPageInDocument, mergePdfFile } from '@/engine/documentController';
 import { useEditorStore } from '@/store/useEditorStore';
 import { ThumbnailItem } from '../sidebar/ThumbnailItem';
+import { VirtualThumbnailGrid } from '../sidebar/VirtualThumbnailGrid';
 
 interface MobilePagesSheetProps {
   onScrollToPage: (pageIndex: number) => void;
@@ -60,7 +61,7 @@ export function MobilePagesSheet({ onScrollToPage }: MobilePagesSheetProps) {
             <h2 className="text-sm font-semibold text-slate-900 dark:text-slate-100">
               Sayfalar ({pages.length})
             </h2>
-            <p className="text-[11px] text-slate-500 dark:text-slate-400">
+            <p className="text-xs text-slate-500 dark:text-slate-400">
               {selectedPageIds.length} seçili • atlamak için sayfaya dokunun
             </p>
           </div>
@@ -152,75 +153,78 @@ export function MobilePagesSheet({ onScrollToPage }: MobilePagesSheetProps) {
           </button>
         </div>
 
-        {/* Thumbnail Grid */}
-        <div className="flex-1 overflow-y-auto p-3">
-          <div className="grid grid-cols-2 gap-3">
-            {pages.map((page, idx) => {
-              const selected = selectedPageIds.includes(page.id);
-              return (
-                <div key={page.id} className="relative flex flex-col gap-1.5">
-                  <div className="relative">
-                    <ThumbnailItem
-                      page={page}
-                      pageIndex={idx}
-                      isActive={selected}
-                      totalPages={pages.length}
-                      scale={0.23}
-                      testIdPrefix="mobile-page-thumb-"
-                      onSelect={() => {
-                        setActivePage(page.id);
-                        onScrollToPage(idx);
-                        setMobileSheet('none');
-                      }}
-                      onRotateCW={() => rotatePages([page.id], 90)}
-                      onDuplicate={() => duplicatePages([page.id])}
-                      onDelete={() => deletePages([page.id])}
-                    />
-                    <button
-                      type="button"
-                      aria-label={`Sayfa ${idx + 1} çoklu seçim`}
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        togglePageSelection(page.id, true);
-                      }}
-                      className="absolute left-1.5 top-1.5 flex h-9 w-9 items-center justify-center rounded-lg bg-white/90 text-blue-600 shadow dark:bg-slate-900/90"
-                    >
-                      {selected ? (
-                        <CheckSquare className="h-4 w-4" />
-                      ) : (
-                        <Square className="h-4 w-4 text-slate-400" />
-                      )}
-                    </button>
-                  </div>
-
-                  {/* Touch Reorder Controls */}
-                  <div className="grid grid-cols-2 gap-1">
-                    <button
-                      type="button"
-                      disabled={idx === 0}
-                      onClick={() => reorderPages(idx, idx - 1)}
-                      aria-label={`Sayfa ${idx + 1} yukarı taşı`}
-                      className="flex min-h-[38px] items-center justify-center gap-1 rounded-lg border border-slate-200 bg-slate-50 text-[11px] font-medium text-slate-600 disabled:opacity-35 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
-                    >
-                      <ArrowUp className="h-3.5 w-3.5" />
-                      Önceki
-                    </button>
-                    <button
-                      type="button"
-                      disabled={idx === pages.length - 1}
-                      onClick={() => reorderPages(idx, idx + 1)}
-                      aria-label={`Sayfa ${idx + 1} aşağı taşı`}
-                      className="flex min-h-[38px] items-center justify-center gap-1 rounded-lg border border-slate-200 bg-slate-50 text-[11px] font-medium text-slate-600 disabled:opacity-35 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
-                    >
-                      <ArrowDown className="h-3.5 w-3.5" />
-                      Sonraki
-                    </button>
-                  </div>
+        {/* Virtualized Thumbnail Grid */}
+        <VirtualThumbnailGrid
+          pages={pages}
+          columns={2}
+          estimateRowHeightPx={265}
+          gapPx={12}
+          className="p-3"
+          renderItem={(page, idx) => {
+            const selected = selectedPageIds.includes(page.id);
+            return (
+              <div key={page.id} className="relative flex flex-col gap-1.5">
+                <div className="relative">
+                  <ThumbnailItem
+                    page={page}
+                    pageIndex={idx}
+                    isActive={selected}
+                    totalPages={pages.length}
+                    scale={0.23}
+                    testIdPrefix="mobile-page-thumb-"
+                    onSelect={() => {
+                      setActivePage(page.id);
+                      onScrollToPage(idx);
+                      setMobileSheet('none');
+                    }}
+                    onRotateCW={() => rotatePages([page.id], 90)}
+                    onDuplicate={() => duplicatePages([page.id])}
+                    onDelete={() => deletePages([page.id])}
+                  />
+                  <button
+                    type="button"
+                    aria-label={`Sayfa ${idx + 1} çoklu seçim`}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      togglePageSelection(page.id, true);
+                    }}
+                    className="absolute left-1.5 top-1.5 flex h-11 w-11 items-center justify-center rounded-lg bg-white/90 text-blue-600 shadow dark:bg-slate-900/90"
+                  >
+                    {selected ? (
+                      <CheckSquare className="h-5 w-5" />
+                    ) : (
+                      <Square className="h-5 w-5 text-slate-400" />
+                    )}
+                  </button>
                 </div>
-              );
-            })}
-          </div>
-        </div>
+
+                {/* Touch Reorder Controls */}
+                <div className="grid grid-cols-2 gap-1">
+                  <button
+                    type="button"
+                    disabled={idx === 0}
+                    onClick={() => reorderPages(idx, idx - 1)}
+                    aria-label={`Sayfa ${idx + 1} yukarı taşı`}
+                    className="flex min-h-[44px] items-center justify-center gap-1 rounded-lg border border-slate-200 bg-slate-50 text-xs font-medium text-slate-600 disabled:opacity-35 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
+                  >
+                    <ArrowUp className="h-4 w-4" />
+                    Önceki
+                  </button>
+                  <button
+                    type="button"
+                    disabled={idx === pages.length - 1}
+                    onClick={() => reorderPages(idx, idx + 1)}
+                    aria-label={`Sayfa ${idx + 1} aşağı taşı`}
+                    className="flex min-h-[44px] items-center justify-center gap-1 rounded-lg border border-slate-200 bg-slate-50 text-xs font-medium text-slate-600 disabled:opacity-35 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-300"
+                  >
+                    <ArrowDown className="h-4 w-4" />
+                    Sonraki
+                  </button>
+                </div>
+              </div>
+            );
+          }}
+        />
       </section>
     </div>
   );

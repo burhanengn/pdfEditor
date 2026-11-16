@@ -35,7 +35,7 @@ export function MobileBottomDock() {
           disabled={!hasPages}
           data-testid="mobile-dock-pages"
           onClick={() => toggleTab('pages')}
-          className={`relative flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-xl px-1 text-[11px] font-medium transition disabled:opacity-40 ${
+          className={`relative flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-xl px-1 text-xs font-medium transition disabled:opacity-40 ${
             mobileSheet === 'pages'
               ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
               : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900'
@@ -44,7 +44,7 @@ export function MobileBottomDock() {
           <div className="relative">
             <Layers className="h-5 w-5" />
             {hasPages && (
-              <span className="absolute -right-2.5 -top-1 rounded-full bg-slate-200 px-1 text-[9px] font-bold text-slate-700 dark:bg-slate-800 dark:text-slate-200">
+              <span className="absolute -right-2.5 -top-1 rounded-full bg-slate-200 px-1 text-xs font-bold text-slate-700 dark:bg-slate-800 dark:text-slate-200">
                 {pages.length}
               </span>
             )}
@@ -56,7 +56,7 @@ export function MobileBottomDock() {
           type="button"
           data-testid="mobile-dock-tools"
           onClick={() => toggleTab('tools')}
-          className={`relative flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-xl px-1 text-[11px] font-medium transition ${
+          className={`relative flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-xl px-1 text-xs font-medium transition ${
             mobileSheet === 'tools'
               ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
               : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900'
@@ -76,7 +76,7 @@ export function MobileBottomDock() {
           disabled={!hasPages}
           data-testid="mobile-dock-inspector"
           onClick={() => toggleTab('inspector')}
-          className={`relative flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-xl px-1 text-[11px] font-medium transition disabled:opacity-40 ${
+          className={`relative flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-xl px-1 text-xs font-medium transition disabled:opacity-40 ${
             mobileSheet === 'inspector'
               ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
               : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900'
@@ -96,7 +96,7 @@ export function MobileBottomDock() {
           disabled={!hasPages}
           data-testid="mobile-dock-export"
           onClick={() => toggleTab('export')}
-          className={`relative flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-xl px-1 text-[11px] font-medium transition disabled:opacity-40 ${
+          className={`relative flex min-h-[48px] flex-col items-center justify-center gap-0.5 rounded-xl px-1 text-xs font-medium transition disabled:opacity-40 ${
             mobileSheet === 'export'
               ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
               : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900'

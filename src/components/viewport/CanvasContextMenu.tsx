@@ -273,7 +273,7 @@ export function CanvasContextMenu() {
       {/* Empty page menu */}
       {selected.length === 0 ? (
         <div className="space-y-0.5">
-          <div className="px-2.5 py-1 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+          <div className="px-2.5 py-1 text-xs font-semibold uppercase tracking-wider text-slate-400">
             Sayfa İşlemleri
           </div>
           {clipboard.length > 0 && (
@@ -290,7 +290,7 @@ export function CanvasContextMenu() {
                 <Clipboard className="h-3.5 w-3.5" />
                 Buraya Yapıştır ({clipboard.length})
               </span>
-              <span className="text-[10px] text-blue-500/80">Ctrl+V</span>
+              <span className="text-xs text-blue-500/80">Ctrl+V</span>
             </button>
           )}
           <button
@@ -321,7 +321,7 @@ export function CanvasContextMenu() {
       ) : (
         <div className="space-y-1">
           {/* Header badge */}
-          <div className="flex items-center justify-between px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+          <div className="flex items-center justify-between px-2.5 py-0.5 text-xs font-semibold uppercase tracking-wider text-slate-400">
             <span>
               {selected.length > 1
                 ? `${selected.length} Öğe Seçili`
@@ -469,7 +469,7 @@ export function CanvasContextMenu() {
                       onClick={() =>
                         closeAnd(() => applyImageClippingMask(singleImage.id, match.mask.id, 'a'))
                       }
-                      className="flex items-center justify-center gap-1 rounded-lg border border-indigo-400/50 bg-indigo-50 px-2 py-1.5 text-[11px] font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-500/40 dark:bg-indigo-500/15 dark:text-indigo-300"
+                      className="flex items-center justify-center gap-1 rounded-lg border border-indigo-400/50 bg-indigo-50 px-2 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-500/40 dark:bg-indigo-500/15 dark:text-indigo-300"
                     >
                       <Scissors className="h-3 w-3" />
                       Çizgi Kırp 1
@@ -481,7 +481,7 @@ export function CanvasContextMenu() {
                       onClick={() =>
                         closeAnd(() => applyImageClippingMask(singleImage.id, match.mask.id, 'b'))
                       }
-                      className="flex items-center justify-center gap-1 rounded-lg border border-indigo-400/50 bg-indigo-50 px-2 py-1.5 text-[11px] font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-500/40 dark:bg-indigo-500/15 dark:text-indigo-300"
+                      className="flex items-center justify-center gap-1 rounded-lg border border-indigo-400/50 bg-indigo-50 px-2 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-500/40 dark:bg-indigo-500/15 dark:text-indigo-300"
                     >
                       <Scissors className="h-3 w-3" />
                       Çizgi Kırp 2
@@ -551,7 +551,7 @@ export function CanvasContextMenu() {
                       onClick={() =>
                         closeAnd(() => applyImageClippingMask(match.image.id, singleMask.id, 'a'))
                       }
-                      className="flex items-center justify-center gap-1 rounded-lg border border-indigo-400/50 bg-indigo-50 px-2 py-1.5 text-[11px] font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-500/40 dark:bg-indigo-500/15 dark:text-indigo-300"
+                      className="flex items-center justify-center gap-1 rounded-lg border border-indigo-400/50 bg-indigo-50 px-2 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-500/40 dark:bg-indigo-500/15 dark:text-indigo-300"
                     >
                       <Scissors className="h-3 w-3" />
                       Görseli Böl 1
@@ -563,7 +563,7 @@ export function CanvasContextMenu() {
                       onClick={() =>
                         closeAnd(() => applyImageClippingMask(match.image.id, singleMask.id, 'b'))
                       }
-                      className="flex items-center justify-center gap-1 rounded-lg border border-indigo-400/50 bg-indigo-50 px-2 py-1.5 text-[11px] font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-500/40 dark:bg-indigo-500/15 dark:text-indigo-300"
+                      className="flex items-center justify-center gap-1 rounded-lg border border-indigo-400/50 bg-indigo-50 px-2 py-1.5 text-xs font-medium text-indigo-700 hover:bg-indigo-100 dark:border-indigo-500/40 dark:bg-indigo-500/15 dark:text-indigo-300"
                     >
                       <Scissors className="h-3 w-3" />
                       Görseli Böl 2
@@ -624,7 +624,7 @@ export function CanvasContextMenu() {
           {/* Transform section: Reflect, Rotate, Rotate & Copy */}
           {anyTransformable && !allLocked && (
             <div className="space-y-1 border-b border-slate-100 pb-1.5 dark:border-slate-800">
-              <div className="px-2.5 pt-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+              <div className="px-2.5 pt-0.5 text-xs font-semibold uppercase tracking-wider text-slate-400">
                 Dönüştür (Döndür / Yansıt)
               </div>
               <div className="grid grid-cols-2 gap-1 px-1">
@@ -633,7 +633,7 @@ export function CanvasContextMenu() {
                   role="menuitem"
                   data-testid="ctx-reflect-x"
                   onClick={() => closeAnd(() => reflectElements(targetIds, 'horizontal'))}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-700 hover:border-blue-400 hover:bg-blue-50 hover:text-blue-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-blue-500/20"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-700 hover:border-blue-400 hover:bg-blue-50 hover:text-blue-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-blue-500/20"
                 >
                   <FlipHorizontal2 className="h-3.5 w-3.5" />
                   Yatay Yansıt
@@ -643,7 +643,7 @@ export function CanvasContextMenu() {
                   role="menuitem"
                   data-testid="ctx-reflect-y"
                   onClick={() => closeAnd(() => reflectElements(targetIds, 'vertical'))}
-                  className="inline-flex items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-[11px] font-medium text-slate-700 hover:border-blue-400 hover:bg-blue-50 hover:text-blue-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-blue-500/20"
+                  className="inline-flex items-center justify-center gap-1.5 rounded-md border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-700 hover:border-blue-400 hover:bg-blue-50 hover:text-blue-700 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200 dark:hover:bg-blue-500/20"
                 >
                   <FlipVertical2 className="h-3.5 w-3.5" />
                   Dikey Yansıt
@@ -663,7 +663,7 @@ export function CanvasContextMenu() {
                     role="menuitem"
                     data-testid={opt.testid}
                     onClick={() => closeAnd(() => rotateElements(targetIds, opt.deg))}
-                    className="rounded-md border border-slate-200 bg-white py-1 text-[11px] font-medium text-slate-600 hover:border-blue-400 hover:bg-blue-50 hover:text-blue-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-blue-500/20"
+                    className="rounded-md border border-slate-200 bg-white py-1 text-xs font-medium text-slate-600 hover:border-blue-400 hover:bg-blue-50 hover:text-blue-700 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-300 dark:hover:bg-blue-500/20"
                   >
                     {opt.label}
                   </button>
@@ -681,7 +681,7 @@ export function CanvasContextMenu() {
                   <RotateCw className="h-3.5 w-3.5 text-blue-500" />
                   Döndürerek Kopyala…
                 </span>
-                <span className="text-[10px] text-slate-400">Rozet / Açı</span>
+                <span className="text-xs text-slate-400">Rozet / Açı</span>
               </button>
 
               {lastRotateCopyConfig && (
@@ -723,7 +723,7 @@ export function CanvasContextMenu() {
                 <Copy className="h-3.5 w-3.5 text-slate-400" />
                 Kopyala
               </span>
-              <span className="text-[10px] text-slate-400">Ctrl+C</span>
+              <span className="text-xs text-slate-400">Ctrl+C</span>
             </button>
             <button
               type="button"
@@ -736,7 +736,7 @@ export function CanvasContextMenu() {
                 <CopyPlus className="h-3.5 w-3.5 text-slate-400" />
                 Çoğalt (Aynısından Ekle)
               </span>
-              <span className="text-[10px] text-slate-400">Ctrl+D</span>
+              <span className="text-xs text-slate-400">Ctrl+D</span>
             </button>
             {clipboard.length > 0 && (
               <button
@@ -752,14 +752,14 @@ export function CanvasContextMenu() {
                   <Clipboard className="h-3.5 w-3.5 text-slate-400" />
                   Yapıştır
                 </span>
-                <span className="text-[10px] text-slate-400">Ctrl+V</span>
+                <span className="text-xs text-slate-400">Ctrl+V</span>
               </button>
             )}
           </div>
 
           {/* Layer Ordering */}
           <div className="space-y-1 border-b border-slate-100 pb-1 dark:border-slate-800">
-            <div className="px-2.5 pt-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-400">
+            <div className="px-2.5 pt-0.5 text-xs font-semibold uppercase tracking-wider text-slate-400">
               Katman Sırası
             </div>
             <div className="grid grid-cols-4 gap-1 px-1">
@@ -769,7 +769,7 @@ export function CanvasContextMenu() {
                 data-testid="ctx-layer-front"
                 title="En Üste Getir"
                 onClick={() => closeAnd(() => bringToFront(targetIds))}
-                className="flex flex-col items-center rounded-md border border-slate-200 py-1 text-[10px] text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                className="flex flex-col items-center rounded-md border border-slate-200 py-1 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
               >
                 <ArrowUpToLine className="h-3.5 w-3.5" />
                 Üst
@@ -780,7 +780,7 @@ export function CanvasContextMenu() {
                 data-testid="ctx-layer-forward"
                 title="Bir Öne Getir"
                 onClick={() => closeAnd(() => stepLayer(targetIds, 'forward'))}
-                className="flex flex-col items-center rounded-md border border-slate-200 py-1 text-[10px] text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                className="flex flex-col items-center rounded-md border border-slate-200 py-1 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
               >
                 <ArrowUp className="h-3.5 w-3.5" />
                 Öne
@@ -791,7 +791,7 @@ export function CanvasContextMenu() {
                 data-testid="ctx-layer-backward"
                 title="Bir Arkaya Gönder"
                 onClick={() => closeAnd(() => stepLayer(targetIds, 'backward'))}
-                className="flex flex-col items-center rounded-md border border-slate-200 py-1 text-[10px] text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                className="flex flex-col items-center rounded-md border border-slate-200 py-1 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
               >
                 <ArrowDown className="h-3.5 w-3.5" />
                 Arka
@@ -802,7 +802,7 @@ export function CanvasContextMenu() {
                 data-testid="ctx-layer-back"
                 title="En Alta Gönder"
                 onClick={() => closeAnd(() => sendToBack(targetIds))}
-                className="flex flex-col items-center rounded-md border border-slate-200 py-1 text-[10px] text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
+                className="flex flex-col items-center rounded-md border border-slate-200 py-1 text-xs text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-800"
               >
                 <ArrowDownToLine className="h-3.5 w-3.5" />
                 Alt
@@ -846,7 +846,7 @@ export function CanvasContextMenu() {
                 <Trash2 className="h-3.5 w-3.5" />
                 Sil
               </span>
-              <span className="text-[10px] opacity-70">Del</span>
+              <span className="text-xs opacity-70">Del</span>
             </button>
           </div>
         </div>

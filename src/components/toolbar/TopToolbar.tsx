@@ -1,12 +1,14 @@
 import { useRef } from 'react';
 import {
   ArrowRight,
+  Check,
   Circle,
   Diamond,
   FilePlus,
   FilePlus2,
   FileSignature,
   FolderOpen,
+  Globe,
   Hash,
   Highlighter,
   ImagePlus,
@@ -18,6 +20,7 @@ import {
   Minus,
   Moon,
   MousePointer2,
+  Pencil,
   PenTool,
   Redo2,
   Scissors,
@@ -41,6 +44,7 @@ import {
   mergePdfFile,
   openPdfFile,
 } from '@/engine/documentController';
+import { useI18n } from '@/i18n/useI18n';
 import { useEditorStore } from '@/store/useEditorStore';
 import type { VectorShapeType, VectorStrokeDash } from '@/types/elements';
 import type { ToolMode, ZoomMode } from '@/types/pdf';
@@ -49,9 +53,12 @@ import { BrandLogo } from '../BrandLogo';
 const QUICK_COLORS = ['#ef4444', '#2563eb', '#0f172a', '#16a34a', '#facc15'];
 
 export function TopToolbar() {
+  const { locale, setLocale, t } = useI18n();
   const documentName = useEditorStore((s) => s.documentName);
   const pages = useEditorStore((s) => s.pages);
   const activePageId = useEditorStore((s) => s.activePageId);
+  const appMode = useEditorStore((s) => s.appMode);
+  const setAppMode = useEditorStore((s) => s.setAppMode);
   const toolMode = useEditorStore((s) => s.toolMode);
   const zoom = useEditorStore((s) => s.zoom);
   const zoomMode = useEditorStore((s) => s.zoomMode);
@@ -166,7 +173,7 @@ export function TopToolbar() {
             {hasPages && (
               <span
                 title={documentName}
-                className="hidden max-w-[110px] truncate rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300 2xl:inline"
+                className="hidden max-w-[110px] truncate rounded bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-600 dark:bg-slate-800 dark:text-slate-300 2xl:inline"
               >
                 {documentName}
               </span>
@@ -265,7 +272,7 @@ export function TopToolbar() {
               type="button"
               data-testid="cancel-signature-placement-btn"
               onClick={cancelPendingSignaturePlacement}
-              className="hidden shrink-0 items-center gap-1 rounded-lg border border-blue-500/50 bg-blue-50 px-2 py-1 text-[11px] font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-500/40 dark:bg-blue-950/70 dark:text-blue-200 md:inline-flex"
+              className="hidden shrink-0 items-center gap-1 rounded-lg border border-blue-500/50 bg-blue-50 px-2 py-1 text-xs font-medium text-blue-700 hover:bg-blue-100 dark:border-blue-500/40 dark:bg-blue-950/70 dark:text-blue-200 md:inline-flex"
             >
               Click page to place • Cancel (Esc)
             </button>
@@ -286,53 +293,55 @@ export function TopToolbar() {
           />
         </div>
 
-        {/* Center: Primary Editing Tool Modes (Desktop & Tablet >= 768px; Mobile uses Bottom Dock Tools sheet) */}
-        <div className="hidden shrink-0 items-center gap-0.5 rounded-xl border border-slate-200 bg-slate-100/80 p-0.5 dark:border-slate-800 dark:bg-slate-900 md:flex">
-          {toolButtons.map((btn) => {
-            const Icon = btn.icon;
-            const active = toolMode === btn.id;
-            return (
-              <button
-                key={btn.id}
-                type="button"
-                disabled={!hasPages && btn.id !== 'signature'}
-                title={btn.label}
-                data-testid={`tool-${btn.id}`}
-                onClick={() => {
-                  if (btn.onClick) {
-                    btn.onClick();
-                  } else {
-                    setToolMode(btn.id);
-                  }
-                }}
-                className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition disabled:opacity-40 ${
-                  active
-                    ? 'bg-blue-600 text-white shadow-sm'
-                    : 'text-slate-600 hover:bg-white hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white'
-                }`}
-              >
-                <Icon className="h-3.5 w-3.5" />
-                <span className="hidden lg:inline">{btn.label}</span>
-              </button>
-            );
-          })}
-          <button
-            type="button"
-            disabled={!hasPages}
-            aria-pressed={selectBackgroundMode}
-            title="Arka Planı Seç (Arka Plan Görsellerini Düzenle)"
-            data-testid="toggle-select-background"
-            onClick={() => setSelectBackgroundMode(!selectBackgroundMode)}
-            className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition disabled:opacity-40 ${
-              selectBackgroundMode
-                ? 'bg-amber-500/20 text-amber-600 ring-1 ring-amber-400/50 dark:text-amber-300'
-                : 'text-slate-600 hover:bg-white hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white'
-            }`}
-          >
-            <Layers className="h-3.5 w-3.5" />
-            <span className="hidden xl:inline">Arka Planı Seç</span>
-          </button>
-        </div>
+        {/* Center: Primary Editing Tool Modes (Visible only in Editor mode on >= 768px) */}
+        {appMode === 'edit' && (
+          <div className="hidden shrink-0 items-center gap-0.5 rounded-xl border border-slate-200 bg-slate-100/80 p-0.5 dark:border-slate-800 dark:bg-slate-900 md:flex">
+            {toolButtons.map((btn) => {
+              const Icon = btn.icon;
+              const active = toolMode === btn.id;
+              return (
+                <button
+                  key={btn.id}
+                  type="button"
+                  disabled={!hasPages && btn.id !== 'signature'}
+                  title={btn.label}
+                  data-testid={`tool-${btn.id}`}
+                  onClick={() => {
+                    if (btn.onClick) {
+                      btn.onClick();
+                    } else {
+                      setToolMode(btn.id);
+                    }
+                  }}
+                  className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition disabled:opacity-40 ${
+                    active
+                      ? 'bg-blue-600 text-white shadow-sm'
+                      : 'text-slate-600 hover:bg-white hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white'
+                  }`}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                  <span className="hidden lg:inline">{btn.label}</span>
+                </button>
+              );
+            })}
+            <button
+              type="button"
+              disabled={!hasPages}
+              aria-pressed={selectBackgroundMode}
+              title="Arka Planı Seç (Arka Plan Görsellerini Düzenle)"
+              data-testid="toggle-select-background"
+              onClick={() => setSelectBackgroundMode(!selectBackgroundMode)}
+              className={`inline-flex shrink-0 items-center gap-1.5 rounded-lg px-2 py-1.5 text-xs font-medium transition disabled:opacity-40 ${
+                selectBackgroundMode
+                  ? 'bg-amber-500/20 text-amber-600 ring-1 ring-amber-400/50 dark:text-amber-300'
+                  : 'text-slate-600 hover:bg-white hover:text-slate-900 dark:text-slate-300 dark:hover:bg-slate-800 dark:hover:text-white'
+              }`}
+            >
+              <Layers className="h-3.5 w-3.5" />
+              <span className="hidden xl:inline">Arka Planı Seç</span>
+            </button>
+          </div>
+        )}
 
         {/* Right: Undo/Redo, Zoom, Snap, Theme, Export */}
         <div className="flex shrink-0 items-center gap-1.5">
@@ -446,6 +455,18 @@ export function TopToolbar() {
 
           <button
             type="button"
+            onClick={() => setLocale(locale === 'en' ? 'tr' : 'en')}
+            title={t('settings.language')}
+            aria-label={t('settings.language')}
+            data-testid="locale-toggle-btn"
+            className="inline-flex min-h-[36px] min-w-[36px] items-center justify-center gap-1 rounded-lg px-2 py-1.5 text-xs font-semibold text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-800"
+          >
+            <Globe className="h-3.5 w-3.5" />
+            <span>{locale.toUpperCase()}</span>
+          </button>
+
+          <button
+            type="button"
             onClick={toggleTheme}
             title="Toggle Light / Dark Theme"
             data-testid="theme-toggle-btn"
@@ -454,22 +475,47 @@ export function TopToolbar() {
             {theme === 'dark' ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
           </button>
 
+          {hasPages && (
+            <button
+              type="button"
+              onClick={() => setAppMode(appMode === 'view' ? 'edit' : 'view')}
+              data-testid="toggle-edit-mode-btn"
+              title={appMode === 'view' ? `${t('action.editPdf')} (E)` : `${t('action.done')} (Esc)`}
+              className={`inline-flex min-h-[36px] items-center gap-1.5 rounded-lg px-3 py-1.5 text-xs font-semibold shadow-sm transition ${
+                appMode === 'view'
+                  ? 'bg-blue-600 text-white hover:bg-blue-500'
+                  : 'border border-emerald-500/40 bg-emerald-600 text-white hover:bg-emerald-500'
+              }`}
+            >
+              {appMode === 'view' ? (
+                <>
+                  <Pencil className="h-3.5 w-3.5" />
+                  <span>{t('action.editPdf')}</span>
+                </>
+              ) : (
+                <>
+                  <Check className="h-3.5 w-3.5" />
+                  <span>{t('action.done')}</span>
+                </>
+              )}
+            </button>
+          )}
+
           <button
             type="button"
             disabled={!hasPages || isLoading}
             onClick={() => void exportCurrentPdf()}
             data-testid="export-pdf-btn"
-            className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg bg-blue-600 px-2.5 py-1.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-500 disabled:opacity-40 sm:px-3"
+            className="inline-flex min-h-[36px] items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-2.5 py-1.5 text-xs font-semibold text-slate-800 shadow-sm hover:bg-slate-100 disabled:opacity-40 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-100 dark:hover:bg-slate-800 sm:px-3"
           >
             <Download className="h-3.5 w-3.5" />
-            <span className="hidden sm:inline">Export PDF</span>
-            <span className="sm:hidden">PDF</span>
+            <span className="hidden sm:inline">{t('action.save')}</span>
           </button>
         </div>
       </div>
 
       {/* Contextual sub-toolbar for Draw / Annotate */}
-      {hasPages && toolMode === 'draw' && (
+      {hasPages && appMode === 'edit' && toolMode === 'draw' && (
         <div className="flex flex-wrap items-center gap-x-4 gap-y-1.5 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-xs dark:border-slate-800 dark:bg-slate-900 sm:px-4">
           <span className="font-medium text-slate-500 dark:text-slate-400">Freehand Ink:</span>
           <div className="flex items-center gap-1.5">
@@ -506,7 +552,7 @@ export function TopToolbar() {
         </div>
       )}
 
-      {hasPages && toolMode === 'shape' && (
+      {hasPages && appMode === 'edit' && toolMode === 'shape' && (
         <div
           data-testid="shape-subtoolbar"
           className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-xs dark:border-slate-800 dark:bg-slate-900 sm:px-4"
@@ -552,7 +598,7 @@ export function TopToolbar() {
                   fillColor: shapeFillColor === 'transparent' ? '#3b82f6' : 'transparent',
                 })
               }
-              className={`rounded border px-1.5 py-0.5 text-[10px] font-medium ${
+              className={`rounded border px-1.5 py-0.5 text-xs font-medium ${
                 shapeFillColor === 'transparent'
                   ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
                   : 'border-slate-300 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
@@ -596,7 +642,7 @@ export function TopToolbar() {
               onChange={(e) => setShapeStyle({ strokeWidth: Number(e.target.value) })}
               className="w-16 accent-blue-600"
             />
-            <span className="w-8 text-[11px] text-slate-600 dark:text-slate-300">
+            <span className="w-8 text-xs text-slate-600 dark:text-slate-300">
               {shapeStrokeWidth}pt
             </span>
           </div>
@@ -619,7 +665,7 @@ export function TopToolbar() {
         </div>
       )}
 
-      {hasPages && toolMode === 'path' && (
+      {hasPages && appMode === 'edit' && toolMode === 'path' && (
         <div
           data-testid="path-subtoolbar"
           className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-xs dark:border-slate-800 dark:bg-slate-900 sm:px-4"
@@ -691,7 +737,7 @@ export function TopToolbar() {
             value={shapeStrokeDash}
             onChange={(e) => setShapeStyle({ strokeDash: e.target.value as VectorStrokeDash })}
             aria-label="Çizgi Stili"
-            className="h-6 rounded border border-slate-300 bg-white px-1.5 text-[11px] dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
+            className="h-6 rounded border border-slate-300 bg-white px-1.5 text-xs dark:border-slate-700 dark:bg-slate-800 dark:text-slate-200"
           >
             <option value="solid">Düz</option>
             <option value="dashed">Kesikli</option>
@@ -702,7 +748,7 @@ export function TopToolbar() {
             <button
               type="button"
               onClick={() => setPathToolStyle({ smooth: !pathSmoothDefault })}
-              className={`rounded border px-2 py-0.5 text-[11px] font-medium ${
+              className={`rounded border px-2 py-0.5 text-xs font-medium ${
                 pathSmoothDefault
                   ? 'border-blue-500 bg-blue-500/15 text-blue-600 dark:text-blue-400'
                   : 'border-slate-300 bg-white text-slate-600 dark:border-slate-700 dark:bg-slate-800 dark:text-slate-300'
@@ -711,13 +757,14 @@ export function TopToolbar() {
               Yumuşak Eğri
             </button>
           )}
-          <span className="hidden text-[10px] text-slate-400 xl:inline">
+          <span className="hidden text-xs text-slate-400 xl:inline">
             Uç noktaya yaklaşınca otomatik yapışır &amp; birleşir (Shift: 45° açı)
           </span>
         </div>
       )}
 
       {hasPages &&
+        appMode === 'edit' &&
         toolMode === 'select' &&
         selectedElementIds.length >= 2 &&
         (() => {
@@ -734,7 +781,7 @@ export function TopToolbar() {
                 type="button"
                 data-testid="toolbar-join-paths-btn"
                 onClick={() => joinVectorPaths(selectedPaths.map((p) => p.id))}
-                className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-[11px] font-semibold text-white shadow-sm hover:bg-blue-500"
+                className="inline-flex items-center gap-1 rounded-md bg-blue-600 px-2.5 py-1 text-xs font-semibold text-white shadow-sm hover:bg-blue-500"
               >
                 <Link2 className="h-3 w-3" />
                 Yolları Birleştir (Join)
@@ -743,7 +790,7 @@ export function TopToolbar() {
           );
         })()}
 
-      {hasPages && toolMode === 'highlight' && (
+      {hasPages && appMode === 'edit' && toolMode === 'highlight' && (
         <div className="flex flex-wrap items-center gap-x-3 gap-y-1.5 border-t border-slate-200 bg-slate-50 px-3 py-1.5 text-xs dark:border-slate-800 dark:bg-slate-900 sm:px-4">
           <span className="font-medium text-slate-500 dark:text-slate-400">Annotation Mode:</span>
           <div className="flex items-center gap-1">

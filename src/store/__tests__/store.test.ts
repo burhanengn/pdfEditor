@@ -1,10 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest';
 import { useEditorStore } from '../useEditorStore';
-import type { PageMeta, SourceDocument } from '@/types/pdf';
+import { getSourceDocBytes } from '@/engine/sourceDocRegistry';
+import type { PageMeta, SourceDocumentInput } from '@/types/pdf';
 import { getElementLayerTier, type SavedSignature, type TextAddElement } from '@/types/elements';
 
-function makeDoc(): { doc: SourceDocument; pages: PageMeta[] } {
-  const doc: SourceDocument = {
+function makeDoc(): { doc: SourceDocumentInput; pages: PageMeta[] } {
+  const doc: SourceDocumentInput = {
     id: 'doc_1',
     name: 'test.pdf',
     bytes: new Uint8Array([1, 2, 3]),
@@ -148,7 +149,7 @@ describe('useEditorStore undo/redo and operations', () => {
   });
 
   it('supports Shift+Click contiguous range and Ctrl+Click toggle selection', () => {
-    const doc: SourceDocument = {
+    const doc: SourceDocumentInput = {
       id: 'doc_multi',
       name: 'multi.pdf',
       bytes: new Uint8Array([1, 2, 3]),
@@ -543,5 +544,20 @@ describe('useEditorStore undo/redo and operations', () => {
     // Redo restores the unified closed triangle path
     useEditorStore.getState().redo();
     expect(useEditorStore.getState().elements.filter((e) => e.kind === 'path')).toHaveLength(1);
+  });
+
+  it('keeps PDF bytes off-store and defaults opened documents to view mode', () => {
+    const { doc, pages } = makeDoc();
+    useEditorStore.getState().loadInitialDocument(doc, pages);
+    const state = useEditorStore.getState();
+
+    expect(state.appMode).toBe('view');
+    expect('bytes' in state.sourceDocs.doc_1).toBe(false);
+    expect(state.sourceDocs.doc_1.byteLength).toBe(3);
+    expect(getSourceDocBytes('doc_1')).toEqual(new Uint8Array([1, 2, 3]));
+
+    state.setAppMode('edit');
+    expect(useEditorStore.getState().appMode).toBe('edit');
+    expect(useEditorStore.getState().analysisRequestedPages.p1).toBe(true);
   });
 });

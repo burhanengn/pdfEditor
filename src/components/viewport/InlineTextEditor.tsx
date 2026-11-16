@@ -336,8 +336,8 @@ export function InlineTextEditor({
           }}
           className={
             isWarningBanner
-              ? 'flex items-center gap-1.5 rounded-md border border-amber-400/50 bg-amber-950/95 px-2.5 py-1 text-[10px] font-medium text-amber-100 shadow-lg backdrop-blur whitespace-nowrap'
-              : 'flex items-center gap-1.5 rounded-md border border-emerald-400/50 bg-emerald-950/95 px-2.5 py-1 text-[10px] font-medium text-emerald-100 shadow-lg backdrop-blur whitespace-nowrap'
+              ? 'flex items-center gap-1.5 rounded-md border border-amber-400/50 bg-amber-950/95 px-2.5 py-1 text-xs font-medium text-amber-100 shadow-lg backdrop-blur whitespace-nowrap'
+              : 'flex items-center gap-1.5 rounded-md border border-emerald-400/50 bg-emerald-950/95 px-2.5 py-1 text-xs font-medium text-emerald-100 shadow-lg backdrop-blur whitespace-nowrap'
           }
         >
           <span

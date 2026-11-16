@@ -131,7 +131,7 @@ export function MobileToolsSheet() {
           </div>
           {/* Edit & Add */}
           <div className="space-y-2">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
               Düzenle & Ekle
             </div>
             <div className="grid grid-cols-2 gap-2">
@@ -295,7 +295,7 @@ export function MobileToolsSheet() {
                   <Layers className="h-4 w-4 shrink-0" />
                   <span>Arka Plan Görsellerini Seç</span>
                 </span>
-                <span className="rounded-full bg-black/10 px-2 py-0.5 text-[10px] font-semibold dark:bg-white/10">
+                <span className="rounded-full bg-black/10 px-2 py-0.5 text-xs font-semibold dark:bg-white/10">
                   {selectBackgroundMode ? 'Açık' : 'Kapalı'}
                 </span>
               </button>
@@ -304,7 +304,7 @@ export function MobileToolsSheet() {
 
           {/* Signature & Document Actions */}
           <div className="space-y-2">
-            <div className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
               İmza & Belge
             </div>
             <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
@@ -354,7 +354,7 @@ export function MobileToolsSheet() {
           {/* Zoom Controls */}
           <div className="space-y-2">
             <div className="flex items-center justify-between">
-              <span className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              <span className="text-xs font-semibold uppercase tracking-wider text-slate-400">
                 Görünüm & Yakınlaştırma
               </span>
               <span className="font-semibold text-slate-700 dark:text-slate-200">
@@ -377,7 +377,7 @@ export function MobileToolsSheet() {
                   setZoomMode('fit-width');
                   setMobileSheet('none');
                 }}
-                className="flex min-h-[44px] items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-2 text-[11px] font-medium text-slate-700 disabled:opacity-40 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+                className="flex min-h-[44px] items-center justify-center rounded-xl border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-700 disabled:opacity-40 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
               >
                 Genişlik
               </button>
@@ -388,7 +388,7 @@ export function MobileToolsSheet() {
                   setZoomMode('fit-page');
                   setMobileSheet('none');
                 }}
-                className="flex min-h-[44px] items-center justify-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2 text-[11px] font-medium text-slate-700 disabled:opacity-40 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
+                className="flex min-h-[44px] items-center justify-center gap-1 rounded-xl border border-slate-200 bg-slate-50 px-2 text-xs font-medium text-slate-700 disabled:opacity-40 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200"
               >
                 <Maximize2 className="h-3.5 w-3.5" />
                 Tam

@@ -103,7 +103,7 @@ export function SplitExtractModal() {
                 <button
                   type="button"
                   onClick={() => setRangeText(`1-${pages.length}`)}
-                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                  className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
                 >
                   All
                 </button>
@@ -116,7 +116,7 @@ export function SplitExtractModal() {
                       .join(', ');
                     setRangeText(odd);
                   }}
-                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                  className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
                 >
                   Odd
                 </button>
@@ -129,7 +129,7 @@ export function SplitExtractModal() {
                       .join(', ');
                     if (even) setRangeText(even);
                   }}
-                  className="rounded bg-slate-100 px-2 py-0.5 text-[11px] font-medium text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
+                  className="rounded bg-slate-100 px-2 py-0.5 text-xs font-medium text-slate-600 hover:bg-slate-200 dark:bg-slate-800 dark:text-slate-300 dark:hover:bg-slate-700"
                 >
                   Even
                 </button>
