@@ -37,21 +37,26 @@ import {
 import { calibrateDomTextMetrics, resolveFontDisplayStatus } from '@/engine/fonts';
 import { getImageClipMaskSvgPath } from '@/engine/imageMask';
 import { computePageNumberLayout } from '@/engine/pageNumbers';
-import { pointsToSmoothSvgPath } from '@/engine/pdfCompiler';
-import { pdfjsService } from '@/engine/pdfjsService';
+import { pdfiumScheduler } from '@/engine/pdfium/renderScheduler';
+import { viewerTileCache } from '@/engine/pdfium/tileCache';
 import {
   constrainSegmentAngle45,
   findNearestOpenPathEndpoint,
   pathPointsToSvgPath,
+  pointsToSmoothSvgPath,
   shapeToSvgPath,
   strokeDashToArray,
   type OpenPathSnapHit,
 } from '@/engine/vectorShapes';
 import { wasmWorkerClient } from '@/engine/wasmWorkerClient';
-import { perfMetrics } from '@/engine/perfMetrics';
 import { getSourceDocBytes } from '@/engine/sourceDocRegistry';
 import { useEditorStore } from '@/store/useEditorStore';
+import { useViewerStore } from '@/store/useViewerStore';
 import { createId } from '@/utils/id';
+import { LinkLayer } from '../viewer/LinkLayer';
+import { SearchHighlightLayer } from '../viewer/SearchHighlightLayer';
+import { TextLayer } from '../viewer/TextLayer';
+import { TileLayer } from '../viewer/TileLayer';
 import { ImageCropOverlay } from './ImageCropOverlay';
 import { InlineTextEditor } from './InlineTextEditor';
 import { PathNodeEditorOverlay } from './PathNodeEditorOverlay';
@@ -61,6 +66,9 @@ interface PageCanvasProps {
   page: PageMeta;
   pageIndex: number;
   zoom: number;
+  scrollElementRef?: React.RefObject<HTMLElement | null>;
+  onJumpToPage?: (pageIndex: number) => void;
+  isNearActivePage?: boolean;
 }
 
 function isUnmodifiedBehindImage(
@@ -101,12 +109,17 @@ function isUnmodifiedBehindShape(
   );
 }
 
-export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
-  const canvasRef = useRef<HTMLCanvasElement | null>(null);
+export function PageCanvas({
+  page,
+  pageIndex,
+  zoom,
+  scrollElementRef,
+  onJumpToPage,
+  isNearActivePage = true,
+}: PageCanvasProps) {
   const layerRef = useRef<HTMLDivElement | null>(null);
 
   const sourceByteLength = useEditorStore((s) => s.sourceDocs[page.sourceDocId]?.byteLength ?? 0);
-  const sourceBytes = getSourceDocBytes(page.sourceDocId);
   const appMode = useEditorStore((s) => s.appMode);
   const analysisRequested = useEditorStore((s) => Boolean(s.analysisRequestedPages[page.id]));
   const toolMode = useEditorStore((s) => s.toolMode);
@@ -157,7 +170,6 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   const promoteDetectedShape = useEditorStore((s) => s.promoteDetectedShape);
   const updateElements = useEditorStore((s) => s.updateElements);
   const selectBackgroundMode = useEditorStore((s) => s.selectBackgroundMode);
-  const isPinching = useEditorStore((s) => s.isPinching);
   const pendingSignaturePlacement = useEditorStore((s) => s.pendingSignaturePlacement);
   const placeSignatureAt = useEditorStore((s) => s.placeSignatureAt);
   const pageNumbering = useEditorStore((s) => s.pageNumbering);
@@ -175,8 +187,6 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   } | null>(null);
   const suppressNextDetectedTextClickRef = useRef(false);
   const longPressTimerRef = useRef<number | null>(null);
-  const lastRasterContextKeyRef = useRef<string>('');
-  const wasPinchingRef = useRef<boolean>(false);
 
   useEffect(() => {
     return () => {
@@ -191,10 +201,9 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   const [cleanPreview, setCleanPreview] = useState<{
     key: string;
     docId: string;
-    bytes: Uint8Array;
   } | null>(null);
   const [renderedStripKey, setRenderedStripKey] = useState<string>('');
-  const [canvasPaperTransparent, setCanvasPaperTransparent] = useState<boolean>(true);
+  const [canvasPaperTransparent] = useState<boolean>(true);
   const activeCleanDocIdRef = useRef<string | null>(null);
 
   // Live drawing / highlight / vector shape / path draft states
@@ -368,16 +377,21 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
     shapeRects: stripRequest.shapeRects,
   };
 
-  // Prepare clean stripped 1-page PDF in MuPDF Worker whenever original text or images are edited/deleted
+  // Prepare clean stripped 1-page PDF in MuPDF Worker whenever original text or images are edited/deleted,
+  // and register it into PDFium RenderScheduler for unified rendering (01 §7 transitional parity).
   useEffect(() => {
     if (!sourceByteLength) return;
     const reqKey = stripRequest.key;
     if (!reqKey) {
       setCleanPreview((prev) => {
-        if (prev) void pdfjsService.releaseDocument(prev.docId);
+        if (prev) {
+          pdfiumScheduler.closeDocument(prev.docId);
+          viewerTileCache.invalidatePage(page.id);
+        }
         return null;
       });
       activeCleanDocIdRef.current = null;
+      setRenderedStripKey('');
       return;
     }
 
@@ -391,15 +405,22 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
         imageRects,
         shapeRects,
       })
-      .then(({ bytes }) => {
+      .then(async ({ bytes }) => {
         if (cancelled) return;
         const docId = `${page.id}::clean::${reqKey}`;
+        await pdfiumScheduler.openDocument(docId, bytes);
+        if (cancelled) {
+          pdfiumScheduler.closeDocument(docId);
+          return;
+        }
         const prevId = activeCleanDocIdRef.current;
         if (prevId && prevId !== docId) {
-          void pdfjsService.releaseDocument(prevId);
+          pdfiumScheduler.closeDocument(prevId);
         }
         activeCleanDocIdRef.current = docId;
-        setCleanPreview({ key: reqKey, docId, bytes });
+        viewerTileCache.invalidatePage(page.id);
+        useViewerStore.getState().bumpPageRevision(page.id);
+        setCleanPreview({ key: reqKey, docId });
       })
       .catch(() => {
         // Fallback keeps canvas intact if clean preview preparation fails
@@ -414,7 +435,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   useEffect(() => {
     return () => {
       if (activeCleanDocIdRef.current) {
-        void pdfjsService.releaseDocument(activeCleanDocIdRef.current);
+        pdfiumScheduler.closeDocument(activeCleanDocIdRef.current);
         activeCleanDocIdRef.current = null;
       }
     };
@@ -422,97 +443,10 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
 
   const usingCleanDoc = Boolean(stripRequest.key && cleanPreview && cleanPreview.key === stripRequest.key);
   const renderDocId = usingCleanDoc ? cleanPreview!.docId : page.sourceDocId;
-  const renderBytes = usingCleanDoc ? cleanPreview!.bytes : sourceBytes;
   const renderPageIndex = usingCleanDoc ? 0 : page.sourcePageIndex;
   const targetStripKeyForRender = usingCleanDoc ? cleanPreview!.key : '';
 
-  // Render PDF page canvas via pdfjs-dist worker
-  useEffect(() => {
-    const canvas = canvasRef.current;
-    if (!canvas || !renderBytes) return;
-    if (isPinching) {
-      wasPinchingRef.current = true;
-      return;
-    }
-
-    const rasterContextKey = `${renderDocId}:${renderPageIndex}:${page.userRotation}:${targetStripKeyForRender}:${hasVisibleBehindImages ? 1 : 0}`;
-    const isZoomOnlyChange =
-      !wasPinchingRef.current && lastRasterContextKeyRef.current === rasterContextKey;
-    wasPinchingRef.current = false;
-    lastRasterContextKeyRef.current = rasterContextKey;
-    const delayMs = isZoomOnlyChange ? 75 : 0;
-
-    let cancelled = false;
-    let activeHandle: { cancel: () => void } | null = null;
-    let timerId: number | null = null;
-
-    const startRender = () => {
-      if (cancelled) return;
-      const handle = pdfjsService.renderPageToCanvas({
-        sourceDocId: renderDocId,
-        bytes: renderBytes,
-        sourcePageIndex: renderPageIndex,
-        canvas,
-        zoom,
-        userRotation: page.userRotation,
-        dpr: Math.min(window.devicePixelRatio || 1, 2),
-        background: hasVisibleBehindImages ? 'rgba(0, 0, 0, 0)' : undefined,
-      });
-      activeHandle = handle;
-
-      handle.promise
-        .then(() => {
-          if (!cancelled) {
-            if (hasVisibleBehindImages && canvas.width > 4 && canvas.height > 4) {
-              try {
-                const ctx = canvas.getContext('2d', { willReadFrequently: true });
-                if (ctx) {
-                  const a1 = ctx.getImageData(1, 1, 1, 1).data[3];
-                  const a2 = ctx.getImageData(canvas.width - 2, 1, 1, 1).data[3];
-                  const a3 = ctx.getImageData(1, canvas.height - 2, 1, 1).data[3];
-                  const a4 = ctx.getImageData(canvas.width - 2, canvas.height - 2, 1, 1).data[3];
-                  setCanvasPaperTransparent(a1 === 0 || a2 === 0 || a3 === 0 || a4 === 0);
-                }
-              } catch {
-                setCanvasPaperTransparent(false);
-              }
-            } else {
-              setCanvasPaperTransparent(true);
-            }
-            setRenderedStripKey(targetStripKeyForRender);
-            if (pageIndex === 0) {
-              perfMetrics.recordFirstPagePainted();
-            }
-          }
-        })
-        .catch(() => {
-          // Cancelled during rapid scroll/zoom
-        });
-    };
-
-    if (delayMs > 0) {
-      timerId = window.setTimeout(startRender, delayMs);
-    } else {
-      startRender();
-    }
-
-    return () => {
-      cancelled = true;
-      if (timerId !== null) window.clearTimeout(timerId);
-      activeHandle?.cancel();
-    };
-  }, [
-    renderDocId,
-    renderBytes,
-    renderPageIndex,
-    page.userRotation,
-    zoom,
-    targetStripKeyForRender,
-    hasVisibleBehindImages,
-    isPinching,
-  ]);
-
-  // Lazily extract MuPDF StructuredText paragraphs + PDF.js XObject images & table rules
+  // Lazily extract MuPDF StructuredText paragraphs + XObject images & table rules
   // ONLY when user has edit intent (appMode === 'edit' or explicit page analysis request) (F0.4).
   useEffect(() => {
     const activeBytes = getSourceDocBytes(page.sourceDocId);
@@ -521,6 +455,9 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
     let cancelled = false;
 
     (async () => {
+      const { ensureEditEngineReadyForCurrentDocs } = await import('@/engine/documentController');
+      await ensureEditEngineReadyForCurrentDocs();
+      const { pdfjsService } = await import('@/engine/pdfjsService');
       const { images, shapes, horizontalRules, verticalRules, cellRects } =
         await pdfjsService.extractPageImagesAndRules(
           page.sourceDocId,
@@ -653,7 +590,7 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
   };
 
   const sampleCanvasBackgroundColor = (dispRect: RectBox): string => {
-    const canvas = canvasRef.current;
+    const canvas = layerRef.current?.querySelector('canvas');
     if (!canvas) return '#ffffff';
     const ctx = canvas.getContext('2d', { willReadFrequently: true });
     if (!ctx) return '#ffffff';
@@ -2696,16 +2633,27 @@ export function PageCanvas({ page, pageIndex, zoom }: PageCanvasProps) {
         }}
         className={`relative overflow-hidden bg-white shadow-xl ring-1 ring-slate-300 dark:ring-slate-700 ${cursorClass}`}
       >
-        <canvas
-          ref={canvasRef}
-          style={{
-            position: 'relative',
-            zIndex: 10,
-            width: `${displayDims.width}px`,
-            height: `${displayDims.height}px`,
-          }}
-          className="pointer-events-none block"
-        />
+        <div style={{ position: 'relative', zIndex: 10 }}>
+          <TileLayer
+            page={page}
+            pageIndex={pageIndex}
+            zoom={zoom}
+            activeDocId={renderDocId}
+            activeDocPageIndex={renderPageIndex}
+            stripKey={targetStripKeyForRender}
+            transparentBg={hasVisibleBehindImages}
+            scrollElementRef={scrollElementRef}
+            onFirstPaint={() => {
+              if (targetStripKeyForRender && renderedStripKey !== targetStripKeyForRender) {
+                setRenderedStripKey(targetStripKeyForRender);
+              }
+            }}
+          />
+        </div>
+
+        <SearchHighlightLayer page={page} pageIndex={pageIndex} zoom={zoom} />
+        {isNearActivePage && <TextLayer page={page} zoom={zoom} />}
+        <LinkLayer page={page} zoom={zoom} onJumpToPage={onJumpToPage} />
 
         {/* Live masks over modified/deleted PDF text or embedded images */}
         {maskedOriginalRects.map((m) => {

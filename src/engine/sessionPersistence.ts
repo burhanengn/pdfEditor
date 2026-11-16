@@ -8,8 +8,12 @@ import type {
 } from '@/types/pdf';
 import { useEditorStore } from '@/store/useEditorStore';
 import { blobRegistry } from '@/utils/blobRegistry';
-import { getExtractedFontAssetPayloads, populateExtractedFontRegistry, registerExtractedPdfFontsInBrowser } from './embeddedFontExtractor';
-import { pdfjsService } from './pdfjsService';
+import {
+  getExtractedFontAssetPayloads,
+  populateExtractedFontRegistry,
+  registerExtractedPdfFontsInBrowser,
+} from './extractedFontRegistry';
+import { pdfiumScheduler } from './pdfium/renderScheduler';
 import { getSourceDocBytes, setSourceDocBytes } from './sourceDocRegistry';
 import { wasmWorkerClient } from './wasmWorkerClient';
 
@@ -216,7 +220,7 @@ export async function loadAutosaveSession(): Promise<RecoverableSessionSummary |
 
 export async function restoreAutosaveSession(summary: RecoverableSessionSummary): Promise<void> {
   const { record, docBytesMap } = summary;
-  await pdfjsService.releaseAllDocuments();
+  pdfiumScheduler.closeAllDocuments();
 
   const docIds = Object.keys(docBytesMap);
   if (docIds.length === 0) return;
@@ -236,10 +240,18 @@ export async function restoreAutosaveSession(summary: RecoverableSessionSummary)
     { initialMode: record.appMode },
   );
 
-  // Register any additional merged source docs
+  // Register any additional merged source docs & open in PDFium Viewer
   for (const docId of docIds) {
     const bytes = docBytesMap[docId];
     if (bytes) {
+      const openRes = await pdfiumScheduler.openDocument(docId, bytes).catch(() => null);
+      if (docId === primaryId && openRes?.status === 'ok') {
+        const { useViewerStore } = await import('@/store/useViewerStore');
+        useViewerStore.getState().setDocumentViewerMeta({
+          outline: openRes.outline,
+          canCopyText: openRes.canCopyText,
+        });
+      }
       await wasmWorkerClient.registerSourceDoc(docId, bytes).catch(() => {});
     }
     if (docId !== primaryId && record.sourceDocs[docId]) {

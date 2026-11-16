@@ -25,7 +25,16 @@ Measured via `e2e/perf-baseline.spec.ts` (`window.__gpPerf.getReport()`):
 - **Worker Bytes Transferred (`Transferable`):** `99,501 bytes` (single transfer on inspect)
 - **JS Heap (`usedJSHeapSize` / `totalJSHeapSize`):** `12.51 MB` / `21.23 MB` (down from `14.79 MB` / `23.38 MB`)
 
-## 4. Target Improvement Milestones
+## 4. Post-F1 Measurement (PDFium Viewer + Dual-Mode UX)
+- **Initial Viewer JS Payload (gzip):** **`163.89 kB`** (`index` `97.80 kB` + `ui-vendor` `65.68 kB` + `react-vendor` `0.41 kB`, down from `647.67 kB` — well under the `<= 350 kB` budget!)
+- **PDFium Wasm Binary:** `4,646.93 kB` (`2,150.22 kB` gzip), `pdfiumRender.worker` `170.16 kB`
+- **TTFP (120-page Reference Text PDF):** **`142.36 ms`** (-68.3% vs baseline `449.34 ms`)
+- **Long Tasks (> 50 ms):** **`0`**
+- **Worker Bytes Cloned on Open:** **`0 bytes`** (`workerCallCount: 0` — zero `pdfjs`/`mupdf` work on Viewer open)
+- **JS Heap (`usedJSHeapSize` / `totalJSHeapSize`):** **`6.75 MB` / `10.59 MB`** (-54.4% used heap vs baseline)
+- **Verification:** `17` Vitest files (`104/104` passed) + `22/22` Playwright E2E tests passed.
+
+## 5. Target Improvement Milestones
 - **After F0:** `workerBytesCloned` for page text/clean-preview calls drops to `0`, `extractPageText`/`extractPageImagesAndRules` do not run on read-only open, `embeddedFontExtractor` runs off main thread, and `sourceDocs` bytes do not live in Zustand snapshots.
-- **After F1:** Main JS viewer initial payload `<= 350 KB` gzip, PDFium Wasm tile pipeline replaces `pdfjs-dist` rendering, 0 long tasks (`> 50 ms`) during scroll/pinch.
+- **After F1:** Main JS viewer initial payload `<= 350 KB` gzip (`163.89 kB` achieved), PDFium Wasm tile pipeline replaces `pdfjs-dist` rendering, `0` long tasks (`> 50 ms`) during scroll/pinch.
 - **After F3:** Zero `mupdf` / `pdfjs-dist` / `pdf-lib` runtime or bundle weight; single PDFium Rust/Wasm engine.

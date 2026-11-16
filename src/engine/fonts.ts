@@ -1,4 +1,19 @@
-import { StandardFonts } from 'pdf-lib';
+import type { StandardFonts } from 'pdf-lib';
+
+const STD_FONT = {
+  Courier: 'Courier' as StandardFonts,
+  CourierBold: 'Courier-Bold' as StandardFonts,
+  CourierOblique: 'Courier-Oblique' as StandardFonts,
+  CourierBoldOblique: 'Courier-BoldOblique' as StandardFonts,
+  Helvetica: 'Helvetica' as StandardFonts,
+  HelveticaBold: 'Helvetica-Bold' as StandardFonts,
+  HelveticaOblique: 'Helvetica-Oblique' as StandardFonts,
+  HelveticaBoldOblique: 'Helvetica-BoldOblique' as StandardFonts,
+  TimesRoman: 'Times-Roman' as StandardFonts,
+  TimesRomanBold: 'Times-Bold' as StandardFonts,
+  TimesRomanItalic: 'Times-Italic' as StandardFonts,
+  TimesRomanBoldItalic: 'Times-BoldItalic' as StandardFonts,
+};
 import type {
   BuiltinFontFamilyOption,
   ExtractedPdfFont,
@@ -30,10 +45,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: 'Helvetica, Arial, "Liberation Sans", "DejaVu Sans", sans-serif',
     category: 'sans',
     pdfStandard: {
-      regular: StandardFonts.Helvetica,
-      bold: StandardFonts.HelveticaBold,
-      italic: StandardFonts.HelveticaOblique,
-      boldItalic: StandardFonts.HelveticaBoldOblique,
+      regular: STD_FONT.Helvetica,
+      bold: STD_FONT.HelveticaBold,
+      italic: STD_FONT.HelveticaOblique,
+      boldItalic: STD_FONT.HelveticaBoldOblique,
     },
   },
   Calibri: {
@@ -42,10 +57,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: 'Calibri, "Carlito", "Segoe UI", Arial, "Liberation Sans", sans-serif',
     category: 'calibri',
     pdfStandard: {
-      regular: StandardFonts.Helvetica,
-      bold: StandardFonts.HelveticaBold,
-      italic: StandardFonts.HelveticaOblique,
-      boldItalic: StandardFonts.HelveticaBoldOblique,
+      regular: STD_FONT.Helvetica,
+      bold: STD_FONT.HelveticaBold,
+      italic: STD_FONT.HelveticaOblique,
+      boldItalic: STD_FONT.HelveticaBoldOblique,
     },
   },
   Inter: {
@@ -54,10 +69,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: 'Inter, "Segoe UI", "Carlito", "Liberation Sans", system-ui, Arial, sans-serif',
     category: 'sans',
     pdfStandard: {
-      regular: StandardFonts.Helvetica,
-      bold: StandardFonts.HelveticaBold,
-      italic: StandardFonts.HelveticaOblique,
-      boldItalic: StandardFonts.HelveticaBoldOblique,
+      regular: STD_FONT.Helvetica,
+      bold: STD_FONT.HelveticaBold,
+      italic: STD_FONT.HelveticaOblique,
+      boldItalic: STD_FONT.HelveticaBoldOblique,
     },
   },
   DejaVuSans: {
@@ -66,10 +81,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: '"DejaVu Sans", "Liberation Sans", Arial, sans-serif',
     category: 'sans',
     pdfStandard: {
-      regular: StandardFonts.Helvetica,
-      bold: StandardFonts.HelveticaBold,
-      italic: StandardFonts.HelveticaOblique,
-      boldItalic: StandardFonts.HelveticaBoldOblique,
+      regular: STD_FONT.Helvetica,
+      bold: STD_FONT.HelveticaBold,
+      italic: STD_FONT.HelveticaOblique,
+      boldItalic: STD_FONT.HelveticaBoldOblique,
     },
   },
   DejaVuSansCondensed: {
@@ -78,10 +93,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: '"DejaVu Sans Condensed", "DejaVu Sans", "Liberation Sans", sans-serif',
     category: 'sans',
     pdfStandard: {
-      regular: StandardFonts.Helvetica,
-      bold: StandardFonts.HelveticaBold,
-      italic: StandardFonts.HelveticaOblique,
-      boldItalic: StandardFonts.HelveticaBoldOblique,
+      regular: STD_FONT.Helvetica,
+      bold: STD_FONT.HelveticaBold,
+      italic: STD_FONT.HelveticaOblique,
+      boldItalic: STD_FONT.HelveticaBoldOblique,
     },
   },
   Verdana: {
@@ -90,10 +105,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: 'Verdana, Tahoma, "DejaVu Sans", "Liberation Sans", sans-serif',
     category: 'sans',
     pdfStandard: {
-      regular: StandardFonts.Helvetica,
-      bold: StandardFonts.HelveticaBold,
-      italic: StandardFonts.HelveticaOblique,
-      boldItalic: StandardFonts.HelveticaBoldOblique,
+      regular: STD_FONT.Helvetica,
+      bold: STD_FONT.HelveticaBold,
+      italic: STD_FONT.HelveticaOblique,
+      boldItalic: STD_FONT.HelveticaBoldOblique,
     },
   },
   TimesRoman: {
@@ -102,10 +117,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: '"Times New Roman", "Liberation Serif", Times, Georgia, serif',
     category: 'serif',
     pdfStandard: {
-      regular: StandardFonts.TimesRoman,
-      bold: StandardFonts.TimesRomanBold,
-      italic: StandardFonts.TimesRomanItalic,
-      boldItalic: StandardFonts.TimesRomanBoldItalic,
+      regular: STD_FONT.TimesRoman,
+      bold: STD_FONT.TimesRomanBold,
+      italic: STD_FONT.TimesRomanItalic,
+      boldItalic: STD_FONT.TimesRomanBoldItalic,
     },
   },
   Cambria: {
@@ -114,10 +129,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: 'Cambria, "Caladea", Georgia, "Liberation Serif", "Times New Roman", serif',
     category: 'cambria',
     pdfStandard: {
-      regular: StandardFonts.TimesRoman,
-      bold: StandardFonts.TimesRomanBold,
-      italic: StandardFonts.TimesRomanItalic,
-      boldItalic: StandardFonts.TimesRomanBoldItalic,
+      regular: STD_FONT.TimesRoman,
+      bold: STD_FONT.TimesRomanBold,
+      italic: STD_FONT.TimesRomanItalic,
+      boldItalic: STD_FONT.TimesRomanBoldItalic,
     },
   },
   Merriweather: {
@@ -126,10 +141,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: 'Merriweather, Georgia, "Caladea", "Liberation Serif", "Times New Roman", serif',
     category: 'serif',
     pdfStandard: {
-      regular: StandardFonts.TimesRoman,
-      bold: StandardFonts.TimesRomanBold,
-      italic: StandardFonts.TimesRomanItalic,
-      boldItalic: StandardFonts.TimesRomanBoldItalic,
+      regular: STD_FONT.TimesRoman,
+      bold: STD_FONT.TimesRomanBold,
+      italic: STD_FONT.TimesRomanItalic,
+      boldItalic: STD_FONT.TimesRomanBoldItalic,
     },
   },
   Georgia: {
@@ -138,10 +153,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: 'Georgia, "Caladea", "Liberation Serif", "Times New Roman", serif',
     category: 'serif',
     pdfStandard: {
-      regular: StandardFonts.TimesRoman,
-      bold: StandardFonts.TimesRomanBold,
-      italic: StandardFonts.TimesRomanItalic,
-      boldItalic: StandardFonts.TimesRomanBoldItalic,
+      regular: STD_FONT.TimesRoman,
+      bold: STD_FONT.TimesRomanBold,
+      italic: STD_FONT.TimesRomanItalic,
+      boldItalic: STD_FONT.TimesRomanBoldItalic,
     },
   },
   Garamond: {
@@ -150,10 +165,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: 'Garamond, Palatino, "Palatino Linotype", "Liberation Serif", Georgia, serif',
     category: 'serif',
     pdfStandard: {
-      regular: StandardFonts.TimesRoman,
-      bold: StandardFonts.TimesRomanBold,
-      italic: StandardFonts.TimesRomanItalic,
-      boldItalic: StandardFonts.TimesRomanBoldItalic,
+      regular: STD_FONT.TimesRoman,
+      bold: STD_FONT.TimesRomanBold,
+      italic: STD_FONT.TimesRomanItalic,
+      boldItalic: STD_FONT.TimesRomanBoldItalic,
     },
   },
   DejaVuSerif: {
@@ -162,10 +177,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: '"DejaVu Serif", "Liberation Serif", Georgia, serif',
     category: 'serif',
     pdfStandard: {
-      regular: StandardFonts.TimesRoman,
-      bold: StandardFonts.TimesRomanBold,
-      italic: StandardFonts.TimesRomanItalic,
-      boldItalic: StandardFonts.TimesRomanBoldItalic,
+      regular: STD_FONT.TimesRoman,
+      bold: STD_FONT.TimesRomanBold,
+      italic: STD_FONT.TimesRomanItalic,
+      boldItalic: STD_FONT.TimesRomanBoldItalic,
     },
   },
   DejaVuSerifCondensed: {
@@ -174,10 +189,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: '"DejaVu Serif Condensed", "DejaVu Serif", "Liberation Serif", serif',
     category: 'serif',
     pdfStandard: {
-      regular: StandardFonts.TimesRoman,
-      bold: StandardFonts.TimesRomanBold,
-      italic: StandardFonts.TimesRomanItalic,
-      boldItalic: StandardFonts.TimesRomanBoldItalic,
+      regular: STD_FONT.TimesRoman,
+      bold: STD_FONT.TimesRomanBold,
+      italic: STD_FONT.TimesRomanItalic,
+      boldItalic: STD_FONT.TimesRomanBoldItalic,
     },
   },
   Courier: {
@@ -186,10 +201,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: '"Courier New", "Liberation Mono", "DejaVu Sans Mono", Courier, monospace',
     category: 'mono',
     pdfStandard: {
-      regular: StandardFonts.Courier,
-      bold: StandardFonts.CourierBold,
-      italic: StandardFonts.CourierOblique,
-      boldItalic: StandardFonts.CourierBoldOblique,
+      regular: STD_FONT.Courier,
+      bold: STD_FONT.CourierBold,
+      italic: STD_FONT.CourierOblique,
+      boldItalic: STD_FONT.CourierBoldOblique,
     },
   },
   JetBrainsMono: {
@@ -198,10 +213,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: '"JetBrains Mono", Consolas, "Liberation Mono", "Courier New", monospace',
     category: 'mono',
     pdfStandard: {
-      regular: StandardFonts.Courier,
-      bold: StandardFonts.CourierBold,
-      italic: StandardFonts.CourierOblique,
-      boldItalic: StandardFonts.CourierBoldOblique,
+      regular: STD_FONT.Courier,
+      bold: STD_FONT.CourierBold,
+      italic: STD_FONT.CourierOblique,
+      boldItalic: STD_FONT.CourierBoldOblique,
     },
   },
   DejaVuSansMono: {
@@ -210,10 +225,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: '"DejaVu Sans Mono", "Liberation Mono", Consolas, monospace',
     category: 'mono',
     pdfStandard: {
-      regular: StandardFonts.Courier,
-      bold: StandardFonts.CourierBold,
-      italic: StandardFonts.CourierOblique,
-      boldItalic: StandardFonts.CourierBoldOblique,
+      regular: STD_FONT.Courier,
+      bold: STD_FONT.CourierBold,
+      italic: STD_FONT.CourierOblique,
+      boldItalic: STD_FONT.CourierBoldOblique,
     },
   },
   GreatVibes: {
@@ -222,10 +237,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: '"Segoe Script", "Brush Script MT", "Apple Chancery", "Liberation Serif", cursive',
     category: 'script',
     pdfStandard: {
-      regular: StandardFonts.TimesRomanItalic,
-      bold: StandardFonts.TimesRomanBoldItalic,
-      italic: StandardFonts.TimesRomanItalic,
-      boldItalic: StandardFonts.TimesRomanBoldItalic,
+      regular: STD_FONT.TimesRomanItalic,
+      bold: STD_FONT.TimesRomanBoldItalic,
+      italic: STD_FONT.TimesRomanItalic,
+      boldItalic: STD_FONT.TimesRomanBoldItalic,
     },
   },
   Caveat: {
@@ -234,10 +249,10 @@ export const FONT_REGISTRY: Record<BuiltinFontFamilyOption, FontDefinition> = {
     cssFamily: '"Comic Sans MS", "Segoe Print", "Bradley Hand", "Carlito", cursive',
     category: 'script',
     pdfStandard: {
-      regular: StandardFonts.HelveticaOblique,
-      bold: StandardFonts.HelveticaBoldOblique,
-      italic: StandardFonts.HelveticaOblique,
-      boldItalic: StandardFonts.HelveticaBoldOblique,
+      regular: STD_FONT.HelveticaOblique,
+      bold: STD_FONT.HelveticaBoldOblique,
+      italic: STD_FONT.HelveticaOblique,
+      boldItalic: STD_FONT.HelveticaBoldOblique,
     },
   },
 };

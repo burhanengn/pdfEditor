@@ -22,14 +22,14 @@
 
 ## Faz F1 — PDFium Viewer Çekirdeği & Çift Modlu Mobile-First Web UX
 
-- [ ] **F1.1** Sabitlenmiş PDFium Wasm ikilisi (`pdfium.wasm`) ve JS/TS köprü adaptörü + tek-thread öncelikli/iptal edilebilir iş kuyruğu (`PdfiumScheduler`)
-- [ ] **F1.2** Üç katmanlı render boru hattı (İskelet → Düşük çözünürlüklü önizleme → 512×512 karolar), bayt bütçeli LRU `TileCache`, `ImageBitmap` transferi, `visibilitychange` / bellek baskısında `trim()`, prefix-sum + ikili arama sayfa sanallaştırması
-- [ ] **F1.3** Worker topolojisi (`Engine Worker` + `Render Worker` + `Export Worker`; mobilde >80 MB için tek-worker düşüşü; `SharedArrayBuffer` gerektirmeyen yapı)
-- [ ] **F1.4** Çift Modlu Durum Makinesi (`view` varsayılan ↔ `edit` tek tuş + `E` kısayolu, ±2 px görünüm çapası korunumu) ve Viewer yetenekleri (saydam `TextLayer`, akışlı Türkçe-katlamalı arama, Outline + sanal Thumbnail `NavigatorDrawer`, `LinkLayer`, Okuma temaları Açık/Koyu/Sepya, Sayfaya Git hapı, Yazdır, Açık Kaynak Lisanslar, K4 hafif işaretleme)
-- [ ] **F1.5** Mobile-First Web Arayüzü (360×640'tan Kompakt `<600`, Orta `600–1023`, Geniş `>=1024`), başparmak bölgesi düzeni, kademeli `Sheet` (Peek/Yarım/Tam, drag/snap/scroll-handoff/History-Esc), `>=44×44px` dokunma hedefleri, sol-el desteği
-- [ ] **F1.6** Merkezi Dokunmatik Jest Motoru (`PointerTracker`, `GestureArena` hakemlik tablosu, statik `touch-action: none`, odak korumalı Pinch-to-Zoom + lastik sınır + mıknatıs, ataletli Pan + eksen kilidi, 44 px tutamaçlı nesne sürükleme/boyutlandırma/döndürme, dokunmatik metin seçimi büyüteci, `getCoalescedEvents` / stylus basınçlı çizim)
-- [ ] **F1.7** Editor UX bölünmesi (`ViewerShell` + tembel `EditorShell`, 6 eylemli bağlamsal çubuklar, 3 katmanlı `ObjectsPanel`, "Önizle" modu, **K7** "Kopya olarak kaydet" varsayılanı + üzerine yazma ilk onay diyaloğu)
-- [ ] **F1.8** `pdfjs-dist` Viewer render yolundan çıkarılması; F1 bütçe ve erişilebilirlik doğrulamaları (Vitest + Playwright)
+- [x] **F1.1** Sabitlenmiş PDFium Wasm ikilisi (`pdfium.wasm`) ve JS/TS köprü adaptörü + tek-thread öncelikli/iptal edilebilir iş kuyruğu (`PdfiumScheduler`)
+- [x] **F1.2** Üç katmanlı render boru hattı (İskelet → Düşük çözünürlüklü önizleme → 512×512 karolar), bayt bütçeli LRU `TileCache`, `ImageBitmap` transferi, `visibilitychange` / bellek baskısında `trim()`, prefix-sum + ikili arama sayfa sanallaştırması
+- [x] **F1.3** Worker topolojisi (`Engine Worker` + `Render Worker` + `Export Worker`; mobilde >80 MB için tek-worker düşüşü; `SharedArrayBuffer` gerektirmeyen yapı)
+- [x] **F1.4** Çift Modlu Durum Makinesi (`view` varsayılan ↔ `edit` tek tuş + `E` kısayolu, ±2 px görünüm çapası korunumu) ve Viewer yetenekleri (saydam `TextLayer`, akışlı Türkçe-katlamalı arama, Outline + sanal Thumbnail `NavigatorDrawer`, `LinkLayer`, Okuma temaları Açık/Koyu/Sepya, Sayfaya Git hapı, Yazdır, Açık Kaynak Lisanslar, K4 hafif işaretleme)
+- [x] **F1.5** Mobile-First Web Arayüzü (360×640'tan Kompakt `<600`, Orta `600–1023`, Geniş `>=1024`), başparmak bölgesi düzeni, kademeli `Sheet` (Peek/Yarım/Tam, drag/snap/scroll-handoff/History-Esc), `>=44×44px` dokunma hedefleri, sol-el desteği
+- [x] **F1.6** Merkezi Dokunmatik Jest Motoru (`PointerTracker`, `GestureArena` hakemlik tablosu, statik `touch-action: none`, odak korumalı Pinch-to-Zoom + lastik sınır + mıknatıs, ataletli Pan + eksen kilidi, 44 px tutamaçlı nesne sürükleme/boyutlandırma/döndürme, dokunmatik metin seçimi büyüteci, `getCoalescedEvents` / stylus basınçlı çizim)
+- [x] **F1.7** Editor UX bölünmesi (`ViewerShell` + tembel `EditorShell`, 6 eylemli bağlamsal çubuklar, 3 katmanlı `ObjectsPanel`, "Önizle" modu, **K7** "Kopya olarak kaydet" varsayılanı + üzerine yazma ilk onay diyaloğu)
+- [x] **F1.8** `pdfjs-dist` Viewer render yolundan çıkarılması; F1 bütçe ve erişilebilirlik doğrulamaları (Vitest + Playwright)
 
 ---
 

@@ -74,10 +74,11 @@ export default defineConfig({
     alias: {
       '@': path.resolve(__dirname, 'src'),
       '@mupdf-wasm': path.resolve(__dirname, 'node_modules/mupdf/dist/mupdf-wasm.wasm'),
+      '@pdfium-wasm': path.resolve(__dirname, 'node_modules/@embedpdf/pdfium/dist/pdfium.wasm'),
     },
   },
   optimizeDeps: {
-    exclude: ['mupdf'],
+    exclude: ['mupdf', '@embedpdf/pdfium'],
     esbuildOptions: {
       target: 'esnext',
     },

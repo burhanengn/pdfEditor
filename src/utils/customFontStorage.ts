@@ -1,4 +1,3 @@
-import fontkit from '@pdf-lib/fontkit';
 import {
   buildUnicodeRangeFromCodePoints,
   registerDynamicFontFace,
@@ -253,6 +252,7 @@ export async function importUserCustomFontFiles(
       input instanceof File ? new Uint8Array(await input.arrayBuffer()) : input.bytes;
     const sfntBytes = await normalizeUploadedFontBytes(rawBytes);
 
+    const { default: fontkit } = await import('@pdf-lib/fontkit');
     let fkFont: ReturnType<typeof fontkit.create>;
     try {
       fkFont = fontkit.create(sfntBytes);

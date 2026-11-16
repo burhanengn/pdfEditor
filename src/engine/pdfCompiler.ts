@@ -76,7 +76,13 @@ import {
   parseSvgPathCommands,
   scaleSvgPath as scaleSvgPathCommands,
 } from './imageMask';
-import { pathPointsToSvgPath, shapeToSvgPath, strokeDashToArray } from './vectorShapes';
+import {
+  pathPointsToSvgPath,
+  pointsToSmoothSvgPath,
+  shapeToSvgPath,
+  strokeDashToArray,
+} from './vectorShapes';
+export { pointsToSmoothSvgPath };
 
 type PdfLibDrawPlacement = ReturnType<typeof computePdfLibDrawPlacement>;
 
@@ -161,32 +167,7 @@ export function wrapTextLines(
   return lines.length > 0 ? lines : [''];
 }
 
-export function pointsToSmoothSvgPath(
-  points: Array<{ x: number; y: number }>,
-  width: number,
-  height: number,
-): string {
-  if (points.length === 0) return '';
-  const abs = points.map((p) => ({
-    x: p.x * width,
-    y: p.y * height,
-  }));
-  if (abs.length === 1) {
-    return `M ${abs[0].x.toFixed(2)} ${abs[0].y.toFixed(2)} L ${(abs[0].x + 0.1).toFixed(2)} ${(abs[0].y + 0.1).toFixed(2)}`;
-  }
-  if (abs.length === 2) {
-    return `M ${abs[0].x.toFixed(2)} ${abs[0].y.toFixed(2)} L ${abs[1].x.toFixed(2)} ${abs[1].y.toFixed(2)}`;
-  }
-  let d = `M ${abs[0].x.toFixed(2)} ${abs[0].y.toFixed(2)}`;
-  for (let i = 1; i < abs.length - 1; i++) {
-    const midX = (abs[i].x + abs[i + 1].x) / 2;
-    const midY = (abs[i].y + abs[i + 1].y) / 2;
-    d += ` Q ${abs[i].x.toFixed(2)} ${abs[i].y.toFixed(2)} ${midX.toFixed(2)} ${midY.toFixed(2)}`;
-  }
-  const last = abs[abs.length - 1];
-  d += ` L ${last.x.toFixed(2)} ${last.y.toFixed(2)}`;
-  return d;
-}
+// pointsToSmoothSvgPath imported from ./vectorShapes and re-exported above
 
 /**
  * Inspects a PDF with MuPDF Wasm (handling encryption & password auth) and extracts

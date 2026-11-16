@@ -73,6 +73,8 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
     try {
       await page.goto('/');
       await page.getByTestId('welcome-sample-btn').click();
+      await page.getByTestId('mobile-edit-fab').click();
+      await expect(page.getByTestId('mobile-bottom-dock')).toBeVisible();
       const page1 = page.getByTestId('pdf-page-1');
       await expect(page1.locator('canvas')).toBeVisible();
       await expect
@@ -252,6 +254,7 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
       mimeType: 'application/pdf',
       buffer: scanPdf,
     });
+    await page.getByTestId('toggle-edit-mode-btn').click();
 
     const pageEl = page.getByTestId('pdf-page-1');
     await expect(pageEl.locator('canvas')).toBeVisible();
@@ -318,7 +321,10 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
     // Must contain composed 'İSTANBUL' and stay on 1 single visual line (never wrapped to 2 lines!)
     const [pdfDownload] = await Promise.all([
       page.waitForEvent('download'),
-      page.getByTestId('export-pdf-btn').click(),
+      (async () => {
+        await page.getByTestId('export-pdf-btn').click();
+        await page.getByTestId('save-as-copy-btn').click();
+      })(),
     ]);
     const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
     const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
@@ -355,6 +361,7 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
   }) => {
     await page.goto('/');
     await page.getByTestId('welcome-sample-btn').click();
+    await page.getByTestId('toggle-edit-mode-btn').click();
     const page1 = page.getByTestId('pdf-page-1');
     await expect(page1.locator('canvas')).toBeVisible();
     await expect
@@ -409,7 +416,10 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
     // 3. Export PDF -> verify red banner renders BEHIND preserved white title 'Q4 Product Architecture Brief'
     const [pdfDownload] = await Promise.all([
       page.waitForEvent('download'),
-      page.getByTestId('export-pdf-btn').click(),
+      (async () => {
+        await page.getByTestId('export-pdf-btn').click();
+        await page.getByTestId('save-as-copy-btn').click();
+      })(),
     ]);
     const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
     const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
@@ -442,6 +452,7 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
   }) => {
     await page.goto('/');
     await page.getByTestId('welcome-sample-btn').click();
+    await page.getByTestId('toggle-edit-mode-btn').click();
     const page1 = page.getByTestId('pdf-page-1');
     await expect(page1.locator('canvas')).toBeVisible();
     await expect
@@ -524,7 +535,10 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
     // 4. Export PDF -> verify rendered pixels contain blue rounded shape inside PDF via MuPDF
     const [pdfDownload] = await Promise.all([
       page.waitForEvent('download'),
-      page.getByTestId('export-pdf-btn').click(),
+      (async () => {
+        await page.getByTestId('export-pdf-btn').click();
+        await page.getByTestId('save-as-copy-btn').click();
+      })(),
     ]);
     const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
     const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
@@ -602,6 +616,7 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
 
     await page.goto('/');
     await page.getByTestId('welcome-sample-btn').click();
+    await page.getByTestId('toggle-edit-mode-btn').click();
     const page1 = page.getByTestId('pdf-page-1');
     await expect(page1.locator('canvas')).toBeVisible();
     await expect
@@ -701,7 +716,10 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
 
     const [pdfDownload] = await Promise.all([
       page.waitForEvent('download'),
-      page.getByTestId('export-pdf-btn').click(),
+      (async () => {
+        await page.getByTestId('export-pdf-btn').click();
+        await page.getByTestId('save-as-copy-btn').click();
+      })(),
     ]);
     const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
     const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
@@ -752,6 +770,7 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto('/');
     await page.getByTestId('welcome-sample-btn').click();
+    await page.getByTestId('toggle-edit-mode-btn').click();
     const pdfPage = page.getByTestId('pdf-page-1');
     await expect(pdfPage).toBeVisible();
     await page.getByRole('button', { name: 'Fit Page' }).click();
@@ -917,6 +936,7 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto('/');
     await page.getByTestId('welcome-sample-btn').click();
+    await page.getByTestId('toggle-edit-mode-btn').click();
     await expect(page.getByTestId('pdf-page-1')).toBeVisible();
     await page.getByRole('button', { name: 'Fit Page' }).click();
 
@@ -1035,7 +1055,10 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
     // Export PDF and inspect right half of inserted image box (x=295..385, y=316..476) in MuPDF
     const [pdfDownload] = await Promise.all([
       page.waitForEvent('download'),
-      page.getByTestId('export-pdf-btn').click(),
+      (async () => {
+        await page.getByTestId('export-pdf-btn').click();
+        await page.getByTestId('save-as-copy-btn').click();
+      })(),
     ]);
     const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
     const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');
@@ -1127,7 +1150,10 @@ test.describe('Master Plan Section 4 Acceptance E2E Suite', () => {
     // 5. Export PDF and verify via MuPDF: 2 A4 pages, blank text content & vector shape present
     const [pdfDownload] = await Promise.all([
       page.waitForEvent('download'),
-      page.getByTestId('export-pdf-btn').click(),
+      (async () => {
+        await page.getByTestId('export-pdf-btn').click();
+        await page.getByTestId('save-as-copy-btn').click();
+      })(),
     ]);
     const exportedBytes = await readStreamBytes((await pdfDownload.createReadStream())!);
     const md = mupdf.Document.openDocument(exportedBytes, 'application/pdf');

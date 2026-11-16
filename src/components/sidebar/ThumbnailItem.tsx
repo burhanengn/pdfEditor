@@ -2,9 +2,14 @@ import { useEffect, useRef } from 'react';
 import { Copy, RotateCw, Trash2 } from 'lucide-react';
 import type { PageMeta } from '@/types/pdf';
 import { getDisplayDimensions } from '@/engine/coordinates';
-import { pdfjsService } from '@/engine/pdfjsService';
-import { getSourceDocBytes } from '@/engine/sourceDocRegistry';
+import {
+  buildTileCacheKey,
+  getScaleBucket,
+  pdfiumScheduler,
+  RenderPriority,
+} from '@/engine/pdfium/renderScheduler';
 import { useEditorStore } from '@/store/useEditorStore';
+import { useViewerStore } from '@/store/useViewerStore';
 
 interface ThumbnailItemProps {
   page: PageMeta;
@@ -12,6 +17,7 @@ interface ThumbnailItemProps {
   isActive: boolean;
   totalPages: number;
   scale?: number;
+  showEditActions?: boolean;
   testIdPrefix?: string;
   onSelect: (modifiers: { shiftKey: boolean; ctrlOrMetaKey: boolean }) => void;
   onRotateCW: () => void;
@@ -25,6 +31,7 @@ export function ThumbnailItem({
   isActive,
   totalPages,
   scale = 0.22,
+  showEditActions = true,
   testIdPrefix = 'thumbnail-page-',
   onSelect,
   onRotateCW,
@@ -33,32 +40,87 @@ export function ThumbnailItem({
 }: ThumbnailItemProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const sourceByteLength = useEditorStore((s) => s.sourceDocs[page.sourceDocId]?.byteLength ?? 0);
+  const docRevision = useViewerStore((s) => s.docRevision);
+  const pageRevision = useViewerStore((s) => s.pageRevisions[page.id] ?? 0);
 
   const dims = getDisplayDimensions(page.baseWidth, page.baseHeight, page.userRotation, scale);
 
   useEffect(() => {
     const canvas = canvasRef.current;
-    const sourceBytes = getSourceDocBytes(page.sourceDocId);
-    if (!canvas || !sourceBytes) return;
+    if (!canvas || !sourceByteLength) return;
 
-    const handle = pdfjsService.renderPageToCanvas({
-      sourceDocId: page.sourceDocId,
-      bytes: sourceBytes,
-      sourcePageIndex: page.sourcePageIndex,
-      canvas,
-      zoom: scale,
-      userRotation: page.userRotation,
-      dpr: Math.min(window.devicePixelRatio || 1, 2),
+    const dpr = Math.min(typeof window !== 'undefined' ? window.devicePixelRatio || 1 : 1, 2);
+    const cssW = Math.max(1, Math.round(dims.width));
+    const cssH = Math.max(1, Math.round(dims.height));
+    const pixelW = Math.max(1, Math.round(dims.width * dpr));
+    const pixelH = Math.max(1, Math.round(dims.height * dpr));
+
+    canvas.width = pixelW;
+    canvas.height = pixelH;
+    canvas.style.width = `${cssW}px`;
+    canvas.style.height = `${cssH}px`;
+
+    const cacheKey = buildTileCacheKey({
+      docRev: docRevision,
+      pageId: page.id,
+      pageRev: pageRevision,
+      scaleBucket: getScaleBucket(scale, dpr),
+      tx: 0,
+      ty: 0,
+      theme: 'light',
+      darkInvert: false,
+      rotation: page.userRotation,
+      isPreview: true,
     });
 
-    handle.promise.catch(() => {
-      // Cancelled or released during fast scroll
+    const handle = pdfiumScheduler.scheduleTileRender({
+      key: cacheKey,
+      priority: RenderPriority.THUMBNAIL,
+      pageId: page.id,
+      pageIndex,
+      scaleBucket: getScaleBucket(scale, dpr),
+      isPreview: true,
+      isThumbnail: true,
+      request: {
+        sourceDocId: page.sourceDocId,
+        pageIndex: page.sourcePageIndex,
+        tileX: 0,
+        tileY: 0,
+        tileWidthPx: pixelW,
+        tileHeightPx: pixelH,
+        scale: scale * dpr,
+        userRotation: page.userRotation,
+        theme: 'light',
+      },
     });
+
+    handle.promise
+      .then((bitmap) => {
+        const ctx = canvas.getContext('2d');
+        if (!ctx) return;
+        ctx.clearRect(0, 0, pixelW, pixelH);
+        ctx.drawImage(bitmap, 0, 0, pixelW, pixelH);
+      })
+      .catch(() => {
+        // Cancelled on scroll/unmount
+      });
 
     return () => {
       handle.cancel();
     };
-  }, [page.sourceDocId, page.sourcePageIndex, page.userRotation, scale, sourceByteLength]);
+  }, [
+    page.id,
+    page.sourceDocId,
+    page.sourcePageIndex,
+    page.userRotation,
+    pageIndex,
+    scale,
+    dims.width,
+    dims.height,
+    sourceByteLength,
+    docRevision,
+    pageRevision,
+  ]);
 
   return (
     <div
@@ -94,57 +156,59 @@ export function ThumbnailItem({
       </div>
 
       <div className="mt-1.5 flex w-full items-center justify-between px-1">
-        <span className="text-xs font-medium text-slate-600 dark:text-slate-300">
+        <span className="text-xs font-medium tabular-nums text-slate-600 dark:text-slate-300">
           Page {pageIndex + 1}
         </span>
         {page.userRotation !== 0 && (
-          <span className="rounded bg-slate-200 px-1 text-xs text-slate-600 dark:bg-slate-800 dark:text-slate-400">
+          <span className="rounded bg-slate-200 px-1 text-xs tabular-nums text-slate-600 dark:bg-slate-800 dark:text-slate-400">
             {page.userRotation}°
           </span>
         )}
       </div>
 
-      {/* Hover Quick Actions */}
-      <div className="absolute right-1.5 top-1.5 flex gap-0.5 rounded-md border border-slate-200 bg-white/95 p-0.5 opacity-0 shadow-sm backdrop-blur transition group-hover:opacity-100 dark:border-slate-700 dark:bg-slate-900/95">
-        <button
-          type="button"
-          title="Rotate 90° CW"
-          aria-label={`Rotate page ${pageIndex + 1} clockwise`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onRotateCW();
-          }}
-          className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
-        >
-          <RotateCw className="h-3 w-3" />
-        </button>
-        <button
-          type="button"
-          title="Duplicate Page"
-          aria-label={`Duplicate page ${pageIndex + 1}`}
-          onClick={(e) => {
-            e.stopPropagation();
-            onDuplicate();
-          }}
-          className="rounded p-1 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
-        >
-          <Copy className="h-3 w-3" />
-        </button>
-        {totalPages > 1 && (
+      {/* Quick Actions (Editor only) */}
+      {showEditActions && (
+        <div className="absolute right-1.5 top-1.5 flex gap-0.5 rounded-md border border-slate-200 bg-white/95 p-0.5 opacity-0 shadow-sm backdrop-blur transition group-hover:opacity-100 group-focus-within:opacity-100 dark:border-slate-700 dark:bg-slate-900/95">
           <button
             type="button"
-            title="Delete Page"
-            aria-label={`Delete page ${pageIndex + 1}`}
+            title="Rotate 90° CW"
+            aria-label={`Rotate page ${pageIndex + 1} clockwise`}
             onClick={(e) => {
               e.stopPropagation();
-              onDelete();
+              onRotateCW();
             }}
-            className="rounded p-1 text-slate-500 hover:bg-red-50 hover:text-red-600 dark:text-slate-400 dark:hover:bg-red-950/60 dark:hover:text-red-400"
+            className="rounded p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
           >
-            <Trash2 className="h-3 w-3" />
+            <RotateCw className="h-4 w-4" />
           </button>
-        )}
-      </div>
+          <button
+            type="button"
+            title="Duplicate Page"
+            aria-label={`Duplicate page ${pageIndex + 1}`}
+            onClick={(e) => {
+              e.stopPropagation();
+              onDuplicate();
+            }}
+            className="rounded p-1.5 text-slate-500 hover:bg-slate-100 hover:text-slate-900 dark:text-slate-400 dark:hover:bg-slate-800 dark:hover:text-white"
+          >
+            <Copy className="h-4 w-4" />
+          </button>
+          {totalPages > 1 && (
+            <button
+              type="button"
+              title="Delete Page"
+              aria-label={`Delete page ${pageIndex + 1}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                onDelete();
+              }}
+              className="rounded p-1.5 text-slate-500 hover:bg-red-50 hover:text-red-600 dark:text-slate-400 dark:hover:bg-red-950/60 dark:hover:text-red-400"
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          )}
+        </div>
+      )}
     </div>
   );
 }

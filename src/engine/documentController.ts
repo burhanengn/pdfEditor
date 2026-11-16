@@ -1,8 +1,9 @@
 import type { ImageAddElement } from '@/types/elements';
 import type { AppMode, PageMeta, SourceDocumentInput, ToolMode } from '@/types/pdf';
-import { generateBlankPdfBytes, type BlankPagePreset } from './blankPdf';
+import type { BlankPagePreset } from './blankPdf';
 import { getDisplayDimensions } from './coordinates';
 import { useEditorStore } from '@/store/useEditorStore';
+import { useViewerStore } from '@/store/useViewerStore';
 import { blobRegistry } from '@/utils/blobRegistry';
 import {
   deleteUserCustomFont,
@@ -14,12 +15,18 @@ import {
   getExtractedFontAssetPayloads,
   populateExtractedFontRegistry,
   registerExtractedPdfFontsInBrowser,
-} from './embeddedFontExtractor';
+} from './extractedFontRegistry';
 import { parsePageRangeExpression } from './pageRange';
-import { pdfjsService } from './pdfjsService';
+import { pdfiumScheduler } from './pdfium/renderScheduler';
 import { perfMetrics } from './perfMetrics';
 import { markSessionCleanSnapshot } from './sessionPersistence';
-import { getSourceDocBytes } from './sourceDocRegistry';
+import {
+  getSourceDocBytes,
+  getSourceDocPassword,
+  getSourceFileHandle,
+  setSourceDocPassword,
+  setSourceFileHandle,
+} from './sourceDocRegistry';
 import { wasmWorkerClient } from './wasmWorkerClient';
 
 function triggerDownload(bytes: Uint8Array, filename: string, mimeType: string): void {
@@ -45,21 +52,58 @@ function buildPagesFromInspect(
     baseWidth: number;
     baseHeight: number;
     intrinsicRotation: 0 | 90 | 180 | 270;
-    mediaBox: [number, number, number, number];
-    cropBox: [number, number, number, number];
+    mediaBox?: [number, number, number, number];
+    cropBox?: [number, number, number, number];
   }>,
 ): PageMeta[] {
-  return inspectPages.map((p) => ({
-    id: createId('page'),
-    sourceDocId,
-    sourcePageIndex: p.sourcePageIndex,
-    baseWidth: p.baseWidth,
-    baseHeight: p.baseHeight,
-    intrinsicRotation: p.intrinsicRotation,
-    userRotation: 0,
-    mediaBox: p.mediaBox,
-    cropBox: p.cropBox,
-  }));
+  return inspectPages.map((p) => {
+    const box: [number, number, number, number] = [0, 0, p.baseWidth, p.baseHeight];
+    return {
+      id: createId('page'),
+      sourceDocId,
+      sourcePageIndex: p.sourcePageIndex,
+      baseWidth: p.baseWidth,
+      baseHeight: p.baseHeight,
+      intrinsicRotation: p.intrinsicRotation,
+      userRotation: 0,
+      mediaBox: p.mediaBox ?? box,
+      cropBox: p.cropBox ?? box,
+    };
+  });
+}
+
+const hydratedFontDocs = new Set<string>();
+
+export async function ensureEditEngineReadyForCurrentDocs(): Promise<void> {
+  const state = useEditorStore.getState();
+  const docIds = Object.keys(state.sourceDocs);
+  for (const id of docIds) {
+    if (!wasmWorkerClient.isSourceDocRegistered(id)) {
+      const bytes = getSourceDocBytes(id);
+      if (!bytes) continue;
+      const meta = state.sourceDocs[id];
+      const password = getSourceDocPassword(id);
+      if (meta?.wasEncrypted && password) {
+        const copy = bytes.slice();
+        const inspected = await wasmWorkerClient.call(
+          'inspectPdf',
+          { bytes: copy, password, sourceDocId: id },
+          120_000,
+          [copy.buffer],
+        );
+        if (inspected.decryptedBytes) {
+          const { setSourceDocBytes } = await import('./sourceDocRegistry');
+          setSourceDocBytes(id, inspected.decryptedBytes);
+        }
+      } else {
+        await wasmWorkerClient.registerSourceDoc(id, bytes);
+      }
+    }
+    if (!hydratedFontDocs.has(id)) {
+      hydratedFontDocs.add(id);
+      hydrateEmbeddedFontsInBackground(id);
+    }
+  }
 }
 
 function hydrateEmbeddedFontsInBackground(sourceDocId: string): void {
@@ -67,7 +111,6 @@ function hydrateEmbeddedFontsInBackground(sourceDocId: string): void {
     .call('extractEmbeddedFonts', { sourceDocId })
     .then(async ({ fonts, assets }) => {
       if (fonts.length === 0) return;
-      // Ignore stale extraction if document has already been unloaded
       if (!useEditorStore.getState().sourceDocs[sourceDocId]) return;
       populateExtractedFontRegistry(fonts, assets);
       await registerExtractedPdfFontsInBrowser(fonts);
@@ -82,23 +125,17 @@ export async function openPdfBytes(
   fileName: string,
   bytes: Uint8Array,
   password?: string,
-  options?: { initialMode?: AppMode },
+  options?: { initialMode?: AppMode; fileHandle?: FileSystemFileHandle | null },
 ): Promise<void> {
   perfMetrics.markDocOpenStart(fileName);
   const store = useEditorStore.getState();
   const previousDocIds = Object.keys(store.sourceDocs);
-  store.setLoading(true, `Inspecting ${fileName}…`);
+  store.setLoading(true, `Opening ${fileName}…`);
   store.setErrorBanner(null);
 
   try {
     const sourceDocId = createId('src');
-    const transferCopy = bytes.slice();
-    const result = await wasmWorkerClient.call(
-      'inspectPdf',
-      { bytes: transferCopy, password, sourceDocId },
-      120_000,
-      [transferCopy.buffer],
-    );
+    const result = await pdfiumScheduler.openDocument(sourceDocId, bytes, password);
     if (result.status === 'needs-password' || result.status === 'invalid-password') {
       store.setPasswordPrompt({
         fileName,
@@ -110,23 +147,34 @@ export async function openPdfBytes(
     }
 
     for (const oldId of previousDocIds) {
+      pdfiumScheduler.closeDocument(oldId);
+      hydratedFontDocs.delete(oldId);
       void wasmWorkerClient.releaseSourceDoc(oldId);
     }
 
-    const effectiveBytes = result.decryptedBytes ?? bytes;
     const sourceDoc: SourceDocumentInput = {
       id: sourceDocId,
       name: fileName,
-      bytes: effectiveBytes,
-      wasEncrypted: result.wasEncrypted,
+      bytes,
+      wasEncrypted: Boolean(password),
       pageCount: result.pageCount,
     };
     const pages = buildPagesFromInspect(sourceDocId, result.pages);
-    await pdfjsService.releaseAllDocuments();
     store.loadInitialDocument(sourceDoc, pages, { initialMode: options?.initialMode });
+    setSourceDocPassword(sourceDocId, password);
+    if (options?.fileHandle) {
+      setSourceFileHandle(sourceDocId, options.fileHandle);
+    }
+    useViewerStore.getState().setDocumentViewerMeta({
+      outline: result.outline,
+      canCopyText: result.canCopyText,
+    });
     markSessionCleanSnapshot();
 
-    hydrateEmbeddedFontsInBackground(sourceDocId);
+    // Only hydrate edit worker & embedded fonts immediately if opened directly in edit mode
+    if (options?.initialMode === 'edit') {
+      void ensureEditEngineReadyForCurrentDocs();
+    }
   } catch (err) {
     store.setErrorBanner(err instanceof Error ? err.message : 'Failed to open PDF document.');
   } finally {
@@ -150,13 +198,7 @@ export async function mergePdfBytes(
 
   try {
     const sourceDocId = createId('src');
-    const transferCopy = bytes.slice();
-    const result = await wasmWorkerClient.call(
-      'inspectPdf',
-      { bytes: transferCopy, password, sourceDocId },
-      120_000,
-      [transferCopy.buffer],
-    );
+    const result = await pdfiumScheduler.openDocument(sourceDocId, bytes, password);
     if (result.status === 'needs-password' || result.status === 'invalid-password') {
       store.setPasswordPrompt({
         fileName,
@@ -167,18 +209,20 @@ export async function mergePdfBytes(
       return;
     }
 
-    const effectiveBytes = result.decryptedBytes ?? bytes;
     const sourceDoc: SourceDocumentInput = {
       id: sourceDocId,
       name: fileName,
-      bytes: effectiveBytes,
-      wasEncrypted: result.wasEncrypted,
+      bytes,
+      wasEncrypted: Boolean(password),
       pageCount: result.pageCount,
     };
     const pages = buildPagesFromInspect(sourceDocId, result.pages);
     store.appendMergedDocument(sourceDoc, pages, insertAt);
+    setSourceDocPassword(sourceDocId, password);
 
-    hydrateEmbeddedFontsInBackground(sourceDocId);
+    if (useEditorStore.getState().appMode === 'edit') {
+      void ensureEditEngineReadyForCurrentDocs();
+    }
   } catch (err) {
     store.setErrorBanner(err instanceof Error ? err.message : 'Failed to merge PDF document.');
   } finally {
@@ -213,6 +257,7 @@ export async function createBlankDocument(options?: {
   fileName?: string;
   initialToolMode?: ToolMode;
 }): Promise<void> {
+  const { generateBlankPdfBytes } = await import('./blankPdf');
   const bytes = await generateBlankPdfBytes({
     preset: options?.preset ?? 'a4-portrait',
     width: options?.width,
@@ -260,6 +305,7 @@ export async function insertBlankPageInDocument(options?: {
     height = dims.height;
   }
 
+  const { generateBlankPdfBytes } = await import('./blankPdf');
   const bytes = await generateBlankPdfBytes({
     preset: options?.preset ?? 'a4-portrait',
     width,
@@ -341,6 +387,7 @@ function buildWorkerSourceDocRefs(usedDocIds: Set<string>): {
 }
 
 export async function compileCurrentDocumentBytes(): Promise<Uint8Array> {
+  await ensureEditEngineReadyForCurrentDocs();
   const state = useEditorStore.getState();
   const usedDocIds = new Set(state.pages.map((p) => p.sourceDocId));
   const { sourceDocs, transfer } = buildWorkerSourceDocRefs(usedDocIds);
@@ -360,6 +407,91 @@ export async function compileCurrentDocumentBytes(): Promise<Uint8Array> {
     transfer,
   );
   return bytes;
+}
+
+export function canOverwritePrimaryFile(): boolean {
+  const state = useEditorStore.getState();
+  const primaryDocId = state.pages[0]?.sourceDocId;
+  if (!primaryDocId) return false;
+  return Boolean(getSourceFileHandle(primaryDocId));
+}
+
+export async function openPdfWithPickerFallback(fallbackInput: HTMLInputElement | null): Promise<void> {
+  const win = typeof window !== 'undefined' ? (window as unknown as {
+    showOpenFilePicker?: (opts?: unknown) => Promise<FileSystemFileHandle[]>;
+  }) : null;
+  if (win && typeof win.showOpenFilePicker === 'function') {
+    try {
+      const [handle] = await win.showOpenFilePicker({
+        multiple: false,
+        types: [{ description: 'PDF Document', accept: { 'application/pdf': ['.pdf'] } }],
+      });
+      if (!handle) return;
+      const file = await handle.getFile();
+      const buf = await file.arrayBuffer();
+      await openPdfBytes(file.name, new Uint8Array(buf), undefined, { fileHandle: handle });
+      return;
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      // Fallback to standard file input on unsupported/blocked contexts
+    }
+  }
+  fallbackInput?.click();
+}
+
+export async function savePdfAsCopy(): Promise<void> {
+  const store = useEditorStore.getState();
+  if (store.pages.length === 0) return;
+  store.setLoading(true, 'Preparing PDF copy…');
+  store.setErrorBanner(null);
+
+  try {
+    const bytes = await compileCurrentDocumentBytes();
+    const baseName = store.documentName.replace(/\.pdf$/i, '') || 'document';
+    const suggestedName = `${baseName}-edited.pdf`;
+
+    triggerDownload(bytes, suggestedName, 'application/pdf');
+    useEditorStore.getState().markDocumentSaved();
+    markSessionCleanSnapshot();
+  } catch (err) {
+    store.setErrorBanner(err instanceof Error ? err.message : 'Failed to save PDF copy.');
+  } finally {
+    useEditorStore.getState().setLoading(false, '');
+  }
+}
+
+export async function overwriteOriginalPdf(): Promise<void> {
+  const store = useEditorStore.getState();
+  if (store.pages.length === 0) return;
+  const primaryDocId = store.pages[0]?.sourceDocId;
+  const handle = primaryDocId ? getSourceFileHandle(primaryDocId) : undefined;
+  if (!handle) {
+    await savePdfAsCopy();
+    return;
+  }
+
+  store.setLoading(true, 'Verifying & saving original PDF…');
+  store.setErrorBanner(null);
+
+  try {
+    const bytes = await compileCurrentDocumentBytes();
+    // Safe write protocol (04 §6.2-1): verify compiled bytes open cleanly in PDFium before replacing target
+    const verifyRes = await pdfiumScheduler.openDocument('__verify_save__', bytes);
+    pdfiumScheduler.closeDocument('__verify_save__');
+    if (verifyRes.status !== 'ok' || verifyRes.pageCount !== store.pages.length) {
+      throw new Error('Compiled PDF failed pre-write integrity verification.');
+    }
+
+    const writable = await handle.createWritable();
+    await writable.write(bytes as unknown as BufferSource);
+    await writable.close();
+    useEditorStore.getState().markDocumentSaved();
+    markSessionCleanSnapshot();
+  } catch (err) {
+    store.setErrorBanner(err instanceof Error ? err.message : 'Failed to overwrite original PDF.');
+  } finally {
+    useEditorStore.getState().setLoading(false, '');
+  }
 }
 
 export async function exportCurrentPdf(): Promise<void> {
@@ -452,6 +584,7 @@ export async function exportSplitDocuments(
     throw new Error(parsed.error);
   }
 
+  await ensureEditEngineReadyForCurrentDocs();
   const usedDocIds = new Set(store.pages.map((p) => p.sourceDocId));
   const { sourceDocs, transfer } = buildWorkerSourceDocRefs(usedDocIds);
   const baseName = store.documentName.replace(/\.pdf$/i, '') || 'document';

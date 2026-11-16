@@ -171,8 +171,9 @@ test.describe('AetherPDF Studio E2E Verification', () => {
     const isolated = await page.evaluate(() => window.crossOriginIsolated);
     expect(isolated).toBe(true);
 
-    // 1. Load Sample PDF from welcome screen
+    // 1. Load Sample PDF from welcome screen -> toggle single-button Edit mode (K4)
     await page.getByTestId('welcome-sample-btn').click();
+    await page.getByTestId('toggle-edit-mode-btn').click();
     await expect(page.getByTestId('thumbnail-page-1')).toBeVisible();
     await expect(page.getByTestId('thumbnail-page-3')).toBeVisible();
 
@@ -381,7 +382,10 @@ test.describe('AetherPDF Studio E2E Verification', () => {
     // 11. Export Final PDF and verify binary PDF output via MuPDF
     const [pdfDownload] = await Promise.all([
       page.waitForEvent('download'),
-      page.getByTestId('export-pdf-btn').click(),
+      (async () => {
+        await page.getByTestId('export-pdf-btn').click();
+        await page.getByTestId('save-as-copy-btn').click();
+      })(),
     ]);
     const pdfStream = await pdfDownload.createReadStream();
     const exportedPdfBytes = await readDownloadBytes(pdfStream!);
@@ -417,6 +421,7 @@ test.describe('AetherPDF Studio E2E Verification', () => {
 
     // 12. Verify signature vault persisted in localStorage across reload
     await page.reload();
+    await page.getByTestId('welcome-blank-btn').click();
     await page.getByTestId('tool-signature').click();
     await expect(page.getByText('Vault (3)')).toBeVisible();
     await page.getByRole('button', { name: 'Close signature modal' }).click();
@@ -455,6 +460,7 @@ test.describe('AetherPDF Studio E2E Verification', () => {
     await page.locator('#pdf-password-input').fill('topsecret99');
     await page.getByRole('button', { name: 'Unlock PDF' }).click();
     await expect(page.locator('#pdf-password-input')).toBeHidden();
+    await page.getByTestId('toggle-edit-mode-btn').click();
     await expect(page.getByTestId('thumbnail-page-1')).toBeVisible();
     await expect(page.getByTestId('thumbnail-page-2')).toBeVisible();
 
@@ -465,6 +471,7 @@ test.describe('AetherPDF Studio E2E Verification', () => {
       mimeType: 'application/pdf',
       buffer: largePdf,
     });
+    await page.getByTestId('toggle-edit-mode-btn').click();
 
     await expect(page.getByTestId('thumbnail-sidebar')).toContainText('Pages (105)');
     const renderedMainCanvases = await page
@@ -509,6 +516,7 @@ test.describe('AetherPDF Studio E2E Verification', () => {
       mimeType: 'application/pdf',
       buffer: turkishPdf,
     });
+    await page.getByTestId('toggle-edit-mode-btn').click();
 
     const pageEl = page.getByTestId('pdf-page-1');
     const canvas = pageEl.locator('canvas');
@@ -672,7 +680,10 @@ test.describe('AetherPDF Studio E2E Verification', () => {
     // 5. Export final PDF and inspect with MuPDF
     const [pdfDownload] = await Promise.all([
       page.waitForEvent('download'),
-      page.getByTestId('export-pdf-btn').click(),
+      (async () => {
+        await page.getByTestId('export-pdf-btn').click();
+        await page.getByTestId('save-as-copy-btn').click();
+      })(),
     ]);
     const pdfStream = await pdfDownload.createReadStream();
     const exportedPdfBytes = await readDownloadBytes(pdfStream!);
@@ -819,6 +830,7 @@ test.describe('AetherPDF Studio E2E Verification', () => {
       mimeType: 'application/pdf',
       buffer: pdfBytes,
     });
+    await page.getByTestId('toggle-edit-mode-btn').click();
 
     const pageEl = page.getByTestId('pdf-page-1');
     const canvas = pageEl.locator('canvas');
@@ -993,7 +1005,10 @@ test.describe('AetherPDF Studio E2E Verification', () => {
     // 5. Export final PDF & validate all 4 properties in MuPDF output
     const [dl] = await Promise.all([
       page.waitForEvent('download'),
-      page.getByTestId('export-pdf-btn').click(),
+      (async () => {
+        await page.getByTestId('export-pdf-btn').click();
+        await page.getByTestId('save-as-copy-btn').click();
+      })(),
     ]);
     const exportedBytes = await readDownloadBytes((await dl.createReadStream())!);
 
@@ -1118,6 +1133,7 @@ test.describe('AetherPDF Studio E2E Verification', () => {
       mimeType: 'application/pdf',
       buffer: pdfBuffer,
     });
+    await page.getByTestId('toggle-edit-mode-btn').click();
 
     const page1El = page.getByTestId('pdf-page-1');
     await expect(page1El.locator('canvas')).toBeVisible();
@@ -1243,7 +1259,10 @@ test.describe('AetherPDF Studio E2E Verification', () => {
 
     const [dl] = await Promise.all([
       page.waitForEvent('download'),
-      page.getByTestId('export-pdf-btn').click(),
+      (async () => {
+        await page.getByTestId('export-pdf-btn').click();
+        await page.getByTestId('save-as-copy-btn').click();
+      })(),
     ]);
     const outBytes = await readDownloadBytes((await dl.createReadStream())!);
     const outDoc = mupdf.Document.openDocument(outBytes, 'application/pdf');
@@ -1356,6 +1375,7 @@ test.describe('AetherPDF Studio E2E Verification', () => {
       mimeType: 'application/pdf',
       buffer: pdfBuffer,
     });
+    await page.getByTestId('toggle-edit-mode-btn').click();
 
     const page1El = page.getByTestId('pdf-page-1');
     await expect(page1El.locator('canvas')).toBeVisible();
@@ -1417,7 +1437,10 @@ test.describe('AetherPDF Studio E2E Verification', () => {
     // D. Export edited PDF -> verify both subset-fallback Turkish text and user-uploaded font text round-trip
     const [dl] = await Promise.all([
       page.waitForEvent('download'),
-      page.getByTestId('export-pdf-btn').click(),
+      (async () => {
+        await page.getByTestId('export-pdf-btn').click();
+        await page.getByTestId('save-as-copy-btn').click();
+      })(),
     ]);
     const outBytes = await readDownloadBytes((await dl.createReadStream())!);
     const outDoc = mupdf.Document.openDocument(outBytes, 'application/pdf');
@@ -1507,6 +1530,7 @@ test.describe('AetherPDF Studio E2E Verification', () => {
       expect(isolated).toBe(false);
 
       await page.getByTestId('welcome-sample-btn').click();
+      await page.getByTestId('toggle-edit-mode-btn').click();
       await expect(page.getByTestId('thumbnail-page-1')).toBeVisible();
       const page1Canvas = page.getByTestId('pdf-page-1').locator('canvas');
       await expect(page1Canvas).toBeVisible();
@@ -1524,7 +1548,10 @@ test.describe('AetherPDF Studio E2E Verification', () => {
 
       const [dl] = await Promise.all([
         page.waitForEvent('download'),
-        page.getByTestId('export-pdf-btn').click(),
+        (async () => {
+        await page.getByTestId('export-pdf-btn').click();
+        await page.getByTestId('save-as-copy-btn').click();
+      })(),
       ]);
       const outBytes = await readDownloadBytes((await dl.createReadStream())!);
       const outDoc = mupdf.Document.openDocument(outBytes, 'application/pdf');

@@ -103,7 +103,11 @@ export function SelectionOverlay({
     }
     e.stopPropagation();
     const target = e.currentTarget;
-    target.setPointerCapture(e.pointerId);
+    try {
+      target.setPointerCapture(e.pointerId);
+    } catch {
+      // Synthetic pointer events in headless tests may not have active hardware pointer capture
+    }
 
     const startClientX = e.clientX;
     const startClientY = e.clientY;
@@ -191,7 +195,11 @@ export function SelectionOverlay({
     }
     e.stopPropagation();
     const target = e.currentTarget;
-    target.setPointerCapture(e.pointerId);
+    try {
+      target.setPointerCapture(e.pointerId);
+    } catch {
+      // Synthetic pointer events in headless tests may not have active hardware pointer capture
+    }
 
     const startClientX = e.clientX;
     const startClientY = e.clientY;
@@ -286,7 +294,11 @@ export function SelectionOverlay({
     }
     e.stopPropagation();
     const target = e.currentTarget;
-    target.setPointerCapture(e.pointerId);
+    try {
+      target.setPointerCapture(e.pointerId);
+    } catch {
+      // Synthetic pointer events in headless tests may not have active hardware pointer capture
+    }
 
     const parentRect = target.closest('[data-page-canvas-layer]')?.getBoundingClientRect();
     if (!parentRect) return;

@@ -199,25 +199,9 @@ test.describe('gullacpdf Mobile, PWA & GitHub Pages Verification', () => {
       expect(layoutMetrics.scrollWidth).toBeLessThanOrEqual(layoutMetrics.innerWidth);
       expect(layoutMetrics.headerHeight).toBeLessThanOrEqual(56);
 
-      // 2. Desktop sidebars hidden on phone, Bottom Dock visible with >= 44px touch targets
+      // 2. Load sample PDF in Viewer mode first (zero editor chrome, thumb-zone Edit FAB >=44px)
       await expect(page.getByTestId('thumbnail-sidebar')).toBeHidden();
       await expect(page.getByTestId('right-inspector')).toHaveCount(0);
-      const dock = page.getByTestId('mobile-bottom-dock');
-      await expect(dock).toBeVisible();
-
-      for (const tabId of [
-        'mobile-dock-pages',
-        'mobile-dock-tools',
-        'mobile-dock-inspector',
-        'mobile-dock-export',
-      ]) {
-        const box = await page.getByTestId(tabId).boundingBox();
-        expect(box).not.toBeNull();
-        expect(box!.width).toBeGreaterThanOrEqual(44);
-        expect(box!.height).toBeGreaterThanOrEqual(44);
-      }
-
-      // 3. Load sample PDF & check touch rendering + zero overflow
       await page.getByTestId('welcome-sample-btn').click();
       const page1Canvas = page.getByTestId('pdf-page-1').locator('canvas');
       await expect(page1Canvas).toBeVisible();
@@ -225,17 +209,17 @@ test.describe('gullacpdf Mobile, PWA & GitHub Pages Verification', () => {
         .poll(async () => page1Canvas.evaluate((c: HTMLCanvasElement) => c.width))
         .toBeGreaterThan(200);
 
+      // Viewer hides MobileBottomDock until single-tap Edit FAB; verify pinch zoom & floating-zoom-pill in Viewer mode first
+      await expect(page.getByTestId('mobile-bottom-dock')).toHaveCount(0);
+
       const postLoadWidth = await page.evaluate(() => ({
         scrollWidth: document.documentElement.scrollWidth,
         innerWidth: window.innerWidth,
       }));
       expect(postLoadWidth.scrollWidth).toBeLessThanOrEqual(postLoadWidth.innerWidth);
 
-      // 4. Test Pinch-to-Zoom via synthetic PointerEvent touch pinch on document-viewport
-      const zoomBefore = await page.evaluate(() => {
-        const opt = document.querySelector('[data-testid="zoom-select"] option:checked');
-        return opt?.textContent ?? '';
-      });
+      // 3b. Test Pinch-to-Zoom via synthetic PointerEvent touch pinch on document-viewport in Viewer
+      const zoomBefore = await page.getByTestId('floating-zoom-pill').textContent();
       await page.evaluate(() => {
         const vpEl = document.querySelector('[data-testid="document-viewport"]')!;
         const rect = vpEl.getBoundingClientRect();
@@ -261,11 +245,28 @@ test.describe('gullacpdf Mobile, PWA & GitHub Pages Verification', () => {
         window.dispatchEvent(mkPtr('pointerup', 102, cx + 75, cy));
       });
 
-      const zoomAfter = await page.evaluate(() => {
-        const opt = document.querySelector('[data-testid="zoom-select"] option:checked');
-        return opt?.textContent ?? '';
-      });
+      const zoomAfter = await page.getByTestId('floating-zoom-pill').textContent();
       expect(zoomAfter).not.toEqual(zoomBefore);
+
+      const editFab = page.getByTestId('mobile-edit-fab');
+      await expect(editFab).toBeVisible();
+      await editFab.click();
+
+      // 4. In Editor mode, Bottom Dock is visible with >= 44px touch targets
+      const dock = page.getByTestId('mobile-bottom-dock');
+      await expect(dock).toBeVisible();
+
+      for (const tabId of [
+        'mobile-dock-pages',
+        'mobile-dock-tools',
+        'mobile-dock-inspector',
+        'mobile-dock-export',
+      ]) {
+        const box = await page.getByTestId(tabId).boundingBox();
+        expect(box).not.toBeNull();
+        expect(box!.width).toBeGreaterThanOrEqual(44);
+        expect(box!.height).toBeGreaterThanOrEqual(44);
+      }
 
       // 5. Open Pages Bottom Sheet
       await page.getByTestId('mobile-dock-pages').click();
@@ -385,6 +386,9 @@ test.describe('gullacpdf Mobile, PWA & GitHub Pages Verification', () => {
 
     await page.goto('/');
     await page.getByTestId('welcome-sample-btn').click();
+    await expect(page.getByTestId('pdf-page-1')).toBeVisible();
+    // Viewer opens clean with collapsible sidebar closed; click Edit to verify tablet editor chrome
+    await page.getByTestId('toggle-edit-mode-btn').click();
     await expect(page.getByTestId('thumbnail-sidebar')).toBeVisible();
     await expect(page.getByTestId('mobile-bottom-dock')).toBeHidden();
 

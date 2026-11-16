@@ -1,11 +1,12 @@
 import {
+  forwardRef,
   useCallback,
   useEffect,
   useImperativeHandle,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
-  forwardRef,
   type DragEvent,
 } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
@@ -26,15 +27,28 @@ import {
   mergePdfFile,
   openPdfBytes,
   openPdfFile,
+  openPdfWithPickerFallback,
 } from '@/engine/documentController';
-import { generateSamplePdfBytes } from '@/engine/samplePdf';
+import { buildPageOffsetIndex, findPageIndexAtSurfaceY } from '@/engine/pageOffsets';
+import { GestureArena } from '@/gestures/gestureArena';
+import { triggerHaptic, type PointerKind } from '@/gestures/gestureTypes';
+import {
+  applyPinchRubberBandAndSnap,
+  resolveAxisLock,
+  stepInertialVelocity,
+  VelocityTracker,
+} from '@/gestures/inertialScroller';
 import { useMediaQuery } from '@/hooks/useMediaQuery';
+import { useI18n } from '@/i18n/useI18n';
 import { useEditorStore } from '@/store/useEditorStore';
+import { useViewerStore, type ViewportAnchor } from '@/store/useViewerStore';
 import { BrandLogo } from '../BrandLogo';
 import { PageCanvas } from './PageCanvas';
 
 export interface DocumentViewportHandle {
   scrollToPage: (pageIndex: number) => void;
+  captureAnchor: () => ViewportAnchor | null;
+  restoreAnchor: (anchor: ViewportAnchor) => void;
 }
 
 interface PinchSession {
@@ -54,6 +68,7 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
   _props,
   ref,
 ) {
+  const { t } = useI18n();
   const pages = useEditorStore((s) => s.pages);
   const activePageId = useEditorStore((s) => s.activePageId);
   const zoom = useEditorStore((s) => s.zoom);
@@ -64,10 +79,14 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
   const pendingSignaturePlacement = useEditorStore((s) => s.pendingSignaturePlacement);
   const cancelPendingSignaturePlacement = useEditorStore((s) => s.cancelPendingSignaturePlacement);
 
+  const scrollMode = useViewerStore((s) => s.scrollMode);
+  const setFastScrolling = useViewerStore((s) => s.setFastScrolling);
+  const toggleImmersiveControls = useViewerStore((s) => s.toggleImmersiveControls);
+
   const containerRef = useRef<HTMLDivElement | null>(null);
   const surfaceRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const touchPointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
+
   const pinchSessionRef = useRef<PinchSession | null>(null);
   const pinchRafRef = useRef<number | null>(null);
   const pendingGpuTransformRef = useRef<{ tx: number; ty: number; s: number } | null>(null);
@@ -89,19 +108,24 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
     height: typeof window !== 'undefined' ? window.innerHeight : 768,
   }));
 
-  const surfaceMetrics = computeViewportSurfaceMetrics(
-    pages,
-    viewportSize.width,
-    viewportSize.height,
-    zoom,
-    isMobile,
+  const surfaceMetrics = useMemo(
+    () =>
+      computeViewportSurfaceMetrics(
+        pages,
+        viewportSize.width,
+        viewportSize.height,
+        zoom,
+        isMobile,
+      ),
+    [pages, viewportSize.width, viewportSize.height, zoom, isMobile],
   );
 
-  const totalDocHeight = pages.reduce((acc, p) => {
-    const dims = getDisplayDimensions(p.baseWidth, p.baseHeight, p.userRotation, zoom);
-    return acc + dims.height + VIEWPORT_PAGE_GAP;
-  }, 0);
-  const surfaceHeight = totalDocHeight + surfaceMetrics.viewportMarginY * 2;
+  // O(N) prefix-sum offset table replacing O(N) per-frame reduces (01 §6.3)
+  const pageOffsets = useMemo(
+    () => buildPageOffsetIndex(pages, zoom, surfaceMetrics),
+    [pages, zoom, surfaceMetrics],
+  );
+  const surfaceHeight = pageOffsets.totalHeight;
 
   const recalculateAutoZoom = useCallback(() => {
     const el = containerRef.current;
@@ -119,8 +143,8 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
     const refPage = pages[refIdx] ?? pages[0];
     if (!refPage) return;
     const dims = getDisplayDimensions(refPage.baseWidth, refPage.baseHeight, refPage.userRotation, 1);
-    const availW = Math.max(240, el.clientWidth - 72);
-    const availH = Math.max(240, el.clientHeight - 72);
+    const availW = Math.max(240, el.clientWidth - (isMobileRef.current ? 24 : 72));
+    const availH = Math.max(240, el.clientHeight - (isMobileRef.current ? 40 : 72));
 
     const prevZoom = useEditorStore.getState().zoom;
     let nextZoom = prevZoom;
@@ -189,21 +213,14 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
   const virtualizer = useVirtualizer({
     count: pages.length,
     getScrollElement: () => containerRef.current,
-    estimateSize: (idx) => {
-      const p = pages[idx];
-      if (!p) return 800;
-      const dims = getDisplayDimensions(p.baseWidth, p.baseHeight, p.userRotation, zoom);
-      return dims.height + VIEWPORT_PAGE_GAP;
-    },
+    estimateSize: (idx) => pageOffsets.rowHeights[idx] || 800,
     overscan: 2,
   });
 
-  // Re-measure virtualized rows synchronously whenever zoom or page geometry changes
   useLayoutEffect(() => {
     virtualizer.measure();
   }, [virtualizer, zoom, pages]);
 
-  // Apply pinch or initial-document scroll compensation synchronously in the same paint frame
   useLayoutEffect(() => {
     const el = containerRef.current;
     const pending = pendingScrollRef.current;
@@ -222,24 +239,71 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
     pendingScrollRef.current = null;
   }, [pages, zoom, surfaceMetrics.surfaceWidth]);
 
+  const scrollToPage = useCallback(
+    (pageIndex: number) => {
+      const el = containerRef.current;
+      if (!el || pageIndex < 0 || pageIndex >= pages.length) return;
+      const rowTop = pageOffsets.rowTops[pageIndex] ?? 0;
+      const rowLeft = pageOffsets.rowLefts[pageIndex] ?? 0;
+      const pageW = pageOffsets.pageWidths[pageIndex] ?? 0;
+      const centeredLeft = Math.max(
+        0,
+        Math.round(rowLeft + pageW / 2 - (el.clientWidth || window.innerWidth) / 2),
+      );
+      el.scrollTo({ top: Math.max(0, rowTop), left: centeredLeft });
+    },
+    [pages.length, pageOffsets],
+  );
+
+  const captureAnchor = useCallback((): ViewportAnchor | null => {
+    const el = containerRef.current;
+    if (!el || pages.length === 0) return null;
+    const centerY = el.scrollTop + el.clientHeight * 0.35;
+    const idx = findPageIndexAtSurfaceY(pageOffsets, centerY);
+    const page = pages[idx];
+    if (!page) return null;
+    const pageTop = pageOffsets.rowTops[idx] + VIEWPORT_PAGE_GAP * 0.5;
+    const pageLeft = pageOffsets.rowLefts[idx];
+    const pageW = Math.max(1, pageOffsets.pageWidths[idx]);
+    const pageH = Math.max(1, pageOffsets.pageHeights[idx]);
+    const centerX = el.scrollLeft + el.clientWidth * 0.5;
+    return {
+      pageId: page.id,
+      normX: (centerX - pageLeft) / pageW,
+      normY: (centerY - pageTop) / pageH,
+      zoom,
+    };
+  }, [pages, pageOffsets, zoom]);
+
+  const restoreAnchor = useCallback(
+    (anchor: ViewportAnchor) => {
+      const el = containerRef.current;
+      if (!el || pages.length === 0) return;
+      const idx = pages.findIndex((p) => p.id === anchor.pageId);
+      if (idx < 0) return;
+      const pageTop = pageOffsets.rowTops[idx] + VIEWPORT_PAGE_GAP * 0.5;
+      const pageLeft = pageOffsets.rowLefts[idx];
+      const pageW = pageOffsets.pageWidths[idx];
+      const pageH = pageOffsets.pageHeights[idx];
+      const targetCenterY = pageTop + anchor.normY * pageH;
+      const targetCenterX = pageLeft + anchor.normX * pageW;
+      el.scrollTop = Math.max(0, targetCenterY - el.clientHeight * 0.35);
+      el.scrollLeft = Math.max(0, targetCenterX - el.clientWidth * 0.5);
+    },
+    [pages, pageOffsets],
+  );
+
   useImperativeHandle(
     ref,
     () => ({
-      scrollToPage: (pageIndex: number) => {
-        const el = containerRef.current;
-        if (!el || pageIndex < 0 || pageIndex >= pages.length) return;
-        const offset = getPageOffsetInSurface(pages, pageIndex, zoom, surfaceMetrics);
-        const centeredLeft = Math.max(
-          0,
-          Math.round(offset.left + offset.width / 2 - (el.clientWidth || window.innerWidth) / 2),
-        );
-        el.scrollTo({ top: Math.max(0, offset.rowTop), left: centeredLeft });
-      },
+      scrollToPage,
+      captureAnchor,
+      restoreAnchor,
     }),
-    [pages, zoom, surfaceMetrics],
+    [scrollToPage, captureAnchor, restoreAnchor],
   );
 
-  // Ctrl/Cmd + Wheel smooth zoom
+  // Ctrl/Cmd + Wheel / Trackpad pinch smooth zoom
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
@@ -254,10 +318,35 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
     return () => el.removeEventListener('wheel', onWheel);
   }, [setZoom]);
 
-  // Multi-touch Pinch-to-Zoom & Two-Finger Pan (GPU-composited during gesture, committed once on release)
+  // Unified Pointer-Events Touch Gesture Engine (03 §5)
   useEffect(() => {
     const el = containerRef.current;
     if (!el) return;
+
+    const arena = new GestureArena();
+    const velocity = new VelocityTracker();
+    let inertiaRafId: number | null = null;
+    let longPressTimerId: number | null = null;
+    let panLastX = 0;
+    let panLastY = 0;
+    let panTotalDx = 0;
+    let panTotalDy = 0;
+    let axisLock: 'none' | 'x' | 'y' = 'none';
+    const activePointerIds = new Set<number>();
+
+    const stopInertia = () => {
+      if (inertiaRafId !== null) {
+        window.cancelAnimationFrame(inertiaRafId);
+        inertiaRafId = null;
+      }
+    };
+
+    const clearLongPressTimer = () => {
+      if (longPressTimerId !== null) {
+        window.clearTimeout(longPressTimerId);
+        longPressTimerId = null;
+      }
+    };
 
     const clearSurfaceTransform = () => {
       if (pinchRafRef.current !== null) {
@@ -287,20 +376,23 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
       });
     };
 
-    const startPinchSession = (
-      p1: { x: number; y: number },
-      p2: { x: number; y: number },
-    ): PinchSession | null => {
-      const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
-      if (dist < 8) return null;
+    const computeFitWidthZoom = (): number | undefined => {
+      const state = useEditorStore.getState();
+      const refIdx = Math.max(0, state.pages.findIndex((p) => p.id === state.activePageId));
+      const p = state.pages[refIdx] ?? state.pages[0];
+      if (!p) return undefined;
+      const dims = getDisplayDimensions(p.baseWidth, p.baseHeight, p.userRotation, 1);
+      const availW = Math.max(240, (el.clientWidth || window.innerWidth) - (isMobileRef.current ? 24 : 72));
+      return availW / dims.width;
+    };
+
+    const startPinchSession = (cx: number, cy: number, dist: number): PinchSession | null => {
       const state = useEditorStore.getState();
       if (state.pages.length === 0) return null;
       const currentZoom = state.zoom;
       const rect = el.getBoundingClientRect();
-      const midX = (p1.x + p2.x) / 2;
-      const midY = (p1.y + p2.y) / 2;
-      const relX = midX - rect.left;
-      const relY = midY - rect.top;
+      const relX = cx - rect.left;
+      const relY = cy - rect.top;
       const containerW = el.clientWidth || window.innerWidth;
       const containerH = el.clientHeight || window.innerHeight;
       const metrics = computeViewportSurfaceMetrics(
@@ -310,10 +402,7 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
         currentZoom,
         isMobileRef.current,
       );
-      const activeIdx = Math.max(
-        0,
-        state.pages.findIndex((p) => p.id === state.activePageId),
-      );
+      const activeIdx = Math.max(0, state.pages.findIndex((p) => p.id === state.activePageId));
       const anchorPageIndex = findAnchorPageIndex(
         state.pages,
         el.scrollTop,
@@ -327,7 +416,7 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
       const anchorSurfaceY = el.scrollTop + relY;
       return {
         startZoom: currentZoom,
-        startDist: dist,
+        startDist: Math.max(8, dist),
         anchorPageIndex,
         pdfLocalX: (anchorSurfaceX - offset.left) / currentZoom,
         pdfLocalY: (anchorSurfaceY - offset.top) / currentZoom,
@@ -339,39 +428,31 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
       };
     };
 
-    const applyPinchGeometry = (
-      p1: { x: number; y: number },
-      p2: { x: number; y: number },
-    ) => {
-      const dist = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+    const updatePinchGeometry = (cx: number, cy: number, dist: number) => {
       let session = pinchSessionRef.current;
       if (!session) {
-        session = startPinchSession(p1, p2);
+        session = startPinchSession(cx, cy, dist);
         pinchSessionRef.current = session;
         return;
       }
       if (dist < 8) return;
-
-      const state = useEditorStore.getState();
-      if (state.pages.length === 0) return;
-
       const rect = el.getBoundingClientRect();
-      const midX = (p1.x + p2.x) / 2;
-      const midY = (p1.y + p2.y) / 2;
-      const relX = midX - rect.left;
-      const relY = midY - rect.top;
+      const relX = cx - rect.left;
+      const relY = cy - rect.top;
 
-      const rawNextZoom = session.startZoom * (dist / session.startDist);
-      const nextZoom = Math.min(
-        VIEWPORT_MAX_ZOOM,
-        Math.max(VIEWPORT_MIN_ZOOM, Number(rawNextZoom.toFixed(3))),
-      );
+      const rawZoom = session.startZoom * (dist / session.startDist);
+      const { zoom: rubberZoom } = applyPinchRubberBandAndSnap({
+        rawZoom,
+        minZoom: VIEWPORT_MIN_ZOOM,
+        maxZoom: VIEWPORT_MAX_ZOOM,
+        isLive: true,
+      });
 
-      session.liveZoom = nextZoom;
+      session.liveZoom = rubberZoom;
       session.lastRelX = relX;
       session.lastRelY = relY;
 
-      const scaleFactor = nextZoom / session.startZoom;
+      const scaleFactor = rubberZoom / session.startZoom;
       const tx = el.scrollLeft + relX - session.anchorSurfaceX * scaleFactor;
       const ty = el.scrollTop + relY - session.anchorSurfaceY * scaleFactor;
       scheduleSurfaceTransform(tx, ty, scaleFactor);
@@ -386,10 +467,19 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
       const state = useEditorStore.getState();
       if (state.pages.length === 0) return;
 
-      const nextZoom = Math.min(
-        VIEWPORT_MAX_ZOOM,
-        Math.max(VIEWPORT_MIN_ZOOM, Number(session.liveZoom.toFixed(3))),
-      );
+      const fitW = computeFitWidthZoom();
+      const { zoom: snappedZoom, snappedToFitWidth } = applyPinchRubberBandAndSnap({
+        rawZoom: session.liveZoom,
+        minZoom: VIEWPORT_MIN_ZOOM,
+        maxZoom: VIEWPORT_MAX_ZOOM,
+        fitWidthZoom: fitW,
+        isLive: false,
+      });
+      if (snappedToFitWidth) {
+        triggerHaptic(8);
+      }
+
+      const nextZoom = Number(snappedZoom.toFixed(3));
       const containerW = el.clientWidth || window.innerWidth;
       const containerH = el.clientHeight || window.innerHeight;
       const nextMetrics = computeViewportSurfaceMetrics(
@@ -425,134 +515,285 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
         el.scrollTop = nextScrollTop;
         pendingScrollRef.current = null;
       } else {
-        setZoom(nextZoom, 'custom');
+        setZoom(nextZoom, snappedToFitWidth ? 'fit-width' : 'custom');
       }
     };
 
-    const endTouchPointer = (pointerId: number) => {
-      if (!touchPointersRef.current.delete(pointerId)) return;
-      const remaining = touchPointersRef.current.size;
-      if (remaining < 2) {
-        commitPinchSession();
-        el.style.touchAction = 'pan-x pan-y';
-        setPinchState(false, remaining);
-      } else {
-        commitPinchSession();
-        const pts = Array.from(touchPointersRef.current.values());
-        pinchSessionRef.current = startPinchSession(pts[0], pts[1]);
-        setPinchState(true, remaining);
-      }
+    const startInertialGlide = (initVx: number, initVy: number) => {
+      stopInertia();
+      let vx = initVx;
+      let vy = initVy;
+      if (Math.hypot(vx, vy) < 0.05) return;
+      let lastTime = performance.now();
+
+      const tick = (now: number) => {
+        const dt = Math.min(32, Math.max(1, now - lastTime));
+        lastTime = now;
+        const step = stepInertialVelocity(vx, vy, dt);
+        vx = step.vx;
+        vy = step.vy;
+        if (axisLock !== 'y') el.scrollLeft -= step.dx;
+        if (axisLock !== 'x') el.scrollTop -= step.dy;
+
+        if (step.active) {
+          inertiaRafId = window.requestAnimationFrame(tick);
+        } else {
+          inertiaRafId = null;
+        }
+      };
+      inertiaRafId = window.requestAnimationFrame(tick);
     };
 
-    const notifyMultitouchStart = () => {
-      window.dispatchEvent(new CustomEvent('gullac:multitouch-start'));
+    const classifyTarget = (target: EventTarget | null): 'handle' | 'selected-element' | 'unselected-element' | 'viewer-text' | 'empty' => {
+      const node = target as HTMLElement | null;
+      if (!node) return 'empty';
+      if (node.closest('[data-testid^="resize-handle-"], [data-testid="rotate-handle"]')) {
+        return 'handle';
+      }
+      if (node.closest('[data-testid^="selection-box-"]')) {
+        return 'selected-element';
+      }
+      if (node.closest('[data-detected-text], [data-detected-image], [data-detected-shape], [data-testid^="canvas-element-"]')) {
+        return 'unselected-element';
+      }
+      if (node.closest('[data-testid^="viewer-text-layer-"]')) {
+        return 'viewer-text';
+      }
+      return 'empty';
+    };
+
+    const handleArenaOutcomes = (outcomes: ReturnType<GestureArena['onPointerDown']>, pointerEvent: PointerEvent) => {
+      const store = useEditorStore.getState();
+      for (const out of outcomes) {
+        switch (out.type) {
+          case 'pinch-start': {
+            stopInertia();
+            clearLongPressTimer();
+            setPinchState(true, arena.getPointerCount());
+            window.dispatchEvent(new CustomEvent('gullac:multitouch-start'));
+            pinchSessionRef.current = startPinchSession(out.cx, out.cy, out.dist);
+            break;
+          }
+          case 'pinch-move': {
+            updatePinchGeometry(out.cx, out.cy, out.dist);
+            break;
+          }
+          case 'pinch-end': {
+            commitPinchSession();
+            setPinchState(false, arena.getPointerCount());
+            break;
+          }
+          case 'start': {
+            if (out.kind === 'pan') {
+              panLastX = out.x;
+              panLastY = out.y;
+              panTotalDx = 0;
+              panTotalDy = 0;
+              axisLock = 'none';
+              velocity.reset();
+              velocity.addSample(out.x, out.y, performance.now());
+            }
+            break;
+          }
+          case 'move': {
+            if (out.kind === 'pan') {
+              const stepDx = out.x - panLastX;
+              const stepDy = out.y - panLastY;
+              panLastX = out.x;
+              panLastY = out.y;
+              panTotalDx += stepDx;
+              panTotalDy += stepDy;
+
+              if (axisLock === 'none') {
+                const canScrollX = el.scrollWidth > el.clientWidth + 4;
+                axisLock = resolveAxisLock(panTotalDx, panTotalDy, canScrollX);
+              }
+              if (axisLock !== 'y') el.scrollLeft -= stepDx;
+              if (axisLock !== 'x') el.scrollTop -= stepDy;
+              velocity.addSample(out.x, out.y, performance.now());
+            }
+            break;
+          }
+          case 'end': {
+            if (out.kind === 'pan') {
+              const v = velocity.getVelocityPxPerMs(performance.now());
+              startInertialGlide(
+                axisLock === 'y' ? 0 : v.vx,
+                axisLock === 'x' ? 0 : v.vy,
+              );
+            }
+            break;
+          }
+          case 'double-tap': {
+            const fitW = computeFitWidthZoom() ?? 1;
+            const cur = store.zoom;
+            if (Math.abs(cur - fitW) < 0.08) {
+              setZoom(Math.min(2.5, cur * 1.9), 'custom');
+            } else {
+              setZoom(fitW, 'fit-width');
+            }
+            break;
+          }
+          case 'tap': {
+            if (
+              store.appMode === 'view' &&
+              isMobileRef.current &&
+              out.hitKind === 'empty' &&
+              !(pointerEvent.target as HTMLElement | null)?.closest('button, a, input')
+            ) {
+              toggleImmersiveControls();
+            }
+            break;
+          }
+          case 'long-press': {
+            triggerHaptic(10);
+            break;
+          }
+        }
+      }
     };
 
     const onPointerDown = (e: PointerEvent) => {
-      if (e.pointerType !== 'touch') return;
-      touchPointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      const count = touchPointersRef.current.size;
-      if (count >= 2) {
-        el.style.touchAction = 'none';
-        setPinchState(true, count);
-        notifyMultitouchStart();
-        const pts = Array.from(touchPointersRef.current.values());
-        pinchSessionRef.current = startPinchSession(pts[0], pts[1]);
-      } else {
-        setPinchState(false, count);
+      if (e.pointerType !== 'touch' && e.pointerType !== 'pen') return;
+      if (useEditorStore.getState().pages.length === 0) return;
+
+      // Ignore controls inside overlays/banners
+      const targetEl = e.target as HTMLElement | null;
+      if (targetEl?.closest('[data-testid="signature-placement-banner"]')) return;
+
+      const wasInertiaActive = inertiaRafId !== null;
+      stopInertia();
+      if (wasInertiaActive && e.pointerType === 'touch') {
+        // Touch stops ongoing inertia immediately without firing tap (03 §5.5)
       }
+
+      activePointerIds.add(e.pointerId);
+      const store = useEditorStore.getState();
+      const activeToolIsStroke =
+        store.appMode === 'edit' &&
+        (store.toolMode === 'draw' ||
+          store.toolMode === 'highlight' ||
+          store.toolMode === 'shape' ||
+          store.toolMode === 'path');
+
+      const outcomes = arena.onPointerDown({
+        pointerId: e.pointerId,
+        pointerType: e.pointerType as PointerKind,
+        x: e.clientX,
+        y: e.clientY,
+        timeMs: performance.now(),
+        hitKind: classifyTarget(e.target),
+        activeToolIsStroke,
+        appMode: store.appMode,
+      });
+
+      clearLongPressTimer();
+      if (arena.getState() === 'pending') {
+        longPressTimerId = window.setTimeout(() => {
+          const lpOutcomes = arena.tickTimer(performance.now());
+          if (lpOutcomes.length > 0) {
+            handleArenaOutcomes(lpOutcomes, e);
+          }
+        }, 405);
+      }
+
+      handleArenaOutcomes(outcomes, e);
     };
 
     const onPointerMove = (e: PointerEvent) => {
-      if (e.pointerType !== 'touch' || !touchPointersRef.current.has(e.pointerId)) return;
-      touchPointersRef.current.set(e.pointerId, { x: e.clientX, y: e.clientY });
-      if (touchPointersRef.current.size >= 2) {
-        const pts = Array.from(touchPointersRef.current.values());
-        applyPinchGeometry(pts[0], pts[1]);
-      }
-    };
-
-    const onPointerEnd = (e: PointerEvent) => {
-      if (e.pointerType !== 'touch') return;
-      endTouchPointer(e.pointerId);
-    };
-
-    // Fallback native TouchEvent pinch guard (prevents iOS/browser page-level pinch & handles synthetic TouchEvents)
-    const onTouchStart = (e: TouchEvent) => {
-      if (e.touches.length >= 2) {
-        notifyMultitouchStart();
-        if (touchPointersRef.current.size < 2) {
-          el.style.touchAction = 'none';
-          setPinchState(true, e.touches.length);
-          pinchSessionRef.current = startPinchSession(
-            { x: e.touches[0].clientX, y: e.touches[0].clientY },
-            { x: e.touches[1].clientX, y: e.touches[1].clientY },
-          );
+      if (!activePointerIds.has(e.pointerId)) return;
+      const coalesced =
+        typeof e.getCoalescedEvents === 'function' ? e.getCoalescedEvents() : [];
+      const eventsToProcess = coalesced.length > 0 ? coalesced : [e];
+      for (const ev of eventsToProcess) {
+        const outcomes = arena.onPointerMove({
+          pointerId: e.pointerId,
+          x: ev.clientX,
+          y: ev.clientY,
+          timeMs: performance.now(),
+        });
+        if (outcomes.length > 0) {
+          handleArenaOutcomes(outcomes, e);
         }
       }
-    };
-
-    const onTouchMove = (e: TouchEvent) => {
-      if (e.touches.length >= 2) {
-        if (e.cancelable) e.preventDefault();
-        if (touchPointersRef.current.size < 2) {
-          applyPinchGeometry(
-            { x: e.touches[0].clientX, y: e.touches[0].clientY },
-            { x: e.touches[1].clientX, y: e.touches[1].clientY },
-          );
-        }
+      if (arena.getState() !== 'pending') {
+        clearLongPressTimer();
       }
     };
 
-    const onTouchEnd = (e: TouchEvent) => {
-      if (e.touches.length < 2 && touchPointersRef.current.size < 2) {
-        commitPinchSession();
-        el.style.touchAction = 'pan-x pan-y';
-        setPinchState(false, e.touches.length);
-      }
+    const onPointerUp = (e: PointerEvent) => {
+      if (!activePointerIds.delete(e.pointerId)) return;
+      clearLongPressTimer();
+      const outcomes = arena.onPointerUp({
+        pointerId: e.pointerId,
+        x: e.clientX,
+        y: e.clientY,
+        timeMs: performance.now(),
+      });
+      handleArenaOutcomes(outcomes, e);
     };
 
+    const onPointerCancel = (e: PointerEvent) => {
+      if (!activePointerIds.delete(e.pointerId)) return;
+      clearLongPressTimer();
+      const outcomes = arena.onPointerCancel(e.pointerId);
+      handleArenaOutcomes(outcomes, e);
+    };
+
+    // Listen for pointerdown on viewport capture phase and move/up/cancel on window
+    // so both real setPointerCapture AND Playwright synthetic window events work seamlessly
     el.addEventListener('pointerdown', onPointerDown, true);
     window.addEventListener('pointermove', onPointerMove, { passive: true });
-    window.addEventListener('pointerup', onPointerEnd);
-    window.addEventListener('pointercancel', onPointerEnd);
-    el.addEventListener('touchstart', onTouchStart, { passive: true });
-    el.addEventListener('touchmove', onTouchMove, { passive: false });
-    el.addEventListener('touchend', onTouchEnd, { passive: true });
-    el.addEventListener('touchcancel', onTouchEnd, { passive: true });
+    window.addEventListener('pointerup', onPointerUp);
+    window.addEventListener('pointercancel', onPointerCancel);
 
     return () => {
+      stopInertia();
+      clearLongPressTimer();
       clearSurfaceTransform();
       el.removeEventListener('pointerdown', onPointerDown, true);
       window.removeEventListener('pointermove', onPointerMove);
-      window.removeEventListener('pointerup', onPointerEnd);
-      window.removeEventListener('pointercancel', onPointerEnd);
-      el.removeEventListener('touchstart', onTouchStart);
-      el.removeEventListener('touchmove', onTouchMove);
-      el.removeEventListener('touchend', onTouchEnd);
-      el.removeEventListener('touchcancel', onTouchEnd);
+      window.removeEventListener('pointerup', onPointerUp);
+      window.removeEventListener('pointercancel', onPointerCancel);
     };
-  }, [setZoom, setPinchState]);
+  }, [setZoom, setPinchState, toggleImmersiveControls]);
 
-  // Sync active page on scroll
+  const lastScrollTopRef = useRef(0);
+  const lastScrollTimeRef = useRef(0);
+  const fastScrollTimeoutRef = useRef<number | null>(null);
+
+  // Sync active page in O(log N) & detect ultra-fast scroll velocity to defer crisp tiles (01 §6.3)
   const handleScroll = () => {
     const el = containerRef.current;
     if (!el || pages.length === 0) return;
-    const centerOffset = el.scrollTop - surfaceMetrics.viewportMarginY + el.clientHeight * 0.35;
-    const items = virtualizer.getVirtualItems();
-    for (const item of items) {
-      const rowOffset = getPageOffsetInSurface(pages, item.index, zoom, surfaceMetrics);
-      const itemStart = rowOffset.rowTop - surfaceMetrics.viewportMarginY;
-      const itemEnd = itemStart + rowOffset.height + VIEWPORT_PAGE_GAP;
-      if (centerOffset >= itemStart && centerOffset <= itemEnd) {
-        const p = pages[item.index];
-        if (p && p.id !== activePageId) {
-          setActivePage(p.id);
-        }
-        break;
-      }
+
+    const now = performance.now();
+    const dt = Math.max(1, now - lastScrollTimeRef.current);
+    const speedPxPerMs = Math.abs(el.scrollTop - lastScrollTopRef.current) / dt;
+    lastScrollTopRef.current = el.scrollTop;
+    lastScrollTimeRef.current = now;
+
+    if (speedPxPerMs > 2.8) {
+      setFastScrolling(true);
+      if (fastScrollTimeoutRef.current !== null) window.clearTimeout(fastScrollTimeoutRef.current);
+      fastScrollTimeoutRef.current = window.setTimeout(() => {
+        setFastScrolling(false);
+      }, 140);
+    }
+
+    const centerSurfaceY = el.scrollTop + el.clientHeight * 0.35;
+    const idx = findPageIndexAtSurfaceY(pageOffsets, centerSurfaceY);
+    const p = pages[idx];
+    if (p && p.id !== activePageId) {
+      setActivePage(p.id);
     }
   };
+
+  useEffect(() => {
+    return () => {
+      if (fastScrollTimeoutRef.current !== null) window.clearTimeout(fastScrollTimeoutRef.current);
+    };
+  }, []);
 
   const handleDrop = (e: DragEvent<HTMLDivElement>) => {
     setDropActive(false);
@@ -583,6 +824,7 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
   const [blankPreset, setBlankPreset] = useState<BlankPagePreset>('a4-portrait');
 
   const handleLoadSample = async () => {
+    const { generateSamplePdfBytes } = await import('@/engine/samplePdf');
     const bytes = await generateSamplePdfBytes();
     await openPdfBytes('Sample-Architecture-Brief.pdf', bytes);
   };
@@ -590,6 +832,11 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
   const handleCreateBlank = async (preset: BlankPagePreset = blankPreset) => {
     await createBlankDocument({ preset });
   };
+
+  const activeIdx = Math.max(
+    0,
+    pages.findIndex((p) => p.id === activePageId),
+  );
 
   return (
     <main
@@ -604,13 +851,16 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
       onDragLeave={() => setDropActive(false)}
       onDrop={handleDrop}
       data-testid="document-viewport"
-      style={{ touchAction: 'pan-x pan-y' }}
-      className="relative flex-1 overflow-auto bg-slate-200/80 dark:bg-slate-900"
+      style={{
+        touchAction: pages.length > 0 ? 'none' : 'pan-y',
+        scrollSnapType: scrollMode === 'page-snap' ? 'y mandatory' : undefined,
+      }}
+      className="relative flex-1 overflow-auto bg-[var(--gp-paper-backdrop)]"
     >
       {pendingSignaturePlacement && pages.length > 0 && (
         <div
           data-testid="signature-placement-banner"
-          className="sticky top-2 z-40 mx-auto mt-2 flex w-fit max-w-[calc(100%-1.5rem)] items-center gap-2 rounded-full border border-blue-500/40 bg-slate-900/95 px-3.5 py-2 text-xs font-medium text-white shadow-xl backdrop-blur"
+          className="fixed left-1/2 top-14 z-40 flex w-fit max-w-[calc(100%-1.5rem)] -translate-x-1/2 items-center gap-2 rounded-full border border-blue-500/40 bg-slate-900/95 px-3.5 py-2 text-xs font-medium text-white shadow-xl backdrop-blur"
         >
           <span className="h-2 w-2 shrink-0 animate-pulse rounded-full bg-sky-400" />
           <span className="truncate">İmzayı yerleştirmek istediğiniz yere dokunun</span>
@@ -618,62 +868,61 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
             type="button"
             data-testid="banner-cancel-signature-btn"
             onClick={cancelPendingSignaturePlacement}
-            className="shrink-0 rounded-full bg-white/15 px-2.5 py-1 text-xs font-semibold text-sky-200 hover:bg-white/25"
+            className="min-h-[36px] shrink-0 rounded-full bg-white/15 px-3 py-1 text-xs font-semibold text-sky-200 hover:bg-white/25"
           >
-            İptal
+            {t('action.cancel')}
           </button>
         </div>
       )}
 
       {pages.length === 0 ? (
         <div className="flex h-full w-full items-center justify-center p-4 sm:p-6">
-          <div className="w-full max-w-lg rounded-2xl border-2 border-dashed border-slate-300 bg-white/90 p-6 text-center shadow-xl dark:border-slate-700 dark:bg-slate-950/90 sm:p-10">
+          <div className="w-full max-w-lg rounded-2xl border-2 border-dashed border-slate-300 bg-white/95 p-6 text-center shadow-xl dark:border-slate-700 dark:bg-slate-950/95 sm:p-10">
             <div className="mx-auto mb-3 flex items-center justify-center">
               <BrandLogo variant="stacked" className="h-32 w-auto sm:h-36" decorative />
             </div>
-            <h1 className="text-lg font-semibold text-slate-900 dark:text-slate-100">
-              Drop a PDF or start with a blank page
+            <h1 className="text-xl font-semibold text-slate-900 dark:text-slate-100">
+              {t('app.tagline')}
             </h1>
-            <p className="mt-2 text-xs leading-relaxed text-slate-500 dark:text-slate-400">
-              gullacpdf (GüllaçPdf) runs 100% client-side with WebAssembly. Edit existing PDF text
-              in-place, start from a blank PDF page, manage images, place signatures/parafs, and
-              organize pages privately.
+            <p className="mt-2 text-sm leading-relaxed text-slate-600 dark:text-slate-400">
+              gullacpdf runs 100% locally on your device. Read PDFs instantaneously, search with
+              Turkish/Unicode folding, annotate, sign, and edit documents privately.
             </p>
             <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
               <button
                 type="button"
                 onClick={() => void handleCreateBlank()}
                 data-testid="welcome-blank-btn"
-                className="inline-flex min-h-[44px] items-center gap-2 rounded-lg bg-emerald-600 px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-emerald-500"
+                className="inline-flex min-h-[48px] items-center gap-2 rounded-xl border border-emerald-600/30 bg-emerald-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-emerald-500"
               >
-                <FilePlus className="h-4 w-4" />
-                Boş Sayfa ile Başla
+                <FilePlus className="h-5 w-5" />
+                {t('action.startBlank')}
               </button>
               <button
                 type="button"
-                onClick={() => fileInputRef.current?.click()}
+                onClick={() => void openPdfWithPickerFallback(fileInputRef.current)}
                 data-testid="welcome-open-btn"
-                className="inline-flex min-h-[44px] items-center gap-2 rounded-lg bg-blue-600 px-4 py-2.5 text-xs font-semibold text-white shadow-sm hover:bg-blue-500"
+                className="inline-flex min-h-[48px] items-center gap-2 rounded-xl bg-blue-600 px-4 py-2.5 text-sm font-semibold text-white shadow-sm hover:bg-blue-500"
               >
-                <FileUp className="h-4 w-4" />
-                Open PDF File
+                <FileUp className="h-5 w-5" />
+                {t('action.openPdf')}
               </button>
               <button
                 type="button"
                 onClick={() => void handleLoadSample()}
                 data-testid="welcome-sample-btn"
-                className="inline-flex min-h-[44px] items-center gap-2 rounded-lg border border-slate-300 bg-white px-4 py-2.5 text-xs font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
+                className="inline-flex min-h-[48px] items-center gap-2 rounded-xl border border-slate-300 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700 hover:bg-slate-50 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200 dark:hover:bg-slate-800"
               >
-                <Sparkles className="h-4 w-4 text-amber-500" />
-                Load Sample PDF
+                <Sparkles className="h-5 w-5 text-amber-500" />
+                {t('action.loadSample')}
               </button>
             </div>
-            <div className="mt-3 flex flex-wrap items-center justify-center gap-1.5 text-xs">
-              <span className="text-slate-400 dark:text-slate-500">Sayfa boyutu:</span>
+            <div className="mt-4 flex flex-wrap items-center justify-center gap-1.5 text-xs">
+              <span className="text-slate-500 dark:text-slate-400">Page size:</span>
               {(
                 [
-                  ['a4-portrait', 'A4 Dikey'],
-                  ['a4-landscape', 'A4 Yatay'],
+                  ['a4-portrait', 'A4 Portrait'],
+                  ['a4-landscape', 'A4 Landscape'],
                   ['letter-portrait', 'Letter'],
                 ] as const
               ).map(([presetId, label]) => {
@@ -684,7 +933,7 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
                     type="button"
                     onClick={() => setBlankPreset(presetId)}
                     data-testid={`welcome-preset-${presetId}`}
-                    className={`rounded-md border px-2 py-1 font-medium transition-colors ${
+                    className={`min-h-[36px] rounded-lg border px-2.5 py-1 font-medium transition-colors ${
                       active
                         ? 'border-emerald-500 bg-emerald-50 text-emerald-700 dark:border-emerald-500/70 dark:bg-emerald-950/50 dark:text-emerald-300'
                         : 'border-slate-200 bg-slate-50 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-300 dark:hover:bg-slate-800'
@@ -719,7 +968,10 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
         >
           {virtualizer.getVirtualItems().map((vItem) => {
             const page = pages[vItem.index];
-            const rowOffset = getPageOffsetInSurface(pages, vItem.index, zoom, surfaceMetrics);
+            const rowTop = pageOffsets.rowTops[vItem.index] ?? 0;
+            const rowHeight = pageOffsets.rowHeights[vItem.index] ?? 800;
+            const rowLeft = pageOffsets.rowLefts[vItem.index] ?? 0;
+            const isNear = Math.abs(vItem.index - activeIdx) <= 1;
             return (
               <div
                 key={page.id}
@@ -729,15 +981,23 @@ export const DocumentViewport = forwardRef<DocumentViewportHandle>(function Docu
                   top: 0,
                   left: 0,
                   width: `${surfaceMetrics.surfaceWidth}px`,
-                  height: `${rowOffset.height + VIEWPORT_PAGE_GAP}px`,
+                  height: `${rowHeight}px`,
                   paddingTop: `${VIEWPORT_PAGE_GAP / 2}px`,
-                  paddingLeft: `${rowOffset.left}px`,
+                  paddingLeft: `${rowLeft}px`,
                   boxSizing: 'border-box',
-                  transform: `translateY(${rowOffset.rowTop}px)`,
+                  transform: `translateY(${rowTop}px)`,
+                  scrollSnapAlign: scrollMode === 'page-snap' ? 'start' : undefined,
                 }}
                 className="flex justify-start"
               >
-                <PageCanvas page={page} pageIndex={vItem.index} zoom={zoom} />
+                <PageCanvas
+                  page={page}
+                  pageIndex={vItem.index}
+                  zoom={zoom}
+                  scrollElementRef={containerRef}
+                  onJumpToPage={scrollToPage}
+                  isNearActivePage={isNear}
+                />
               </div>
             );
           })}

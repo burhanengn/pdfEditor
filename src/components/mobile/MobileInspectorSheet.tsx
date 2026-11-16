@@ -56,7 +56,7 @@ export function MobileInspectorSheet() {
     return (
       <div
         data-testid="mobile-inspector-collapsed"
-        className="z-30 flex items-center justify-between gap-2 border-t border-slate-200 bg-white/95 px-3 py-1.5 shadow-lg backdrop-blur dark:border-slate-800 dark:bg-slate-950/95 lg:hidden"
+        className="fixed bottom-[calc(env(safe-area-inset-bottom,0px)+56px)] left-0 right-0 z-30 flex items-center justify-between gap-2 border-t border-slate-200 bg-white/95 px-3 py-1.5 shadow-lg backdrop-blur dark:border-slate-800 dark:bg-slate-950/95 md:bottom-0 lg:hidden"
       >
         <div className="flex items-center gap-1.5 overflow-x-auto">
           <span className="shrink-0 rounded-md bg-blue-500/15 px-2 py-1 text-xs font-semibold text-blue-600 dark:text-blue-400">
