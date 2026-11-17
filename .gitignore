@@ -25,3 +25,4 @@ mobile/.dart_tool/
 mobile/build/
 mobile/ios/Pods/
 mobile/android/.gradle/
+mobile/android/app/src/main/jniLibs/

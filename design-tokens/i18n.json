@@ -1,0 +1,274 @@
+{
+  "app.name": {
+    "en": "gullacpdf",
+    "tr": "gullacpdf"
+  },
+  "app.tagline": {
+    "en": "gullacpdf — Client-side PDF Viewer & Editor",
+    "tr": "gullacpdf — İstemci Tarafı PDF Görüntüleyici ve Düzenleyici"
+  },
+  "mode.viewer": {
+    "en": "Viewer",
+    "tr": "Görüntüleyici"
+  },
+  "mode.editor": {
+    "en": "Editor",
+    "tr": "Düzenleyici"
+  },
+  "action.editPdf": {
+    "en": "Edit",
+    "tr": "Düzenle"
+  },
+  "action.done": {
+    "en": "Done",
+    "tr": "Bitti"
+  },
+  "action.preview": {
+    "en": "Preview",
+    "tr": "Önizle"
+  },
+  "action.save": {
+    "en": "Save",
+    "tr": "Kaydet"
+  },
+  "action.saveAsCopy": {
+    "en": "Save as copy",
+    "tr": "Kopya olarak kaydet"
+  },
+  "action.overwriteOriginal": {
+    "en": "Overwrite original",
+    "tr": "Özgünün üzerine yaz"
+  },
+  "action.share": {
+    "en": "Share",
+    "tr": "Paylaş"
+  },
+  "action.print": {
+    "en": "Print",
+    "tr": "Yazdır"
+  },
+  "action.search": {
+    "en": "Search",
+    "tr": "Ara"
+  },
+  "action.openPdf": {
+    "en": "Open PDF File",
+    "tr": "PDF Dosyası Aç"
+  },
+  "action.startBlank": {
+    "en": "Start with Blank Page",
+    "tr": "Boş Sayfa ile Başla"
+  },
+  "action.loadSample": {
+    "en": "Load Sample PDF",
+    "tr": "Örnek PDF Yükle"
+  },
+  "action.undo": {
+    "en": "Undo",
+    "tr": "Geri Al"
+  },
+  "action.redo": {
+    "en": "Redo",
+    "tr": "Yinele"
+  },
+  "action.cancel": {
+    "en": "Cancel",
+    "tr": "İptal"
+  },
+  "action.close": {
+    "en": "Close",
+    "tr": "Kapat"
+  },
+  "action.delete": {
+    "en": "Delete",
+    "tr": "Sil"
+  },
+  "action.resumeSession": {
+    "en": "Resume last session",
+    "tr": "Kaldığın yerden devam et"
+  },
+  "action.discardSession": {
+    "en": "Discard",
+    "tr": "Vazgeç"
+  },
+  "session.recoveryPrompt": {
+    "en": "Unsaved edits were recovered for \"{name}\".",
+    "tr": "\"{name}\" için kaydedilmemiş düzenlemeler kurtarıldı."
+  },
+  "session.unsavedBadge": {
+    "en": "Edited",
+    "tr": "Düzenlendi"
+  },
+  "session.savedBadge": {
+    "en": "Saved",
+    "tr": "Kaydedildi"
+  },
+  "theme.light": {
+    "en": "Light",
+    "tr": "Açık"
+  },
+  "theme.dark": {
+    "en": "Dark",
+    "tr": "Koyu"
+  },
+  "theme.sepia": {
+    "en": "Sepia",
+    "tr": "Sepya"
+  },
+  "nav.pages": {
+    "en": "Pages",
+    "tr": "Sayfalar"
+  },
+  "nav.outline": {
+    "en": "Contents",
+    "tr": "İçindekiler"
+  },
+  "nav.goToPage": {
+    "en": "Go to page",
+    "tr": "Sayfaya git"
+  },
+  "search.placeholder": {
+    "en": "Search in document…",
+    "tr": "Belgede ara…"
+  },
+  "search.noResults": {
+    "en": "No matches",
+    "tr": "Sonuç yok"
+  },
+  "search.matchCase": {
+    "en": "Match case",
+    "tr": "Büyük/küçük harf"
+  },
+  "search.wholeWord": {
+    "en": "Whole word",
+    "tr": "Tam kelime"
+  },
+  "settings.language": {
+    "en": "Language",
+    "tr": "Dil"
+  },
+  "settings.languageEn": {
+    "en": "English",
+    "tr": "English"
+  },
+  "settings.languageTr": {
+    "en": "Türkçe",
+    "tr": "Türkçe"
+  },
+  "settings.leftHanded": {
+    "en": "Left-handed controls",
+    "tr": "Sol el düzeni"
+  },
+  "settings.licenses": {
+    "en": "Open-source licenses",
+    "tr": "Açık kaynak lisansları"
+  },
+  "editor.firstTimeHint": {
+    "en": "Tap text to edit in-place; tools are below.",
+    "tr": "Metne dokunarak düzenleyin, araçlar aşağıda."
+  },
+  "viewer.noSelectableText": {
+    "en": "No selectable text on this page.",
+    "tr": "Bu sayfada seçilebilir metin yok."
+  },
+  "viewer.copyRestricted": {
+    "en": "Text copying is restricted by document permissions.",
+    "tr": "Belge izinleri nedeniyle metin kopyalama kısıtlı."
+  },
+  "save.overwriteConfirmTitle": {
+    "en": "Overwrite original file?",
+    "tr": "Özgün dosyanın üzerine yazılsın mı?"
+  },
+  "save.overwriteConfirmBody": {
+    "en": "The original PDF file will be replaced. This action cannot be undone.",
+    "tr": "Özgün PDF dosyası değiştirilecek; bu işlem geri alınamaz."
+  },
+  "save.dontAskAgain": {
+    "en": "Don't ask again",
+    "tr": "Bir daha sorma"
+  },
+  "warn.unsavedChanges": {
+    "en": "You have unsaved changes. Are you sure you want to leave?",
+    "tr": "Kaydedilmemiş değişiklikler var. Çıkmak istediğinize emin misiniz?"
+  },
+  "pwa.updateAvailable": {
+    "en": "A new version of gullacpdf is ready.",
+    "tr": "gullacpdf için yeni bir sürüm hazır."
+  },
+  "pwa.reload": {
+    "en": "Reload",
+    "tr": "Yenile"
+  },
+  "pwa.later": {
+    "en": "Later",
+    "tr": "Sonra"
+  },
+  "mobile.recentDocuments": {
+    "en": "Recent documents",
+    "tr": "Son açılan belgeler"
+  },
+  "mobile.noRecentDocuments": {
+    "en": "No recent PDFs yet. Open a file or receive via \"Open With\".",
+    "tr": "Henüz son açılan PDF yok. Dosya açın veya \"Birlikte Aç\" ile gönderin."
+  },
+  "mobile.readOnlyFallbackHint": {
+    "en": "Source file is read-only; saving will create an edited copy.",
+    "tr": "Kaynak dosya salt okunur; kaydetme düzenlenmiş bir kopya oluşturur."
+  },
+  "mobile.setDefaultAppHint": {
+    "en": "Set gullacpdf as default PDF viewer in system settings",
+    "tr": "Sistem ayarlarından gullacpdf'i varsayılan PDF açıcı yap"
+  },
+  "mobile.openInOtherApp": {
+    "en": "Open in another app",
+    "tr": "Başka uygulamayla aç"
+  },
+  "mobile.clearCache": {
+    "en": "Clear working cache",
+    "tr": "Çalışma önbelleğini temizle"
+  },
+  "mobile.passwordTitle": {
+    "en": "Password protected PDF",
+    "tr": "Parola korumalı PDF"
+  },
+  "mobile.passwordInvalid": {
+    "en": "Incorrect password. Please try again.",
+    "tr": "Hatalı parola. Lütfen tekrar deneyin."
+  },
+  "mobile.tool.select": {
+    "en": "Select",
+    "tr": "Seç"
+  },
+  "mobile.tool.text": {
+    "en": "Text",
+    "tr": "Metin"
+  },
+  "mobile.tool.draw": {
+    "en": "Draw",
+    "tr": "Çiz"
+  },
+  "mobile.tool.highlight": {
+    "en": "Highlight",
+    "tr": "Vurgula"
+  },
+  "mobile.tool.signature": {
+    "en": "Sign",
+    "tr": "İmza"
+  },
+  "mobile.tool.shape": {
+    "en": "Shape",
+    "tr": "Şekil"
+  },
+  "mobile.tool.image": {
+    "en": "Image",
+    "tr": "Görsel"
+  },
+  "mobile.tool.redact": {
+    "en": "Redact",
+    "tr": "Redakte Et"
+  },
+  "mobile.placeGhost": {
+    "en": "Place here",
+    "tr": "Buraya yerleştir"
+  }
+}

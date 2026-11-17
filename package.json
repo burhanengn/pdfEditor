@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "gen:tokens": "node design-tokens/generate.mjs",
     "build:wasm": "wasm-pack build core/bindings/wasm --target web --out-dir ../../../src/engine/wasm-core",
     "build": "tsc --noEmit && tsc -p tsconfig.node.json --noEmit && vite build",
     "preview": "vite preview",

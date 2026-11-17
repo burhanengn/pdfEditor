@@ -1,0 +1,32 @@
+{
+  "release": "chromium/7881",
+  "license": "BSD-3-Clause / Apache-2.0",
+  "android": {
+    "arm64-v8a": {
+      "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-android-arm64.tgz",
+      "libPathInsideArchive": "lib/libpdfium.so",
+      "sha256": "D043F50A7AB42C91B6DFA98A1BCBD64B77CF27532991F331318A357BCF7CB363"
+    },
+    "armeabi-v7a": {
+      "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-android-arm.tgz",
+      "libPathInsideArchive": "lib/libpdfium.so",
+      "sha256": "0EB04AD7C92925E7E151B5F7BFF386F16FEF0969363D17C1ECF4D4B17BA8F932"
+    },
+    "x86_64": {
+      "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-android-x64.tgz",
+      "libPathInsideArchive": "lib/libpdfium.so",
+      "sha256": "EA5F07B117A6EDFAB11FA44AF9D9D1141533DBD35B546589D2D60683F0183617"
+    }
+  },
+  "ios": {
+    "device-arm64": {
+      "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-ios-device-arm64.tgz"
+    },
+    "simulator-arm64": {
+      "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-ios-simulator-arm64.tgz"
+    },
+    "simulator-x64": {
+      "url": "https://github.com/bblanchon/pdfium-binaries/releases/download/chromium/7881/pdfium-ios-simulator-x64.tgz"
+    }
+  }
+}

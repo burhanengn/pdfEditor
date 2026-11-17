@@ -171,6 +171,23 @@ impl PdfiumBackend {
                 .map_err(|e| PdfError::Backend(format!("failed opening output page: {e}")))?;
             let page_h = out_page.height().value as f64;
 
+            let parse_hex_color = |hex: &str, alpha: u8| -> PdfColor {
+                let h = hex.trim_start_matches('#');
+                if h.len() >= 6 {
+                    let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(15);
+                    let g = u8::from_str_radix(&h[2..4], 16).unwrap_or(23);
+                    let b = u8::from_str_radix(&h[4..6], 16).unwrap_or(42);
+                    PdfColor::new(r, g, b, alpha)
+                } else {
+                    PdfColor::new(15, 23, 42, alpha)
+                }
+            };
+
+            if pm.user_rotation != 0 {
+                let cur = intrinsic_rotation_to_angle(Ok(out_page.rotation().unwrap_or(PdfPageRenderRotation::None)));
+                out_page.set_rotation(to_pdfium_rotation((cur + pm.user_rotation) % 360));
+            }
+
             for el in elements {
                 if el.page_id() != pm.id || el.is_deleted() {
                     continue;
@@ -180,23 +197,106 @@ impl PdfiumBackend {
                         base,
                         text,
                         font_size,
+                        color,
                         ..
                     }
                     | CanvasElement::TextEdit {
                         base,
                         text,
                         font_size,
+                        color,
                         ..
                     } => {
                         let font = ttf_token.unwrap_or(fallback_font);
                         let pdf_y = (page_h - base.y - font_size).max(8.0);
-                        let _ = out_page.objects_mut().create_text_object(
+                        if let Ok(mut txt_obj) = out_page.objects_mut().create_text_object(
                             PdfPoints::new(base.x as f32),
                             PdfPoints::new(pdf_y as f32),
                             text,
                             font,
                             PdfPoints::new(*font_size as f32),
+                        ) {
+                            let _ = txt_obj.set_fill_color(parse_hex_color(color, 255));
+                        }
+                    }
+                    CanvasElement::Highlight {
+                        base,
+                        fill_color,
+                        shape,
+                    } => {
+                        let y_bot = (page_h - (base.y + base.height)).clamp(0.0, page_h);
+                        let y_top = (page_h - base.y).clamp(0.0, page_h);
+                        let rect = PdfRect::new(
+                            PdfPoints::new(y_bot.min(y_top) as f32),
+                            PdfPoints::new(base.x as f32),
+                            PdfPoints::new(y_top.max(y_bot) as f32),
+                            PdfPoints::new((base.x + base.width) as f32),
                         );
+                        let col = if shape == "redact" {
+                            PdfColor::BLACK
+                        } else {
+                            parse_hex_color(fill_color, ((base.opacity * 255.0).round() as u8).clamp(40, 180))
+                        };
+                        let _ = out_page.objects_mut().create_path_object_rect(rect, None, None, Some(col));
+                    }
+                    CanvasElement::VectorShape {
+                        base,
+                        fill_color,
+                        stroke_color,
+                        stroke_width,
+                        ..
+                    } => {
+                        let y_bot = (page_h - (base.y + base.height)).clamp(0.0, page_h);
+                        let y_top = (page_h - base.y).clamp(0.0, page_h);
+                        let rect = PdfRect::new(
+                            PdfPoints::new(y_bot.min(y_top) as f32),
+                            PdfPoints::new(base.x as f32),
+                            PdfPoints::new(y_top.max(y_bot) as f32),
+                            PdfPoints::new((base.x + base.width) as f32),
+                        );
+                        let fill = if fill_color == "transparent" {
+                            None
+                        } else {
+                            Some(parse_hex_color(fill_color, 255))
+                        };
+                        let stroke = if stroke_color == "transparent" {
+                            None
+                        } else {
+                            Some(parse_hex_color(stroke_color, 255))
+                        };
+                        let _ = out_page.objects_mut().create_path_object_rect(
+                            rect,
+                            stroke,
+                            Some(PdfPoints::new((*stroke_width as f32).max(0.5))),
+                            fill,
+                        );
+                    }
+                    CanvasElement::Stroke {
+                        base,
+                        points,
+                        color,
+                        stroke_width,
+                    } if !points.is_empty() => {
+                        let first = PdfPoints::new((base.x + points[0].x * base.width) as f32);
+                        let first_y = PdfPoints::new(
+                            (page_h - (base.y + points[0].y * base.height)) as f32,
+                        );
+                        if let Ok(mut path_obj) = PdfPagePathObject::new(
+                            &out_doc,
+                            first,
+                            first_y,
+                            Some(parse_hex_color(color, 255)),
+                            Some(PdfPoints::new((*stroke_width as f32).max(0.75))),
+                            None,
+                        ) {
+                            for pt in points.iter().skip(1) {
+                                let _ = path_obj.line_to(
+                                    PdfPoints::new((base.x + pt.x * base.width) as f32),
+                                    PdfPoints::new((page_h - (base.y + pt.y * base.height)) as f32),
+                                );
+                            }
+                            let _ = out_page.objects_mut().add_path_object(path_obj);
+                        }
                     }
                     _ => {}
                 }

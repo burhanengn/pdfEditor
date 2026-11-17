@@ -61,14 +61,14 @@
 
 ## Faz M0 – M4 — Flutter Mobil Uygulama & OS "Birlikte Aç" Entegrasyonu
 
-- [ ] **M0.1** `design-tokens/` tek kaynak üretici (CSS `--gp-*` + Dart `ThemeExtension` + ortak EN/TR sözlük üretimi)
-- [ ] **M0.2** `mobile/` Flutter projesinin kurulması (Android API 26+, iOS 16+, tablet çoklu pencere, MuPDF YOK) + `core/bindings/frb` (`flutter_rust_bridge` v2) ve PDFium yerel ikili/köprü entegrasyonu
-- [ ] **M0.3** M0 Teknik Prototip: `Session` köprüsü, 256×256 `TileCache` (`ui.Image` + bayt bütçeli LRU + bellek uyarısı `trim()`), `PdfViewport` `CustomPainter`, `GestureArena` (pinch/pan/atalet) ve testler
-- [ ] **M1.1** **OS "Birlikte Aç" / Varsayılan PDF Açıcı Entegrasyonu:**
+- [x] **M0.1** `design-tokens/` tek kaynak üretici (`design-tokens/generate.mjs`: CSS `--gp-*` + Dart `GpPalette` `ThemeExtension` + ortak EN/TR sözlük `dictionaries.ts` / `gp_l10n.g.dart` / ARB üretimi)
+- [x] **M0.2** `mobile/` Flutter projesinin kurulması (Android API 26+, iOS 16+, tablet çoklu pencere, MuPDF YOK) + `core/bindings/frb` (`flutter_rust_bridge` v2.12.0) ve PDFium `chromium/7881` yerel ikili/köprü entegrasyonu
+- [x] **M0.3** M0 Teknik Prototip: `Session` köprüsü, 256×256 `TileCache` (`ui.Image` + bayt bütçeli LRU + `didHaveMemoryPressure` `trim()`), `PdfViewport` `CustomPainter`, `GpGestureController` (pinch/pan/atalet + kalem/avuç içi) ve testler
+- [x] **M1.1** **OS "Birlikte Aç" / Varsayılan PDF Açıcı Entegrasyonu:**
   - Android: `AndroidManifest.xml` (`ACTION_VIEW`, `ACTION_SEND`, `ACTION_SEND_MULTIPLE`, `content://` + `file://`, depolama izni yok) + `FileBridgePlugin.kt` (64 KB akış kopyalama, `OpenableColumns`, `onNewIntent`, `FLAG_GRANT_WRITE_URI_PERMISSION`, `ACTION_CREATE_DOCUMENT`, `FileProvider` paylaşım)
   - iOS: `Info.plist` (`CFBundleDocumentTypes` `com.adobe.pdf` Alternate/Editor, `LSSupportsOpeningDocumentsInPlace`, `UIFileSharingEnabled`) + `SceneDelegate.swift` + `FileBridge.swift` (`openURLContexts`, `startAccessingSecurityScopedResource`, `NSFileCoordinator`, `bookmarkData`, `replaceItemAt`)
-  - Dart `FileBridge` + `OpenRequest` → doğrudan Viewer modunda açılış
-- [ ] **M1.2** Flutter Viewer UI (Kompakt Telefon, Orta/Geniş Tablet, Katlanabilir duruş & Split View, Açık/Koyu/Sepya temalar, akışlı arama, İçindekiler/Thumbnail sheet, Farklı Kaydet/Paylaş/Yazdır, EN/TR)
-- [ ] **M2.1** Flutter Editor Temel (Tek tuşla Viewer↔Editor geçişi, `EditableText` metin düzenleme, hayalet imza yerleştirme, kalem basınç/silgi çizimi, vurgulama, görsel ekleme, undo/redo, oturum otomatik kayıt/kurtarma, güvenli atomik geçici-dosya doğrulamalı Kaydet / Kopya kaydet)
-- [ ] **M3.1** Flutter Editor İleri + iOS Share Extension (Şekil/yol, kırpma/maske, sayfa düzenleme/birleştirme/bölme, donanım klavye kısayolları, Flutter motoru yüklemeyen yerel `ios/ShareExtension` + App Group el sıkışması)
-- [ ] **M4.1** Mobil Sertleştirme & Doğrulama (`flutter analyze`, `flutter test`, Android derleme/manifest kontrolü, erişilebilirlik `Semantics` ve sıfır-AGPL denetimi)
+  - Dart `GpFileBridge` + `GpOpenRequest` → doğrudan Viewer modunda açılış
+- [x] **M1.2** Flutter Viewer UI (Kompakt Telefon, Orta/Geniş Tablet, Katlanabilir `bookSplit` duruş & Split View, Açık/Koyu/Sepya temalar, akışlı Türkçe arama, İçindekiler/Thumbnail sheet, Farklı Kaydet/Paylaş/Yazdır, EN/TR)
+- [x] **M2.1** Flutter Editor Temel (Tek tuşla Viewer↔Editor geçişi + ±2px anchor korunumu, `EditableText` metin düzenleme, hayalet imza yerleştirme, kalem basınç/silgi çizimi, vurgulama, şekil/düzen, undo/redo, oturum otomatik kayıt/kurtarma, güvenli atomik geçici-dosya doğrulamalı Kaydet / Kopya kaydet)
+- [x] **M3.1** Flutter Editor İleri + iOS Share Extension (Şekil/kalem/kırmızı redaksiyon, sayfa döndürme/sıralama/silme/birleştirme, donanım klavye kısayolları `Ctrl+Z/Y/S/F` + `E`, Flutter motoru yüklemeyen yerel `ios/ShareExtension` + `group.dev.gullacpdf.mobile` App Group el sıkışması)
+- [x] **M4.1** Mobil Sertleştirme & Doğrulama (`flutter analyze` 0 sorun, `flutter test` tüm testler yeşil + canlı `gp_frb.dll` / `pdfium.dll` FFI doğrulaması, Android arm64 APK derlemesi & `AndroidManifest`/plist/`AGPL=0` denetimi)
