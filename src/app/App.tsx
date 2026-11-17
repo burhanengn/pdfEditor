@@ -5,6 +5,7 @@ import { ThumbnailSidebar } from '@/components/sidebar/ThumbnailSidebar';
 import { TopToolbar } from '@/components/toolbar/TopToolbar';
 import { FloatingViewerControls } from '@/components/viewer/FloatingViewerControls';
 import { NavigatorDrawer } from '@/components/viewer/NavigatorDrawer';
+import { PwaUpdateToast } from '@/components/viewer/PwaUpdateToast';
 import { SearchBar } from '@/components/viewer/SearchBar';
 import {
   GoToPageModal,
@@ -25,6 +26,7 @@ import {
 } from '@/engine/sessionPersistence';
 import { useLayoutClass } from '@/hooks/useLayoutClass';
 import { useI18n } from '@/i18n/useI18n';
+import { usePwaLaunchAndShare } from '@/pwa/usePwaLaunchAndShare';
 import { useEditorStore } from '@/store/useEditorStore';
 import { useViewerStore } from '@/store/useViewerStore';
 import { blobRegistry } from '@/utils/blobRegistry';
@@ -78,6 +80,7 @@ const CanvasContextMenu = lazy(() =>
 
 export default function App() {
   const { t } = useI18n();
+  usePwaLaunchAndShare();
   const { layoutClass } = useLayoutClass();
   const isDesktopLg = layoutClass === 'expanded';
 
@@ -487,6 +490,7 @@ export default function App() {
       <GoToPageModal onJumpToPage={(idx) => viewportRef.current?.scrollToPage(idx)} />
       <SaveWorkflowModal />
       <OpenSourceLicensesModal />
+      <PwaUpdateToast />
 
       {/* Mobile Viewer Thumb-Zone FAB */}
       {pages.length > 0 && appMode === 'view' && !immersiveHidden && (

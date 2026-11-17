@@ -51,6 +51,9 @@ export const enDictionary = {
   'save.overwriteConfirmBody': 'The original PDF file will be replaced. This action cannot be undone.',
   'save.dontAskAgain': "Don't ask again",
   'warn.unsavedChanges': 'You have unsaved changes. Are you sure you want to leave?',
+  'pwa.updateAvailable': 'A new version of gullacpdf is ready.',
+  'pwa.reload': 'Reload',
+  'pwa.later': 'Later',
 } as const;
 
 export type TranslationKey = keyof typeof enDictionary;
@@ -104,6 +107,9 @@ export const trDictionary: Record<TranslationKey, string> = {
   'save.overwriteConfirmBody': 'Özgün PDF dosyası değiştirilecek; bu işlem geri alınamaz.',
   'save.dontAskAgain': 'Bir daha sorma',
   'warn.unsavedChanges': 'Kaydedilmemiş değişiklikler var. Çıkmak istediğinize emin misiniz?',
+  'pwa.updateAvailable': 'gullacpdf için yeni bir sürüm hazır.',
+  'pwa.reload': 'Yenile',
+  'pwa.later': 'Sonra',
 };
 
 export const dictionaries: Record<SupportedLocale, Record<TranslationKey, string>> = {

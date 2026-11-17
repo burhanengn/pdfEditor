@@ -54,8 +54,8 @@
 
 ## Faz F4 — Web Üretim Optimizasyonu & Cloudflare Pages
 
-- [ ] **F4.1** `public/_headers` (Cloudflare Pages önbellek başlıkları), belgede güvenli SW güncelleme toast'ı, `file_handlers` + `launchQueue`, `share_target`, File System Access API entegrasyonu
-- [ ] **F4.2** Bellek sızıntısı ve referans doküman seti görsel/performans regresyon kapısı
+- [x] **F4.1** `public/_headers` (Cloudflare Pages önbellek başlıkları), belgede güvenli SW güncelleme toast'ı, `file_handlers` + `launchQueue`, `share_target`, File System Access API entegrasyonu
+- [x] **F4.2** Bellek sızıntısı ve referans doküman seti görsel/performans regresyon kapısı (`19/19` dosya / `111/111` Vitest + `24/24` Playwright E2E)
 
 ---
 

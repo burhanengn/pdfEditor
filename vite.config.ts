@@ -13,7 +13,7 @@ export default defineConfig({
   plugins: [
     react(),
     VitePWA({
-      registerType: 'autoUpdate',
+      registerType: 'prompt',
       injectRegister: 'auto',
       includeAssets: [
         'favicon.svg',
@@ -60,13 +60,35 @@ export default defineConfig({
             purpose: 'any',
           },
         ],
+        file_handlers: [
+          {
+            action: './',
+            accept: {
+              'application/pdf': ['.pdf'],
+            },
+          },
+        ],
+        share_target: {
+          action: './?share-target=1',
+          method: 'POST',
+          enctype: 'multipart/form-data',
+          params: {
+            files: [
+              {
+                name: 'file',
+                accept: ['application/pdf', '.pdf'],
+              },
+            ],
+          },
+        },
       },
       workbox: {
         maximumFileSizeToCacheInBytes: 16 * 1024 * 1024,
         globPatterns: ['**/*.{js,css,html,ico,svg,png,wasm,ttf,mjs,webmanifest}'],
         cleanupOutdatedCaches: true,
         clientsClaim: true,
-        skipWaiting: true,
+        skipWaiting: false,
+        importScripts: ['sw-share-target.js'],
       },
     }),
   ],
