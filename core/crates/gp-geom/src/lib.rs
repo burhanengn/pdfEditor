@@ -70,9 +70,9 @@ mod tests {
 
         let smooth_d = path_points_to_svg_path(
             &[
-                NormalizedPoint { x: 0.0, y: 0.0, pressure: None },
-                NormalizedPoint { x: 0.5, y: 1.0, pressure: None },
-                NormalizedPoint { x: 1.0, y: 0.0, pressure: None },
+                NormalizedPoint { x: 0.0, y: 0.0, pressure: None, smooth: None },
+                NormalizedPoint { x: 0.5, y: 1.0, pressure: None, smooth: None },
+                NormalizedPoint { x: 1.0, y: 0.0, pressure: None, smooth: None },
             ],
             100.0,
             100.0,
@@ -80,6 +80,35 @@ mod tests {
             true,
         );
         assert!(smooth_d.contains("Q 50.00 100.00"));
+        let mixed_open_d = path_points_to_svg_path(
+            &[
+                NormalizedPoint { x: 0.0, y: 0.0, pressure: None, smooth: None },
+                NormalizedPoint { x: 0.3, y: 1.0, pressure: None, smooth: Some(false) },
+                NormalizedPoint { x: 0.7, y: 1.0, pressure: None, smooth: Some(true) },
+                NormalizedPoint { x: 1.0, y: 0.0, pressure: None, smooth: None },
+            ],
+            100.0,
+            100.0,
+            false,
+            false,
+        );
+        assert!(mixed_open_d.contains("L 30.00 100.00 L 50.00 100.00 Q 70.00 100.00 85.00 50.00 L 100.00 0.00"));
+        let mixed_closed_d = path_points_to_svg_path(
+            &[
+                NormalizedPoint { x: 0.0, y: 0.0, pressure: None, smooth: None },
+                NormalizedPoint { x: 1.0, y: 0.0, pressure: None, smooth: Some(true) },
+                NormalizedPoint { x: 1.0, y: 1.0, pressure: None, smooth: None },
+                NormalizedPoint { x: 0.0, y: 1.0, pressure: None, smooth: None },
+            ],
+            100.0,
+            100.0,
+            true,
+            false,
+        );
+        assert_eq!(
+            mixed_closed_d,
+            "M 0.00 0.00 L 50.00 0.00 Q 100.00 0.00 100.00 50.00 L 100.00 100.00 L 0.00 100.00 L 0.00 0.00 Z"
+        );
         let norm = normalize_absolute_points(&[Point { x: 50.0, y: 100.0 }, Point { x: 50.0, y: 200.0 }]);
         assert!((norm.rect.width - 12.0).abs() < 1e-6);
     }

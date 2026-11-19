@@ -70,7 +70,7 @@ class RustLib extends BaseEntrypoint<RustLibApi, RustLibApiImpl, RustLibWire> {
   String get codegenVersion => '2.12.0';
 
   @override
-  int get rustContentHash => -1422065456;
+  int get rustContentHash => -307166636;
 
   static const kDefaultExternalLibraryLoaderConfig =
       ExternalLibraryLoaderConfig(
@@ -121,6 +121,9 @@ abstract class RustLibApi extends BaseApi {
   Future<String> crateApiSessionExtractEmbeddedFontsJson(
       {required String filePath});
 
+  Future<List<FrbLinkAnnotation>> crateApiSessionExtractPageLinks(
+      {required String docId, required int pageIndex});
+
   Future<FrbPageText> crateApiSessionExtractPageText(
       {required String docId, required int pageIndex});
 
@@ -134,6 +137,11 @@ abstract class RustLibApi extends BaseApi {
 
   Future<FrbOpenDocResult> crateApiSessionOpenDocumentFile(
       {required String docId, required String path, String? password});
+
+  Future<Uint8List> crateApiSessionPrepareCleanPagePreview(
+      {required String docId,
+      required int pageIndex,
+      required String elementsJson});
 
   Future<FrbRedactionVerifyResult> crateApiSessionRedactFileVerified(
       {required String inputPath,
@@ -451,7 +459,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
-  Future<FrbPageText> crateApiSessionExtractPageText(
+  Future<List<FrbLinkAnnotation>> crateApiSessionExtractPageLinks(
       {required String docId, required int pageIndex}) {
     return handler.executeNormal(NormalTask(
       callFfi: (port_) {
@@ -460,6 +468,33 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_u_32(pageIndex, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
             funcId: 10, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_list_frb_link_annotation,
+        decodeErrorData: sse_decode_String,
+      ),
+      constMeta: kCrateApiSessionExtractPageLinksConstMeta,
+      argValues: [docId, pageIndex],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateApiSessionExtractPageLinksConstMeta =>
+      const TaskConstMeta(
+        debugName: "extract_page_links",
+        argNames: ["docId", "pageIndex"],
+      );
+
+  @override
+  Future<FrbPageText> crateApiSessionExtractPageText(
+      {required String docId, required int pageIndex}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_String(docId, serializer);
+        sse_encode_u_32(pageIndex, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 11, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_frb_page_text,
@@ -486,7 +521,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_opt_String(pdfiumLibraryPath, serializer);
         sse_encode_u_64(tileBudgetBytes, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 11, port: port_);
+            funcId: 12, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -509,7 +544,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       callFfi: (port_) {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 12, port: port_);
+            funcId: 13, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -536,7 +571,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_list_prim_u_8_loose(bytes, serializer);
         sse_encode_opt_String(password, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 13, port: port_);
+            funcId: 14, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_frb_open_doc_result,
@@ -564,7 +599,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_String(path, serializer);
         sse_encode_opt_String(password, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 14, port: port_);
+            funcId: 15, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_frb_open_doc_result,
@@ -583,6 +618,36 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       );
 
   @override
+  Future<Uint8List> crateApiSessionPrepareCleanPagePreview(
+      {required String docId,
+      required int pageIndex,
+      required String elementsJson}) {
+    return handler.executeNormal(NormalTask(
+      callFfi: (port_) {
+        final serializer = SseSerializer(generalizedFrbRustBinding);
+        sse_encode_String(docId, serializer);
+        sse_encode_u_32(pageIndex, serializer);
+        sse_encode_String(elementsJson, serializer);
+        pdeCallFfi(generalizedFrbRustBinding, serializer,
+            funcId: 16, port: port_);
+      },
+      codec: SseCodec(
+        decodeSuccessData: sse_decode_list_prim_u_8_strict,
+        decodeErrorData: sse_decode_String,
+      ),
+      constMeta: kCrateApiSessionPrepareCleanPagePreviewConstMeta,
+      argValues: [docId, pageIndex, elementsJson],
+      apiImpl: this,
+    ));
+  }
+
+  TaskConstMeta get kCrateApiSessionPrepareCleanPagePreviewConstMeta =>
+      const TaskConstMeta(
+        debugName: "prepare_clean_page_preview",
+        argNames: ["docId", "pageIndex", "elementsJson"],
+      );
+
+  @override
   Future<FrbRedactionVerifyResult> crateApiSessionRedactFileVerified(
       {required String inputPath,
       required String outputPath,
@@ -596,7 +661,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_opt_String(password, serializer);
         sse_encode_list_frb_redaction_rect(rects, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 15, port: port_);
+            funcId: 17, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_frb_redaction_verify_result,
@@ -622,7 +687,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         sse_encode_box_autoadd_frb_tile_request(req, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 16, port: port_);
+            funcId: 18, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_frb_tile_bitmap,
@@ -655,7 +720,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         sse_encode_bool(wholeWord, serializer);
         sse_encode_StreamSink_frb_search_progress_Sse(sink, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 17, port: port_);
+            funcId: 19, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -681,7 +746,7 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         final serializer = SseSerializer(generalizedFrbRustBinding);
         sse_encode_u_64(targetBytes, serializer);
         pdeCallFfi(generalizedFrbRustBinding, serializer,
-            funcId: 18, port: port_);
+            funcId: 20, port: port_);
       },
       codec: SseCodec(
         decodeSuccessData: sse_decode_unit,
@@ -753,14 +818,21 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   FrbCompileSaveRequest dco_decode_frb_compile_save_request(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     final arr = raw as List<dynamic>;
-    if (arr.length != 5)
-      throw Exception('unexpected arr length: expect 5 but see ${arr.length}');
+    if (arr.length != 12)
+      throw Exception('unexpected arr length: expect 12 but see ${arr.length}');
     return FrbCompileSaveRequest(
       pagesJson: dco_decode_String(arr[0]),
       elementsJson: dco_decode_String(arr[1]),
-      redactions: dco_decode_list_frb_redaction_rect(arr[2]),
-      outputPath: dco_decode_String(arr[3]),
-      customTtfBytes: dco_decode_opt_list_prim_u_8_strict(arr[4]),
+      pageNumberingJson: dco_decode_opt_String(arr[2]),
+      redactions: dco_decode_list_frb_redaction_rect(arr[3]),
+      outputPath: dco_decode_String(arr[4]),
+      customTtfBytes: dco_decode_opt_list_prim_u_8_strict(arr[5]),
+      fontRegularTtf: dco_decode_opt_list_prim_u_8_strict(arr[6]),
+      fontBoldTtf: dco_decode_opt_list_prim_u_8_strict(arr[7]),
+      fontItalicTtf: dco_decode_opt_list_prim_u_8_strict(arr[8]),
+      fontSerifTtf: dco_decode_opt_list_prim_u_8_strict(arr[9]),
+      fontMonoTtf: dco_decode_opt_list_prim_u_8_strict(arr[10]),
+      embeddedImages: dco_decode_list_frb_embedded_image(arr[11]),
     );
   }
 
@@ -774,6 +846,39 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
       outputPath: dco_decode_String(arr[0]),
       verifiedPageCount: dco_decode_u_32(arr[1]),
       byteSize: dco_decode_u_64(arr[2]),
+    );
+  }
+
+  @protected
+  FrbEmbeddedImage dco_decode_frb_embedded_image(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 4)
+      throw Exception('unexpected arr length: expect 4 but see ${arr.length}');
+    return FrbEmbeddedImage(
+      id: dco_decode_String(arr[0]),
+      width: dco_decode_u_32(arr[1]),
+      height: dco_decode_u_32(arr[2]),
+      rgba: dco_decode_list_prim_u_8_strict(arr[3]),
+    );
+  }
+
+  @protected
+  FrbLinkAnnotation dco_decode_frb_link_annotation(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    final arr = raw as List<dynamic>;
+    if (arr.length != 9)
+      throw Exception('unexpected arr length: expect 9 but see ${arr.length}');
+    return FrbLinkAnnotation(
+      id: dco_decode_String(arr[0]),
+      pageIndex: dco_decode_u_32(arr[1]),
+      x: dco_decode_f_64(arr[2]),
+      y: dco_decode_f_64(arr[3]),
+      width: dco_decode_f_64(arr[4]),
+      height: dco_decode_f_64(arr[5]),
+      kind: dco_decode_String(arr[6]),
+      uri: dco_decode_opt_String(arr[7]),
+      destPageIndex: dco_decode_opt_box_autoadd_u_32(arr[8]),
     );
   }
 
@@ -994,6 +1099,18 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<FrbEmbeddedImage> dco_decode_list_frb_embedded_image(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_frb_embedded_image).toList();
+  }
+
+  @protected
+  List<FrbLinkAnnotation> dco_decode_list_frb_link_annotation(dynamic raw) {
+    // Codec=Dco (DartCObject based), see doc to use other codecs
+    return (raw as List<dynamic>).map(dco_decode_frb_link_annotation).toList();
+  }
+
+  @protected
   List<FrbOutlineItem> dco_decode_list_frb_outline_item(dynamic raw) {
     // Codec=Dco (DartCObject based), see doc to use other codecs
     return (raw as List<dynamic>).map(dco_decode_frb_outline_item).toList();
@@ -1143,15 +1260,29 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     var var_pagesJson = sse_decode_String(deserializer);
     var var_elementsJson = sse_decode_String(deserializer);
+    var var_pageNumberingJson = sse_decode_opt_String(deserializer);
     var var_redactions = sse_decode_list_frb_redaction_rect(deserializer);
     var var_outputPath = sse_decode_String(deserializer);
     var var_customTtfBytes = sse_decode_opt_list_prim_u_8_strict(deserializer);
+    var var_fontRegularTtf = sse_decode_opt_list_prim_u_8_strict(deserializer);
+    var var_fontBoldTtf = sse_decode_opt_list_prim_u_8_strict(deserializer);
+    var var_fontItalicTtf = sse_decode_opt_list_prim_u_8_strict(deserializer);
+    var var_fontSerifTtf = sse_decode_opt_list_prim_u_8_strict(deserializer);
+    var var_fontMonoTtf = sse_decode_opt_list_prim_u_8_strict(deserializer);
+    var var_embeddedImages = sse_decode_list_frb_embedded_image(deserializer);
     return FrbCompileSaveRequest(
         pagesJson: var_pagesJson,
         elementsJson: var_elementsJson,
+        pageNumberingJson: var_pageNumberingJson,
         redactions: var_redactions,
         outputPath: var_outputPath,
-        customTtfBytes: var_customTtfBytes);
+        customTtfBytes: var_customTtfBytes,
+        fontRegularTtf: var_fontRegularTtf,
+        fontBoldTtf: var_fontBoldTtf,
+        fontItalicTtf: var_fontItalicTtf,
+        fontSerifTtf: var_fontSerifTtf,
+        fontMonoTtf: var_fontMonoTtf,
+        embeddedImages: var_embeddedImages);
   }
 
   @protected
@@ -1165,6 +1296,42 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
         outputPath: var_outputPath,
         verifiedPageCount: var_verifiedPageCount,
         byteSize: var_byteSize);
+  }
+
+  @protected
+  FrbEmbeddedImage sse_decode_frb_embedded_image(SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_id = sse_decode_String(deserializer);
+    var var_width = sse_decode_u_32(deserializer);
+    var var_height = sse_decode_u_32(deserializer);
+    var var_rgba = sse_decode_list_prim_u_8_strict(deserializer);
+    return FrbEmbeddedImage(
+        id: var_id, width: var_width, height: var_height, rgba: var_rgba);
+  }
+
+  @protected
+  FrbLinkAnnotation sse_decode_frb_link_annotation(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    var var_id = sse_decode_String(deserializer);
+    var var_pageIndex = sse_decode_u_32(deserializer);
+    var var_x = sse_decode_f_64(deserializer);
+    var var_y = sse_decode_f_64(deserializer);
+    var var_width = sse_decode_f_64(deserializer);
+    var var_height = sse_decode_f_64(deserializer);
+    var var_kind = sse_decode_String(deserializer);
+    var var_uri = sse_decode_opt_String(deserializer);
+    var var_destPageIndex = sse_decode_opt_box_autoadd_u_32(deserializer);
+    return FrbLinkAnnotation(
+        id: var_id,
+        pageIndex: var_pageIndex,
+        x: var_x,
+        y: var_y,
+        width: var_width,
+        height: var_height,
+        kind: var_kind,
+        uri: var_uri,
+        destPageIndex: var_destPageIndex);
   }
 
   @protected
@@ -1386,6 +1553,32 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   }
 
   @protected
+  List<FrbEmbeddedImage> sse_decode_list_frb_embedded_image(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <FrbEmbeddedImage>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_frb_embedded_image(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
+  List<FrbLinkAnnotation> sse_decode_list_frb_link_annotation(
+      SseDeserializer deserializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+
+    var len_ = sse_decode_i_32(deserializer);
+    var ans_ = <FrbLinkAnnotation>[];
+    for (var idx_ = 0; idx_ < len_; ++idx_) {
+      ans_.add(sse_decode_frb_link_annotation(deserializer));
+    }
+    return ans_;
+  }
+
+  @protected
   List<FrbOutlineItem> sse_decode_list_frb_outline_item(
       SseDeserializer deserializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
@@ -1597,9 +1790,16 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     // Codec=Sse (Serialization based), see doc to use other codecs
     sse_encode_String(self.pagesJson, serializer);
     sse_encode_String(self.elementsJson, serializer);
+    sse_encode_opt_String(self.pageNumberingJson, serializer);
     sse_encode_list_frb_redaction_rect(self.redactions, serializer);
     sse_encode_String(self.outputPath, serializer);
     sse_encode_opt_list_prim_u_8_strict(self.customTtfBytes, serializer);
+    sse_encode_opt_list_prim_u_8_strict(self.fontRegularTtf, serializer);
+    sse_encode_opt_list_prim_u_8_strict(self.fontBoldTtf, serializer);
+    sse_encode_opt_list_prim_u_8_strict(self.fontItalicTtf, serializer);
+    sse_encode_opt_list_prim_u_8_strict(self.fontSerifTtf, serializer);
+    sse_encode_opt_list_prim_u_8_strict(self.fontMonoTtf, serializer);
+    sse_encode_list_frb_embedded_image(self.embeddedImages, serializer);
   }
 
   @protected
@@ -1609,6 +1809,31 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
     sse_encode_String(self.outputPath, serializer);
     sse_encode_u_32(self.verifiedPageCount, serializer);
     sse_encode_u_64(self.byteSize, serializer);
+  }
+
+  @protected
+  void sse_encode_frb_embedded_image(
+      FrbEmbeddedImage self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.id, serializer);
+    sse_encode_u_32(self.width, serializer);
+    sse_encode_u_32(self.height, serializer);
+    sse_encode_list_prim_u_8_strict(self.rgba, serializer);
+  }
+
+  @protected
+  void sse_encode_frb_link_annotation(
+      FrbLinkAnnotation self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_String(self.id, serializer);
+    sse_encode_u_32(self.pageIndex, serializer);
+    sse_encode_f_64(self.x, serializer);
+    sse_encode_f_64(self.y, serializer);
+    sse_encode_f_64(self.width, serializer);
+    sse_encode_f_64(self.height, serializer);
+    sse_encode_String(self.kind, serializer);
+    sse_encode_opt_String(self.uri, serializer);
+    sse_encode_opt_box_autoadd_u_32(self.destPageIndex, serializer);
   }
 
   @protected
@@ -1765,6 +1990,26 @@ class RustLibApiImpl extends RustLibApiImplPlatform implements RustLibApi {
   void sse_encode_i_32(int self, SseSerializer serializer) {
     // Codec=Sse (Serialization based), see doc to use other codecs
     serializer.buffer.putInt32(self);
+  }
+
+  @protected
+  void sse_encode_list_frb_embedded_image(
+      List<FrbEmbeddedImage> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_frb_embedded_image(item, serializer);
+    }
+  }
+
+  @protected
+  void sse_encode_list_frb_link_annotation(
+      List<FrbLinkAnnotation> self, SseSerializer serializer) {
+    // Codec=Sse (Serialization based), see doc to use other codecs
+    sse_encode_i_32(self.length, serializer);
+    for (final item in self) {
+      sse_encode_frb_link_annotation(item, serializer);
+    }
   }
 
   @protected

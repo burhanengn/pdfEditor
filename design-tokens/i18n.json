@@ -47,6 +47,10 @@
     "en": "Print",
     "tr": "Yazdır"
   },
+  "action.openWith": {
+    "en": "Open With",
+    "tr": "Birlikte Aç"
+  },
   "action.search": {
     "en": "Search",
     "tr": "Ara"
@@ -74,6 +78,18 @@
   "action.cancel": {
     "en": "Cancel",
     "tr": "İptal"
+  },
+  "action.apply": {
+    "en": "Apply",
+    "tr": "Uygula"
+  },
+  "action.more": {
+    "en": "More options",
+    "tr": "Diğer seçenekler"
+  },
+  "status.loading": {
+    "en": "Loading…",
+    "tr": "Yükleniyor…"
   },
   "action.close": {
     "en": "Close",
@@ -270,5 +286,269 @@
   "mobile.placeGhost": {
     "en": "Place here",
     "tr": "Buraya yerleştir"
+  },
+  "mobile.tapToPlaceSig": {
+    "en": "Tap anywhere on a page to place",
+    "tr": "Yerleştirmek için sayfada bir yere dokunun"
+  },
+  "mobile.tool.eraser": {
+    "en": "Eraser",
+    "tr": "Silgi"
+  },
+  "mobile.tool.line": {
+    "en": "Line",
+    "tr": "Çizgi"
+  },
+  "mobile.tool.inspect": {
+    "en": "Style",
+    "tr": "Stil"
+  },
+  "mobile.sig.signatureTab": {
+    "en": "Signature",
+    "tr": "İmza"
+  },
+  "mobile.sig.parafTab": {
+    "en": "Initials (Paraf)",
+    "tr": "Paraf"
+  },
+  "mobile.sig.draw": {
+    "en": "Draw",
+    "tr": "Çiz"
+  },
+  "mobile.sig.type": {
+    "en": "Type",
+    "tr": "Yaz"
+  },
+  "mobile.sig.upload": {
+    "en": "Upload",
+    "tr": "Yükle"
+  },
+  "mobile.sig.vault": {
+    "en": "Saved",
+    "tr": "Kayıtlılar"
+  },
+  "mobile.sig.realisticInk": {
+    "en": "Natural ink look",
+    "tr": "Orijinal görünümlü mürekkep"
+  },
+  "mobile.sig.removeBg": {
+    "en": "Auto-clean white background",
+    "tr": "Arka planı otomatik temizle"
+  },
+  "mobile.applyAllPages": {
+    "en": "Apply to all pages",
+    "tr": "Tüm sayfalara uygula"
+  },
+  "mobile.bringForward": {
+    "en": "Bring forward",
+    "tr": "Öne getir"
+  },
+  "mobile.sendBackward": {
+    "en": "Send backward",
+    "tr": "Arkaya gönder"
+  },
+  "mobile.duplicate": {
+    "en": "Duplicate",
+    "tr": "Çoğalt"
+  },
+  "mobile.lock": {
+    "en": "Lock",
+    "tr": "Kilitle"
+  },
+  "mobile.unlock": {
+    "en": "Unlock",
+    "tr": "Kilidi aç"
+  },
+  "mobile.mergePdf": {
+    "en": "Merge PDF",
+    "tr": "PDF Birleştir"
+  },
+  "mobile.splitPdf": {
+    "en": "Split / Extract",
+    "tr": "Sayfaları Ayır"
+  },
+  "mobile.addBlankPage": {
+    "en": "Blank Page",
+    "tr": "Boş Sayfa Ekle"
+  },
+  "mobile.pageNumbers": {
+    "en": "Page Numbers",
+    "tr": "Sayfa Numarası"
+  },
+  "mobile.uploadTtf": {
+    "en": "Custom Font (.ttf)",
+    "tr": "Özel Font (.ttf)"
+  },
+  "mobile.toolLock": {
+    "en": "Lock Tool",
+    "tr": "Aracı Kilitle"
+  },
+  "mobile.polylineHint": {
+    "en": "Tap to add points • Tap vertex to chain",
+    "tr": "Nokta eklemek için dokun • Köşeye dokunup bağla"
+  },
+  "mobile.polylineFinish": {
+    "en": "Finish",
+    "tr": "Bitir"
+  },
+  "mobile.textColor": {
+    "en": "Text Color",
+    "tr": "Yazı Rengi"
+  },
+  "mobile.bgColor": {
+    "en": "Background",
+    "tr": "Arka Plan"
+  },
+  "mobile.strokeColor": {
+    "en": "Stroke Color",
+    "tr": "Çizgi Rengi"
+  },
+  "mobile.fillColor": {
+    "en": "Fill Color",
+    "tr": "Dolgu Rengi"
+  },
+  "mobile.noneTransparent": {
+    "en": "None",
+    "tr": "Yok"
+  },
+  "mobile.customColor": {
+    "en": "Custom",
+    "tr": "Özel"
+  },
+  "mobile.copyPageText": {
+    "en": "Copy Page Text",
+    "tr": "Sayfa Metnini Kopyala"
+  },
+  "mobile.textCopied": {
+    "en": "Text copied to clipboard",
+    "tr": "Metin panoya kopyalandı"
+  },
+  "mobile.alignLeft": {
+    "en": "Left",
+    "tr": "Sola Yasla"
+  },
+  "mobile.alignCenter": {
+    "en": "Center",
+    "tr": "Ortala"
+  },
+  "mobile.alignRight": {
+    "en": "Right",
+    "tr": "Sağa Yasla"
+  },
+  "mobile.alignJustify": {
+    "en": "Justify",
+    "tr": "İki Yana Yasla"
+  },
+  "mobile.bold": {
+    "en": "Bold",
+    "tr": "Kalın"
+  },
+  "mobile.italic": {
+    "en": "Italic",
+    "tr": "İtalik"
+  },
+  "mobile.underline": {
+    "en": "Underline",
+    "tr": "Altı Çizili"
+  },
+  "mobile.strike": {
+    "en": "Strikethrough",
+    "tr": "Üstü Çizili"
+  },
+  "mobile.subscript": {
+    "en": "Subscript",
+    "tr": "Alt İndis"
+  },
+  "mobile.superscript": {
+    "en": "Superscript",
+    "tr": "Üst İndis"
+  },
+  "mobile.letterSpacing": {
+    "en": "Letter Spacing",
+    "tr": "Harf Aralığı"
+  },
+  "mobile.lineHeight": {
+    "en": "Line Height",
+    "tr": "Satır Yüksekliği"
+  },
+  "mobile.horizScale": {
+    "en": "Width Scale",
+    "tr": "Genişlik Ölçeği"
+  },
+  "mobile.fontEmbeddedOk": {
+    "en": "Embedded font extracted",
+    "tr": "Gömülü yazı tipi çıkarıldı"
+  },
+  "mobile.fontMissingWarning": {
+    "en": "Embedded font not found in PDF — using fallback font ({name})",
+    "tr": "PDF içinde gömülü yazı tipi bulunamadı — yedek font kullanılıyor ({name})"
+  },
+  "mobile.fontSubsetWarning": {
+    "en": "Embedded font is a partial subset; unsupported characters fall back safely",
+    "tr": "Gömülü font kısmi alt küme; eksik karakterler yedek fontla gösterilir"
+  },
+  "mobile.pdfObjectSelected": {
+    "en": "PDF Object Selected",
+    "tr": "PDF Nesnesi Seçildi"
+  },
+  "mobile.pdfShapeSelected": {
+    "en": "PDF Box / Vector Selected",
+    "tr": "PDF Kutu / Vektör Seçildi"
+  },
+  "mobile.pdfImageSelected": {
+    "en": "PDF Image Selected",
+    "tr": "PDF Görseli Seçildi"
+  },
+  "mobile.boxSelect": {
+    "en": "Box Select",
+    "tr": "Alan Seç"
+  },
+  "mobile.vertexSelectHint": {
+    "en": "Drag box to select vertices",
+    "tr": "Noktaları seçmek için alan sürükle"
+  },
+  "mobile.vertexSmooth": {
+    "en": "Smooth Corner",
+    "tr": "Eğri Yap"
+  },
+  "mobile.vertexSharp": {
+    "en": "Sharp Corner",
+    "tr": "Keskinleştir"
+  },
+  "mobile.vertexDelete": {
+    "en": "Delete Points",
+    "tr": "Noktaları Sil"
+  },
+  "mobile.alignLeft": {
+    "en": "Align Left",
+    "tr": "Sola Hizala"
+  },
+  "mobile.alignCenterH": {
+    "en": "Center Horizontal",
+    "tr": "Yatay Ortala"
+  },
+  "mobile.alignRight": {
+    "en": "Align Right",
+    "tr": "Sağa Hizala"
+  },
+  "mobile.alignTop": {
+    "en": "Align Top",
+    "tr": "Üste Hizala"
+  },
+  "mobile.alignCenterV": {
+    "en": "Center Vertical",
+    "tr": "Dikey Ortala"
+  },
+  "mobile.alignBottom": {
+    "en": "Align Bottom",
+    "tr": "Alta Hizala"
+  },
+  "mobile.distributeH": {
+    "en": "Distribute Horizontally",
+    "tr": "Yatay Dağıt"
+  },
+  "mobile.distributeV": {
+    "en": "Distribute Vertically",
+    "tr": "Dikey Dağıt"
   }
 }

@@ -11,3 +11,4 @@ gp-text = { path = "../gp-text" }
 lopdf = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+ttf-parser = { workspace = true }

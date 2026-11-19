@@ -84,6 +84,10 @@ export function shapeToSvgPath(
   }
 }
 
+export function pointIsSmooth(pt: NormalizedPoint, globalSmooth: boolean): boolean {
+  return pt.smooth ?? globalSmooth;
+}
+
 /**
  * Generates an SVG path string for a vector polyline/polygon/smooth path in `[0..width] x [0..height]`.
  */
@@ -104,36 +108,95 @@ export function pathPointsToSvgPath(
     return `M ${abs[0].x.toFixed(2)} ${abs[0].y.toFixed(2)} L ${(abs[0].x + 0.5).toFixed(2)} ${(abs[0].y + 0.5).toFixed(2)}`;
   }
 
-  if (!smooth || abs.length < 3) {
+  const n = abs.length;
+  const hasAnySmooth =
+    n >= 3 &&
+    (closed
+      ? points.some((pt) => pointIsSmooth(pt, smooth))
+      : points.slice(1, n - 1).some((pt) => pointIsSmooth(pt, smooth)));
+
+  if (!hasAnySmooth) {
     const segs = [`M ${abs[0].x.toFixed(2)} ${abs[0].y.toFixed(2)}`];
-    for (let i = 1; i < abs.length; i++) {
+    for (let i = 1; i < n; i++) {
       segs.push(`L ${abs[i].x.toFixed(2)} ${abs[i].y.toFixed(2)}`);
     }
     if (closed) segs.push('Z');
     return segs.join(' ');
   }
 
+  const ptsClose = (a: Point, b: Point) => Math.abs(a.x - b.x) < 1e-4 && Math.abs(a.y - b.y) < 1e-4;
+
   if (!closed) {
     let d = `M ${abs[0].x.toFixed(2)} ${abs[0].y.toFixed(2)}`;
-    for (let i = 1; i < abs.length - 1; i++) {
-      const midX = (abs[i].x + abs[i + 1].x) / 2;
-      const midY = (abs[i].y + abs[i + 1].y) / 2;
-      d += ` Q ${abs[i].x.toFixed(2)} ${abs[i].y.toFixed(2)} ${midX.toFixed(2)} ${midY.toFixed(2)}`;
+    let cursor = abs[0];
+    const firstSmooth = pointIsSmooth(points[0], smooth);
+    for (let i = 1; i < n - 1; i++) {
+      if (pointIsSmooth(points[i], smooth)) {
+        const enter =
+          i === 1 && firstSmooth
+            ? abs[0]
+            : { x: (abs[i - 1].x + abs[i].x) / 2, y: (abs[i - 1].y + abs[i].y) / 2 };
+        const exit = { x: (abs[i].x + abs[i + 1].x) / 2, y: (abs[i].y + abs[i + 1].y) / 2 };
+        if (!ptsClose(cursor, enter)) {
+          d += ` L ${enter.x.toFixed(2)} ${enter.y.toFixed(2)}`;
+        }
+        d += ` Q ${abs[i].x.toFixed(2)} ${abs[i].y.toFixed(2)} ${exit.x.toFixed(2)} ${exit.y.toFixed(2)}`;
+        cursor = exit;
+      } else {
+        if (!ptsClose(cursor, abs[i])) {
+          d += ` L ${abs[i].x.toFixed(2)} ${abs[i].y.toFixed(2)}`;
+        }
+        cursor = abs[i];
+      }
     }
-    const last = abs[abs.length - 1];
-    d += ` L ${last.x.toFixed(2)} ${last.y.toFixed(2)}`;
+    const last = abs[n - 1];
+    if (!ptsClose(cursor, last)) {
+      d += ` L ${last.x.toFixed(2)} ${last.y.toFixed(2)}`;
+    }
     return d;
   }
 
-  // Closed quadratic midpoint spline (continuous across closing seam)
-  const mid0X = (abs[abs.length - 1].x + abs[0].x) / 2;
-  const mid0Y = (abs[abs.length - 1].y + abs[0].y) / 2;
-  let d = `M ${mid0X.toFixed(2)} ${mid0Y.toFixed(2)}`;
-  for (let i = 0; i < abs.length; i++) {
-    const next = abs[(i + 1) % abs.length];
-    const midX = (abs[i].x + next.x) / 2;
-    const midY = (abs[i].y + next.y) / 2;
-    d += ` Q ${abs[i].x.toFixed(2)} ${abs[i].y.toFixed(2)} ${midX.toFixed(2)} ${midY.toFixed(2)}`;
+  const enter: Point[] = [];
+  const exit: Point[] = [];
+  const smoothFlags: boolean[] = [];
+  for (let i = 0; i < n; i++) {
+    const prev = abs[(i + n - 1) % n];
+    const curr = abs[i];
+    const next = abs[(i + 1) % n];
+    const sm = pointIsSmooth(points[i], smooth);
+    smoothFlags.push(sm);
+    if (sm) {
+      enter.push({ x: (prev.x + curr.x) / 2, y: (prev.y + curr.y) / 2 });
+      exit.push({ x: (curr.x + next.x) / 2, y: (curr.y + next.y) / 2 });
+    } else {
+      enter.push(curr);
+      exit.push(curr);
+    }
+  }
+
+  let d = `M ${enter[0].x.toFixed(2)} ${enter[0].y.toFixed(2)}`;
+  let cursor = enter[0];
+  for (let i = 0; i < n; i++) {
+    if (smoothFlags[i]) {
+      if (!ptsClose(cursor, enter[i])) {
+        d += ` L ${enter[i].x.toFixed(2)} ${enter[i].y.toFixed(2)}`;
+      }
+      d += ` Q ${abs[i].x.toFixed(2)} ${abs[i].y.toFixed(2)} ${exit[i].x.toFixed(2)} ${exit[i].y.toFixed(2)}`;
+      cursor = exit[i];
+    } else {
+      if (!ptsClose(cursor, abs[i])) {
+        d += ` L ${abs[i].x.toFixed(2)} ${abs[i].y.toFixed(2)}`;
+      }
+      cursor = abs[i];
+    }
+    const nextI = (i + 1) % n;
+    if (nextI !== 0 && !ptsClose(cursor, enter[nextI])) {
+      d += ` L ${enter[nextI].x.toFixed(2)} ${enter[nextI].y.toFixed(2)}`;
+      cursor = enter[nextI];
+    }
+  }
+  if (!ptsClose(cursor, enter[0])) {
+    d += ` L ${enter[0].x.toFixed(2)} ${enter[0].y.toFixed(2)}`;
   }
   d += ' Z';
   return d;
@@ -160,7 +223,9 @@ export function strokeDashToArray(
  * Converts absolute base-page coordinates into a padded bounding box (`>= 12pt` on each axis
  * so straight horizontal/vertical lines remain easy to select & rotate) + normalized `[0..1]` points.
  */
-export function normalizeAbsolutePoints(absPoints: Point[]): {
+export type PathPoint = Point & { smooth?: boolean };
+
+export function normalizeAbsolutePoints(absPoints: PathPoint[]): {
   rect: RectBox;
   points: NormalizedPoint[];
 } {
@@ -192,6 +257,7 @@ export function normalizeAbsolutePoints(absPoints: Point[]): {
   const points: NormalizedPoint[] = absPoints.map((p) => ({
     x: (p.x - x) / width,
     y: (p.y - y) / height,
+    ...(p.smooth !== undefined ? { smooth: p.smooth } : {}),
   }));
 
   return {
@@ -211,7 +277,7 @@ export function denormalizePathPoints(el: {
   height: number;
   rotation: number;
   points: NormalizedPoint[];
-}): Point[] {
+}): PathPoint[] {
   const cx = el.x + el.width / 2;
   const cy = el.y + el.height / 2;
   const rad = (el.rotation * Math.PI) / 180;
@@ -222,24 +288,28 @@ export function denormalizePathPoints(el: {
   return el.points.map((p) => {
     const rawX = el.x + p.x * el.width;
     const rawY = el.y + p.y * el.height;
-    if (!hasRot) return { x: rawX, y: rawY };
+    const extra = p.smooth !== undefined ? { smooth: p.smooth } : {};
+    if (!hasRot) return { x: rawX, y: rawY, ...extra };
     const dx = rawX - cx;
     const dy = rawY - cy;
     return {
       x: cx + dx * cos - dy * sin,
       y: cy + dx * sin + dy * cos,
+      ...extra,
     };
   });
 }
 
-function dedupeAdjacentPoints(points: Point[], threshold = 1.25): Point[] {
+function dedupeAdjacentPoints(points: PathPoint[], threshold = 1.25): PathPoint[] {
   if (points.length <= 1) return points;
-  const out: Point[] = [points[0]];
+  const out: PathPoint[] = [points[0]];
   for (let i = 1; i < points.length; i++) {
     const prev = out[out.length - 1];
     const cur = points[i];
     if (Math.hypot(cur.x - prev.x, cur.y - prev.y) >= threshold) {
       out.push(cur);
+    } else if (cur.smooth !== undefined && prev.smooth === undefined) {
+      out[out.length - 1] = { ...prev, smooth: cur.smooth };
     }
   }
   return out;
@@ -249,7 +319,7 @@ function dedupeAdjacentPoints(points: Point[], threshold = 1.25): Point[] {
  * Merges two polyline / line paths by connecting their closest pair of endpoints
  * (reversing either chain automatically so orientation flows cleanly head-to-tail).
  */
-export function mergeTwoPointChains(chainA: Point[], chainB: Point[]): Point[] {
+export function mergeTwoPointChains(chainA: PathPoint[], chainB: PathPoint[]): PathPoint[] {
   if (chainA.length === 0) return [...chainB];
   if (chainB.length === 0) return [...chainA];
 
@@ -278,7 +348,7 @@ export function mergeTwoPointChains(chainA: Point[], chainB: Point[]): Point[] {
  * Joins 2 or more open/closed point chains sequentially, always chaining the next
  * closest path onto the growing merged polyline so order of selection doesn't matter.
  */
-export function mergeMultiplePointChains(chains: Point[][]): Point[] {
+export function mergeMultiplePointChains(chains: PathPoint[][]): PathPoint[] {
   const nonEmpty = chains.filter((c) => c.length > 0);
   if (nonEmpty.length === 0) return [];
   let acc = [...nonEmpty[0]];

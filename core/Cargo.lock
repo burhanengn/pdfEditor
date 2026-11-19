@@ -649,6 +649,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "gp-jni"
+version = "0.1.0"
+dependencies = [
+ "gp-engine",
+ "gp-geom",
+ "gp-model",
+ "gp-pdf",
+ "gp-pdf-pdfium",
+ "gp-redact",
+ "gp-text",
+ "pdfium-render",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "gp-model"
 version = "0.1.0"
 dependencies = [
@@ -670,6 +687,7 @@ dependencies = [
 name = "gp-pdf-pdfium"
 version = "0.1.0"
 dependencies = [
+ "gp-geom",
  "gp-model",
  "gp-pdf",
  "gp-redact",
@@ -677,6 +695,7 @@ dependencies = [
  "lopdf",
  "pdfium-render",
  "serde",
+ "serde_json",
  "thiserror",
 ]
 
@@ -690,6 +709,7 @@ dependencies = [
  "lopdf",
  "serde",
  "thiserror",
+ "ttf-parser",
 ]
 
 [[package]]

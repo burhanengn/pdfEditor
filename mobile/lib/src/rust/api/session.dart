@@ -7,7 +7,7 @@ import '../frb_generated.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge_for_generated.dart';
 
 // These functions are ignored because they are not marked as `pub`: `map_open_status`, `parse_rotation`, `parse_theme`, `to_outline_items`
-// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
+// These function are ignored because they are on traits that is not defined in current crate (put an empty `#[frb]` on it to unignore): `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `clone`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`, `fmt`
 
 /// Initializes the dedicated single-thread PDFium engine actor (00 -> D2).
 Future<void> initEngine(
@@ -53,6 +53,18 @@ Future<String> analyzePageObjectsJson(
         required String pageId}) =>
     RustLib.instance.api.crateApiSessionAnalyzePageObjectsJson(
         docId: docId, pageIndex: pageIndex, pageId: pageId);
+
+Future<List<FrbLinkAnnotation>> extractPageLinks(
+        {required String docId, required int pageIndex}) =>
+    RustLib.instance.api
+        .crateApiSessionExtractPageLinks(docId: docId, pageIndex: pageIndex);
+
+Future<Uint8List> prepareCleanPagePreview(
+        {required String docId,
+        required int pageIndex,
+        required String elementsJson}) =>
+    RustLib.instance.api.crateApiSessionPrepareCleanPagePreview(
+        docId: docId, pageIndex: pageIndex, elementsJson: elementsJson);
 
 /// Sliced Turkish/Unicode-folded search executing page by page via the D2 actor so
 /// visible viewport tiles always preempt search work (04 §4.3).
@@ -135,25 +147,46 @@ Future<FrbRedactionVerifyResult> redactFileVerified(
 class FrbCompileSaveRequest {
   final String pagesJson;
   final String elementsJson;
+  final String? pageNumberingJson;
   final List<FrbRedactionRect> redactions;
   final String outputPath;
   final Uint8List? customTtfBytes;
+  final Uint8List? fontRegularTtf;
+  final Uint8List? fontBoldTtf;
+  final Uint8List? fontItalicTtf;
+  final Uint8List? fontSerifTtf;
+  final Uint8List? fontMonoTtf;
+  final List<FrbEmbeddedImage> embeddedImages;
 
   const FrbCompileSaveRequest({
     required this.pagesJson,
     required this.elementsJson,
+    this.pageNumberingJson,
     required this.redactions,
     required this.outputPath,
     this.customTtfBytes,
+    this.fontRegularTtf,
+    this.fontBoldTtf,
+    this.fontItalicTtf,
+    this.fontSerifTtf,
+    this.fontMonoTtf,
+    required this.embeddedImages,
   });
 
   @override
   int get hashCode =>
       pagesJson.hashCode ^
       elementsJson.hashCode ^
+      pageNumberingJson.hashCode ^
       redactions.hashCode ^
       outputPath.hashCode ^
-      customTtfBytes.hashCode;
+      customTtfBytes.hashCode ^
+      fontRegularTtf.hashCode ^
+      fontBoldTtf.hashCode ^
+      fontItalicTtf.hashCode ^
+      fontSerifTtf.hashCode ^
+      fontMonoTtf.hashCode ^
+      embeddedImages.hashCode;
 
   @override
   bool operator ==(Object other) =>
@@ -162,9 +195,16 @@ class FrbCompileSaveRequest {
           runtimeType == other.runtimeType &&
           pagesJson == other.pagesJson &&
           elementsJson == other.elementsJson &&
+          pageNumberingJson == other.pageNumberingJson &&
           redactions == other.redactions &&
           outputPath == other.outputPath &&
-          customTtfBytes == other.customTtfBytes;
+          customTtfBytes == other.customTtfBytes &&
+          fontRegularTtf == other.fontRegularTtf &&
+          fontBoldTtf == other.fontBoldTtf &&
+          fontItalicTtf == other.fontItalicTtf &&
+          fontSerifTtf == other.fontSerifTtf &&
+          fontMonoTtf == other.fontMonoTtf &&
+          embeddedImages == other.embeddedImages;
 }
 
 class FrbCompileSaveResult {
@@ -190,6 +230,87 @@ class FrbCompileSaveResult {
           outputPath == other.outputPath &&
           verifiedPageCount == other.verifiedPageCount &&
           byteSize == other.byteSize;
+}
+
+class FrbEmbeddedImage {
+  final String id;
+  final int width;
+  final int height;
+  final Uint8List rgba;
+
+  const FrbEmbeddedImage({
+    required this.id,
+    required this.width,
+    required this.height,
+    required this.rgba,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^ width.hashCode ^ height.hashCode ^ rgba.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is FrbEmbeddedImage &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          width == other.width &&
+          height == other.height &&
+          rgba == other.rgba;
+}
+
+class FrbLinkAnnotation {
+  final String id;
+  final int pageIndex;
+  final double x;
+  final double y;
+  final double width;
+  final double height;
+
+  /// `"uri"` | `"goto"`
+  final String kind;
+  final String? uri;
+  final int? destPageIndex;
+
+  const FrbLinkAnnotation({
+    required this.id,
+    required this.pageIndex,
+    required this.x,
+    required this.y,
+    required this.width,
+    required this.height,
+    required this.kind,
+    this.uri,
+    this.destPageIndex,
+  });
+
+  @override
+  int get hashCode =>
+      id.hashCode ^
+      pageIndex.hashCode ^
+      x.hashCode ^
+      y.hashCode ^
+      width.hashCode ^
+      height.hashCode ^
+      kind.hashCode ^
+      uri.hashCode ^
+      destPageIndex.hashCode;
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is FrbLinkAnnotation &&
+          runtimeType == other.runtimeType &&
+          id == other.id &&
+          pageIndex == other.pageIndex &&
+          x == other.x &&
+          y == other.y &&
+          width == other.width &&
+          height == other.height &&
+          kind == other.kind &&
+          uri == other.uri &&
+          destPageIndex == other.destPageIndex;
 }
 
 class FrbOpenDocResult {

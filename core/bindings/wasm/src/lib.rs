@@ -422,6 +422,7 @@ pub fn strip_pdf_elements_bytes(
             text_only_rects: tr,
             image_only_rects: ir,
             shape_rects: sr,
+            ..RedactionOptions::default()
         },
     )
     .map_err(to_js_err)?;

@@ -1,0 +1,23 @@
+[package]
+name = "gp-jni"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+publish = false
+
+[lib]
+name = "gp_jni"
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+gp-model = { path = "../../crates/gp-model" }
+gp-geom = { path = "../../crates/gp-geom" }
+gp-text = { path = "../../crates/gp-text" }
+gp-pdf = { path = "../../crates/gp-pdf" }
+gp-engine = { path = "../../crates/gp-engine" }
+gp-redact = { path = "../../crates/gp-redact" }
+gp-pdf-pdfium = { path = "../../crates/gp-pdf-pdfium" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+pdfium-render = { workspace = true }

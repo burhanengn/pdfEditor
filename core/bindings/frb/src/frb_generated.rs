@@ -38,7 +38,7 @@ flutter_rust_bridge::frb_generated_boilerplate!(
                     default_rust_auto_opaque = RustAutoOpaqueMoi,
                 );
                 pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_VERSION: &str = "2.12.0";
-                pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -1422065456;
+                pub(crate) const FLUTTER_RUST_BRIDGE_CODEGEN_CONTENT_HASH: i32 = -307166636;
             
 
 // Section: executor
@@ -143,6 +143,16 @@ let api_siblings_json = <String>::sse_decode(&mut deserializer);deserializer.end
                          let output_ok = crate::api::session::extract_embedded_fonts_json(api_file_path)?;   Ok(output_ok)
                     })())
                 } })
+            }fn wire__crate__api__session__extract_page_links_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "extract_page_links", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || { 
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_doc_id = <String>::sse_decode(&mut deserializer);
+let api_page_index = <u32>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
+                    transform_result_sse::<_, String>((move ||  {
+                         let output_ok = crate::api::session::extract_page_links(api_doc_id, api_page_index)?;   Ok(output_ok)
+                    })())
+                } })
             }fn wire__crate__api__session__extract_page_text_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
                 FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "extract_page_text", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || { 
             let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
@@ -192,6 +202,17 @@ let api_path = <String>::sse_decode(&mut deserializer);
 let api_password = <Option<String>>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
                     transform_result_sse::<_, String>((move ||  {
                          let output_ok = crate::api::session::open_document_file(api_doc_id, api_path, api_password)?;   Ok(output_ok)
+                    })())
+                } })
+            }fn wire__crate__api__session__prepare_clean_page_preview_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
+                FLUTTER_RUST_BRIDGE_HANDLER.wrap_normal::<flutter_rust_bridge::for_generated::SseCodec,_,_>(flutter_rust_bridge::for_generated::TaskInfo{ debug_name: "prepare_clean_page_preview", port: Some(port_), mode: flutter_rust_bridge::for_generated::FfiCallMode::Normal }, move || { 
+            let message = unsafe { flutter_rust_bridge::for_generated::Dart2RustMessageSse::from_wire(ptr_, rust_vec_len_, data_len_) };
+            let mut deserializer = flutter_rust_bridge::for_generated::SseDeserializer::new(message);
+            let api_doc_id = <String>::sse_decode(&mut deserializer);
+let api_page_index = <u32>::sse_decode(&mut deserializer);
+let api_elements_json = <String>::sse_decode(&mut deserializer);deserializer.end(); move |context|  {
+                    transform_result_sse::<_, String>((move ||  {
+                         let output_ok = crate::api::session::prepare_clean_page_preview(api_doc_id, api_page_index, api_elements_json)?;   Ok(output_ok)
                     })())
                 } })
             }fn wire__crate__api__session__redact_file_verified_impl(port_: flutter_rust_bridge::for_generated::MessagePort,ptr_: flutter_rust_bridge::for_generated::PlatformGeneralizedUint8ListPtr,rust_vec_len_: i32,data_len_: i32)  {
@@ -274,10 +295,17 @@ let api_sink = <StreamSink<crate::api::session::FrbSearchProgress,flutter_rust_b
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut var_pagesJson = <String>::sse_decode(deserializer);
 let mut var_elementsJson = <String>::sse_decode(deserializer);
+let mut var_pageNumberingJson = <Option<String>>::sse_decode(deserializer);
 let mut var_redactions = <Vec<crate::api::session::FrbRedactionRect>>::sse_decode(deserializer);
 let mut var_outputPath = <String>::sse_decode(deserializer);
 let mut var_customTtfBytes = <Option<Vec<u8>>>::sse_decode(deserializer);
-return crate::api::session::FrbCompileSaveRequest{pages_json: var_pagesJson, elements_json: var_elementsJson, redactions: var_redactions, output_path: var_outputPath, custom_ttf_bytes: var_customTtfBytes};}
+let mut var_fontRegularTtf = <Option<Vec<u8>>>::sse_decode(deserializer);
+let mut var_fontBoldTtf = <Option<Vec<u8>>>::sse_decode(deserializer);
+let mut var_fontItalicTtf = <Option<Vec<u8>>>::sse_decode(deserializer);
+let mut var_fontSerifTtf = <Option<Vec<u8>>>::sse_decode(deserializer);
+let mut var_fontMonoTtf = <Option<Vec<u8>>>::sse_decode(deserializer);
+let mut var_embeddedImages = <Vec<crate::api::session::FrbEmbeddedImage>>::sse_decode(deserializer);
+return crate::api::session::FrbCompileSaveRequest{pages_json: var_pagesJson, elements_json: var_elementsJson, page_numbering_json: var_pageNumberingJson, redactions: var_redactions, output_path: var_outputPath, custom_ttf_bytes: var_customTtfBytes, font_regular_ttf: var_fontRegularTtf, font_bold_ttf: var_fontBoldTtf, font_italic_ttf: var_fontItalicTtf, font_serif_ttf: var_fontSerifTtf, font_mono_ttf: var_fontMonoTtf, embedded_images: var_embeddedImages};}
                 }
                 
                 impl SseDecode for crate::api::session::FrbCompileSaveResult {
@@ -286,6 +314,29 @@ return crate::api::session::FrbCompileSaveRequest{pages_json: var_pagesJson, ele
 let mut var_verifiedPageCount = <u32>::sse_decode(deserializer);
 let mut var_byteSize = <u64>::sse_decode(deserializer);
 return crate::api::session::FrbCompileSaveResult{output_path: var_outputPath, verified_page_count: var_verifiedPageCount, byte_size: var_byteSize};}
+                }
+                
+                impl SseDecode for crate::api::session::FrbEmbeddedImage {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut var_id = <String>::sse_decode(deserializer);
+let mut var_width = <u32>::sse_decode(deserializer);
+let mut var_height = <u32>::sse_decode(deserializer);
+let mut var_rgba = <Vec<u8>>::sse_decode(deserializer);
+return crate::api::session::FrbEmbeddedImage{id: var_id, width: var_width, height: var_height, rgba: var_rgba};}
+                }
+                
+                impl SseDecode for crate::api::session::FrbLinkAnnotation {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut var_id = <String>::sse_decode(deserializer);
+let mut var_pageIndex = <u32>::sse_decode(deserializer);
+let mut var_x = <f64>::sse_decode(deserializer);
+let mut var_y = <f64>::sse_decode(deserializer);
+let mut var_width = <f64>::sse_decode(deserializer);
+let mut var_height = <f64>::sse_decode(deserializer);
+let mut var_kind = <String>::sse_decode(deserializer);
+let mut var_uri = <Option<String>>::sse_decode(deserializer);
+let mut var_destPageIndex = <Option<u32>>::sse_decode(deserializer);
+return crate::api::session::FrbLinkAnnotation{id: var_id, page_index: var_pageIndex, x: var_x, y: var_y, width: var_width, height: var_height, kind: var_kind, uri: var_uri, dest_page_index: var_destPageIndex};}
                 }
                 
                 impl SseDecode for crate::api::session::FrbOpenDocResult {
@@ -433,6 +484,22 @@ return crate::api::session::FrbTileRequest{doc_id: var_docId, page_index: var_pa
                     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {deserializer.cursor.read_i32::<NativeEndian>().unwrap()}
                 }
                 
+                impl SseDecode for Vec<crate::api::session::FrbEmbeddedImage> {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ { ans_.push(<crate::api::session::FrbEmbeddedImage>::sse_decode(deserializer)); }
+        return ans_;}
+                }
+                
+                impl SseDecode for Vec<crate::api::session::FrbLinkAnnotation> {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut len_ = <i32>::sse_decode(deserializer);
+        let mut ans_ = Vec::with_capacity(len_ as usize);
+        for idx_ in 0..len_ { ans_.push(<crate::api::session::FrbLinkAnnotation>::sse_decode(deserializer)); }
+        return ans_;}
+                }
+                
                 impl SseDecode for Vec<crate::api::session::FrbOutlineItem> {
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_decode(deserializer: &mut flutter_rust_bridge::for_generated::SseDeserializer) -> Self {let mut len_ = <i32>::sse_decode(deserializer);
@@ -551,15 +618,17 @@ return crate::api::session::FrbTileRequest{doc_id: var_docId, page_index: var_pa
 5 => wire__crate__api__session__compile_and_save_verified_impl(port, ptr, rust_vec_len, data_len),
 8 => wire__crate__api__session__extract_document_outline_impl(port, ptr, rust_vec_len, data_len),
 9 => wire__crate__api__session__extract_embedded_fonts_json_impl(port, ptr, rust_vec_len, data_len),
-10 => wire__crate__api__session__extract_page_text_impl(port, ptr, rust_vec_len, data_len),
-11 => wire__crate__api__session__init_engine_impl(port, ptr, rust_vec_len, data_len),
-12 => wire__crate__api__session__init_frb_app_impl(port, ptr, rust_vec_len, data_len),
-13 => wire__crate__api__session__open_document_bytes_impl(port, ptr, rust_vec_len, data_len),
-14 => wire__crate__api__session__open_document_file_impl(port, ptr, rust_vec_len, data_len),
-15 => wire__crate__api__session__redact_file_verified_impl(port, ptr, rust_vec_len, data_len),
-16 => wire__crate__api__session__render_tile_impl(port, ptr, rust_vec_len, data_len),
-17 => wire__crate__api__session__search_document_stream_impl(port, ptr, rust_vec_len, data_len),
-18 => wire__crate__api__session__trim_engine_memory_impl(port, ptr, rust_vec_len, data_len),
+10 => wire__crate__api__session__extract_page_links_impl(port, ptr, rust_vec_len, data_len),
+11 => wire__crate__api__session__extract_page_text_impl(port, ptr, rust_vec_len, data_len),
+12 => wire__crate__api__session__init_engine_impl(port, ptr, rust_vec_len, data_len),
+13 => wire__crate__api__session__init_frb_app_impl(port, ptr, rust_vec_len, data_len),
+14 => wire__crate__api__session__open_document_bytes_impl(port, ptr, rust_vec_len, data_len),
+15 => wire__crate__api__session__open_document_file_impl(port, ptr, rust_vec_len, data_len),
+16 => wire__crate__api__session__prepare_clean_page_preview_impl(port, ptr, rust_vec_len, data_len),
+17 => wire__crate__api__session__redact_file_verified_impl(port, ptr, rust_vec_len, data_len),
+18 => wire__crate__api__session__render_tile_impl(port, ptr, rust_vec_len, data_len),
+19 => wire__crate__api__session__search_document_stream_impl(port, ptr, rust_vec_len, data_len),
+20 => wire__crate__api__session__trim_engine_memory_impl(port, ptr, rust_vec_len, data_len),
                         _ => unreachable!(),
                     }
                 }
@@ -587,9 +656,16 @@ return crate::api::session::FrbTileRequest{doc_id: var_docId, page_index: var_pa
                     [
                     self.pages_json.into_into_dart().into_dart(),
 self.elements_json.into_into_dart().into_dart(),
+self.page_numbering_json.into_into_dart().into_dart(),
 self.redactions.into_into_dart().into_dart(),
 self.output_path.into_into_dart().into_dart(),
-self.custom_ttf_bytes.into_into_dart().into_dart()
+self.custom_ttf_bytes.into_into_dart().into_dart(),
+self.font_regular_ttf.into_into_dart().into_dart(),
+self.font_bold_ttf.into_into_dart().into_dart(),
+self.font_italic_ttf.into_into_dart().into_dart(),
+self.font_serif_ttf.into_into_dart().into_dart(),
+self.font_mono_ttf.into_into_dart().into_dart(),
+self.embedded_images.into_into_dart().into_dart()
                 ].into_dart()
                 }
             }
@@ -612,6 +688,45 @@ self.byte_size.into_into_dart().into_dart()
             impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::session::FrbCompileSaveResult {}
 impl flutter_rust_bridge::IntoIntoDart<crate::api::session::FrbCompileSaveResult> for crate::api::session::FrbCompileSaveResult {
             fn into_into_dart(self) -> crate::api::session::FrbCompileSaveResult {
+                self
+            }
+        }
+// Codec=Dco (DartCObject based), see doc to use other codecs
+            impl flutter_rust_bridge::IntoDart for crate::api::session::FrbEmbeddedImage {
+                fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+                    [
+                    self.id.into_into_dart().into_dart(),
+self.width.into_into_dart().into_dart(),
+self.height.into_into_dart().into_dart(),
+self.rgba.into_into_dart().into_dart()
+                ].into_dart()
+                }
+            }
+            impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::session::FrbEmbeddedImage {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::session::FrbEmbeddedImage> for crate::api::session::FrbEmbeddedImage {
+            fn into_into_dart(self) -> crate::api::session::FrbEmbeddedImage {
+                self
+            }
+        }
+// Codec=Dco (DartCObject based), see doc to use other codecs
+            impl flutter_rust_bridge::IntoDart for crate::api::session::FrbLinkAnnotation {
+                fn into_dart(self) -> flutter_rust_bridge::for_generated::DartAbi {
+                    [
+                    self.id.into_into_dart().into_dart(),
+self.page_index.into_into_dart().into_dart(),
+self.x.into_into_dart().into_dart(),
+self.y.into_into_dart().into_dart(),
+self.width.into_into_dart().into_dart(),
+self.height.into_into_dart().into_dart(),
+self.kind.into_into_dart().into_dart(),
+self.uri.into_into_dart().into_dart(),
+self.dest_page_index.into_into_dart().into_dart()
+                ].into_dart()
+                }
+            }
+            impl flutter_rust_bridge::for_generated::IntoDartExceptPrimitive for crate::api::session::FrbLinkAnnotation {}
+impl flutter_rust_bridge::IntoIntoDart<crate::api::session::FrbLinkAnnotation> for crate::api::session::FrbLinkAnnotation {
+            fn into_into_dart(self) -> crate::api::session::FrbLinkAnnotation {
                 self
             }
         }
@@ -897,9 +1012,16 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::session::FrbTileRequest> for 
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<String>::sse_encode(self.pages_json, serializer);
 <String>::sse_encode(self.elements_json, serializer);
+<Option<String>>::sse_encode(self.page_numbering_json, serializer);
 <Vec<crate::api::session::FrbRedactionRect>>::sse_encode(self.redactions, serializer);
 <String>::sse_encode(self.output_path, serializer);
-<Option<Vec<u8>>>::sse_encode(self.custom_ttf_bytes, serializer);}
+<Option<Vec<u8>>>::sse_encode(self.custom_ttf_bytes, serializer);
+<Option<Vec<u8>>>::sse_encode(self.font_regular_ttf, serializer);
+<Option<Vec<u8>>>::sse_encode(self.font_bold_ttf, serializer);
+<Option<Vec<u8>>>::sse_encode(self.font_italic_ttf, serializer);
+<Option<Vec<u8>>>::sse_encode(self.font_serif_ttf, serializer);
+<Option<Vec<u8>>>::sse_encode(self.font_mono_ttf, serializer);
+<Vec<crate::api::session::FrbEmbeddedImage>>::sse_encode(self.embedded_images, serializer);}
                 }
                 
                 impl SseEncode for crate::api::session::FrbCompileSaveResult {
@@ -907,6 +1029,27 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::session::FrbTileRequest> for 
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<String>::sse_encode(self.output_path, serializer);
 <u32>::sse_encode(self.verified_page_count, serializer);
 <u64>::sse_encode(self.byte_size, serializer);}
+                }
+                
+                impl SseEncode for crate::api::session::FrbEmbeddedImage {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<String>::sse_encode(self.id, serializer);
+<u32>::sse_encode(self.width, serializer);
+<u32>::sse_encode(self.height, serializer);
+<Vec<u8>>::sse_encode(self.rgba, serializer);}
+                }
+                
+                impl SseEncode for crate::api::session::FrbLinkAnnotation {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<String>::sse_encode(self.id, serializer);
+<u32>::sse_encode(self.page_index, serializer);
+<f64>::sse_encode(self.x, serializer);
+<f64>::sse_encode(self.y, serializer);
+<f64>::sse_encode(self.width, serializer);
+<f64>::sse_encode(self.height, serializer);
+<String>::sse_encode(self.kind, serializer);
+<Option<String>>::sse_encode(self.uri, serializer);
+<Option<u32>>::sse_encode(self.dest_page_index, serializer);}
                 }
                 
                 impl SseEncode for crate::api::session::FrbOpenDocResult {
@@ -1038,6 +1181,18 @@ impl flutter_rust_bridge::IntoIntoDart<crate::api::session::FrbTileRequest> for 
                 impl SseEncode for i32 {
                     // Codec=Sse (Serialization based), see doc to use other codecs
                     fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {serializer.cursor.write_i32::<NativeEndian>(self).unwrap();}
+                }
+                
+                impl SseEncode for Vec<crate::api::session::FrbEmbeddedImage> {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<i32>::sse_encode(self.len() as _, serializer);
+        for item in self { <crate::api::session::FrbEmbeddedImage>::sse_encode(item, serializer); }}
+                }
+                
+                impl SseEncode for Vec<crate::api::session::FrbLinkAnnotation> {
+                    // Codec=Sse (Serialization based), see doc to use other codecs
+                    fn sse_encode(self, serializer: &mut flutter_rust_bridge::for_generated::SseSerializer) {<i32>::sse_encode(self.len() as _, serializer);
+        for item in self { <crate::api::session::FrbLinkAnnotation>::sse_encode(item, serializer); }}
                 }
                 
                 impl SseEncode for Vec<crate::api::session::FrbOutlineItem> {

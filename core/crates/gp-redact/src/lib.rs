@@ -1,3 +1,4 @@
+mod font_unicode_map;
 pub mod clip_masks;
 pub mod cmap;
 pub mod content_redact;
@@ -6,13 +7,14 @@ pub mod pdf_ops;
 pub use clip_masks::{apply_clip_masks_with_lopdf, ClipMaskPatch, ClipPathCmd};
 pub use cmap::{DecodedGlyph, FontMetricsMap};
 pub use content_redact::{
-    create_sample_pdf_with_text_lines, redact_pdf_bytes_with_lopdf, RedactionOptions,
+    create_sample_pdf_with_text_lines, element_in_place_transform, element_text_strip_rects,
+    redact_pdf_bytes_with_lopdf, InPlaceKind, ObjectTransform, RedactionOptions,
     RedactionStreamStats,
 };
 pub use pdf_ops::{
     create_blank_pdf_with_lopdf, create_reference_pdf_with_lopdf, create_sample_pdf_with_lopdf,
-    extract_embedded_fonts_with_lopdf, inspect_pdf_with_lopdf,
-    prepare_clean_page_preview_with_lopdf,
+    extract_embedded_fonts_with_lopdf, inspect_pdf_with_lopdf, prepare_clean_page_preview_targets,
+    prepare_clean_page_preview_with_lopdf, CleanPreviewTargets,
 };
 
 #[cfg(test)]

@@ -1,4 +1,5 @@
 pub mod font_parse;
+pub mod font_unicode;
 pub mod fonts;
 pub mod layout;
 pub mod page_numbers;
@@ -6,13 +7,15 @@ pub mod page_range;
 pub mod rich_text;
 pub mod turkish;
 
-pub use font_parse::{inspect_ttf_font, TtfFontMetadata};
+pub use font_parse::{
+    inspect_ttf_font, measure_ttf_text_width, ttf_font_supports_text, TtfFontMetadata,
+};
 pub use fonts::{
     font_family_label, is_builtin_font_family, normalize_font_match_key,
     parse_pdf_font_metadata, FontStyleVariant, NormalizedFontKey, ParsedPdfFontInfo,
 };
 pub use layout::{
-    build_detected_text_blocks, DetectedTextBlock, HorizontalRule, RawExtractedLine,
+    build_detected_text_blocks, DetectedTextBlock, DetectedTextLine, HorizontalRule, RawExtractedLine,
     TableVectorBarriers, VerticalRule,
 };
 pub use page_numbers::{
@@ -113,18 +116,24 @@ mod tests {
                 text: "Alan 25 m".to_string(),
                 bold: None,
                 italic: None,
+                underline: None,
+                strikethrough: None,
                 script: None,
             },
             TextRun {
                 text: "2".to_string(),
                 bold: None,
                 italic: None,
+                underline: None,
+                strikethrough: None,
                 script: Some(TextScriptMode::Super),
             },
             TextRun {
                 text: " oldu".to_string(),
                 bold: None,
                 italic: None,
+                underline: None,
+                strikethrough: None,
                 script: None,
             },
         ];
@@ -166,6 +175,7 @@ mod tests {
             raw_font_name: "Helvetica".to_string(),
             original_font_name: None,
             is_custom_font: Some(false),
+            font_source: None,
             horizontal_scale: Some(1.0),
             bold: false,
             italic: false,
@@ -194,5 +204,50 @@ mod tests {
             "Bu ilk satır devam ediyor ikinci satırda bitiyor."
         );
         assert_eq!(blocks[1].text, "Tablo altı metni");
+    }
+
+    #[test]
+    fn layout_keeps_toc_sections_dotted_leaders_and_page_numbers_separate() {
+        let mut idx = 0usize;
+        let mut mk = |text: &str, x0: f64, x1: f64, y: f64, bold: bool| {
+            idx += 1;
+            RawExtractedLine {
+                text: text.to_string(),
+                runs: None,
+                x0,
+                y0: y - 10.0,
+                x1,
+                y1: y + 2.0,
+                baseline_y: y,
+                font_size: 11.0,
+                space_width: None,
+                first_word_width: 30.0,
+                max_word_space: None,
+                color: "#000000".to_string(),
+                font_family: "Helvetica".to_string(),
+                raw_font_name: "Helvetica".to_string(),
+                original_font_name: None,
+                is_custom_font: Some(false),
+                font_source: None,
+                horizontal_scale: Some(1.0),
+                bold,
+                italic: false,
+                serif: false,
+                mono: false,
+                block_idx: idx,
+            }
+        };
+        let lines = vec![
+            mk("İÇİNDEKİLER", 240.0, 350.0, 90.0, true),
+            mk("1. KURULUŞ VE GENEL BİLGİLER", 72.0, 290.0, 130.0, true),
+            mk("1", 518.0, 524.0, 130.0, false),
+            mk("1.1. Proje Tanımı ....................................... 2", 86.0, 524.0, 146.0, false),
+            mk("2.2.1. Kapasite Raporu .................................. 7", 98.0, 524.0, 162.0, false),
+            mk("7", 518.0, 524.0, 178.0, false),
+            mk("16", 512.0, 524.0, 194.0, false),
+            mk("Şekil 1. Yerleşim Planı ................................. 9", 72.0, 524.0, 210.0, false),
+        ];
+        let blocks = build_detected_text_blocks(&lines, "page-3", None);
+        assert_eq!(blocks.len(), lines.len());
     }
 }

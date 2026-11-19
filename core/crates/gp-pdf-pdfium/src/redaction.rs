@@ -14,12 +14,209 @@ fn rects_intersect(a_l: f64, a_b: f64, a_r: f64, a_t: f64, b: &PdfRect) -> bool 
         && a_b < (b.top().value as f64) - eps
 }
 
-fn rect_fully_contained_in(obj: &PdfRect, box_l: f64, box_b: f64, box_r: f64, box_t: f64) -> bool {
-    let tol = 1.5_f64;
+fn rect_fully_contained_in_tol(obj: &PdfRect, box_l: f64, box_b: f64, box_r: f64, box_t: f64, tol: f64) -> bool {
     (obj.left().value as f64) >= box_l - tol
         && (obj.right().value as f64) <= box_r + tol
         && (obj.bottom().value as f64) >= box_b - tol
         && (obj.top().value as f64) <= box_t + tol
+}
+
+fn rect_fully_contained_in(obj: &PdfRect, box_l: f64, box_b: f64, box_r: f64, box_t: f64) -> bool {
+    rect_fully_contained_in_tol(obj, box_l, box_b, box_r, box_t, 1.5_f64)
+}
+
+fn image_rect_matches(obj: &PdfRect, tgt: &PdfRect) -> bool {
+    let ol = obj.left().value as f64;
+    let ob = obj.bottom().value as f64;
+    let or = obj.right().value as f64;
+    let ot = obj.top().value as f64;
+    let tl = tgt.left().value as f64;
+    let tb = tgt.bottom().value as f64;
+    let tr = tgt.right().value as f64;
+    let tt = tgt.top().value as f64;
+    let tol_x = 3.5_f64.max(0.08 * (or - ol).abs().max((tr - tl).abs()));
+    let tol_y = 3.5_f64.max(0.08 * (ot - ob).abs().max((tt - tb).abs()));
+    (ol - tl).abs() <= tol_x
+        && (or - tr).abs() <= tol_x
+        && (ob - tb).abs() <= tol_y
+        && (ot - tt).abs() <= tol_y
+}
+
+fn count_non_space_chars_in_bounds(text_page: Option<&PdfPageText<'_>>, bounds: &PdfRect) -> usize {
+    let Some(tp) = text_page else {
+        return usize::MAX;
+    };
+    let mut count = 0usize;
+    let bl = bounds.left().value as f64 - 0.5;
+    let bb = bounds.bottom().value as f64 - 0.5;
+    let br = bounds.right().value as f64 + 0.5;
+    let bt = bounds.top().value as f64 + 0.5;
+    for ch in tp.chars().iter() {
+        let Some(uc) = ch.unicode_char() else {
+            continue;
+        };
+        if uc.is_whitespace() || uc.is_control() {
+            continue;
+        }
+        if let Ok(cb) = ch.tight_bounds().or_else(|_| ch.loose_bounds()) {
+            if rects_intersect(bl, bb, br, bt, &cb) {
+                count += 1;
+                if count > 4 {
+                    break;
+                }
+            }
+        }
+    }
+    count
+}
+
+/// Surgical PDFium fallback object removal for images and deleted/edited text runs
+/// that survived `lopdf` content-stream stripping (e.g. inline/unusual operators or metric drift).
+/// Untouched pages and pages with zero removals do NOT call `regenerate_content()`.
+pub(crate) fn strip_leftover_objects_with_pdfium(
+    pdfium: &Pdfium,
+    pdf_bytes: Vec<u8>,
+    password: Option<&str>,
+    image_only_rects: &[RedactionRect],
+    deleted_text_rects: &[RedactionRect],
+) -> Result<Vec<u8>, PdfError> {
+    if image_only_rects.is_empty() && deleted_text_rects.is_empty() {
+        return Ok(pdf_bytes);
+    }
+
+    let mut img_by_page: HashMap<usize, Vec<&RedactionRect>> = HashMap::new();
+    for r in image_only_rects {
+        if r.width > 0.0 && r.height > 0.0 {
+            img_by_page.entry(r.page_index).or_default().push(r);
+        }
+    }
+    let mut txt_by_page: HashMap<usize, Vec<&RedactionRect>> = HashMap::new();
+    for r in deleted_text_rects {
+        if r.width > 0.0 && r.height > 0.0 {
+            txt_by_page.entry(r.page_index).or_default().push(r);
+        }
+    }
+    if img_by_page.is_empty() && txt_by_page.is_empty() {
+        return Ok(pdf_bytes);
+    }
+
+    let work_doc = pdfium
+        .load_pdf_from_byte_vec(pdf_bytes.clone(), password)
+        .map_err(|e| PdfError::RedactionFailed(format!("failed loading PDFium fallback doc: {e}")))?;
+
+    let total_pages = work_doc.pages().len() as usize;
+    let mut page_indices: HashSet<usize> = img_by_page.keys().copied().collect();
+    page_indices.extend(txt_by_page.keys().copied());
+
+    let mut total_removed = 0usize;
+
+    for page_index in page_indices {
+        if page_index >= total_pages {
+            continue;
+        }
+        let mut page = work_doc
+            .pages()
+            .get(page_index as PdfPageIndex)
+            .map_err(|e| PdfError::RedactionFailed(format!("failed opening fallback page {page_index}: {e}")))?;
+
+        let img_targets: Vec<PdfRect> = img_by_page
+            .get(&page_index)
+            .map(|rs| rs.iter().map(|r| visual_rect_to_pdfium_rect(&page, r)).collect())
+            .unwrap_or_default();
+        let txt_targets: Vec<PdfRect> = txt_by_page
+            .get(&page_index)
+            .map(|rs| rs.iter().map(|r| visual_rect_to_pdfium_rect(&page, r)).collect())
+            .unwrap_or_default();
+
+        let text_page = if txt_targets.is_empty() {
+            None
+        } else {
+            page.text().ok()
+        };
+
+        let mut indices_to_remove: HashSet<usize> = HashSet::new();
+        for (idx, obj) in page.objects().iter().enumerate() {
+            match obj {
+                PdfPageObject::Image(_) if !img_targets.is_empty() => {
+                    let Ok(quad) = obj.bounds() else {
+                        continue;
+                    };
+                    let bounds = quad.to_rect();
+                    let matched = img_targets.iter().any(|tgt| {
+                        let tl = tgt.left().value as f64;
+                        let tb = tgt.bottom().value as f64;
+                        let tr = tgt.right().value as f64;
+                        let tt = tgt.top().value as f64;
+                        image_rect_matches(&bounds, tgt) || rect_fully_contained_in_tol(&bounds, tl, tb, tr, tt, 2.5)
+                    });
+                    if matched {
+                        indices_to_remove.insert(idx);
+                    }
+                }
+                PdfPageObject::Text(_) if !txt_targets.is_empty() => {
+                    let Ok(quad) = obj.bounds() else {
+                        continue;
+                    };
+                    let bounds = quad.to_rect();
+                    let ol = bounds.left().value as f64;
+                    let ob = bounds.bottom().value as f64;
+                    let or = bounds.right().value as f64;
+                    let ot = bounds.top().value as f64;
+                    let mut remove = false;
+                    for tgt in &txt_targets {
+                        let tl = tgt.left().value as f64;
+                        let tb = tgt.bottom().value as f64;
+                        let tr = tgt.right().value as f64;
+                        let tt = tgt.top().value as f64;
+                        if rect_fully_contained_in_tol(&bounds, tl, tb, tr, tt, 2.5) {
+                            remove = true;
+                            break;
+                        }
+                        let vert_overlap = ot.min(tt) - ob.max(tb);
+                        let tgt_h = (tt - tb).abs().max(4.0);
+                        if vert_overlap >= tgt_h * 0.3
+                            && ol >= tl - 2.5
+                            && ol <= tr + 14.0
+                            && or <= tr + 16.0
+                            && (or - ol) <= 24.0
+                            && count_non_space_chars_in_bounds(text_page.as_ref(), &bounds) <= 4
+                        {
+                            remove = true;
+                            break;
+                        }
+                    }
+                    if remove {
+                        indices_to_remove.insert(idx);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        if !indices_to_remove.is_empty() {
+            drop(text_page);
+            let mut sorted: Vec<usize> = indices_to_remove.into_iter().collect();
+            sorted.sort_unstable_by(|a, b| b.cmp(a));
+            let mut removed_here = 0usize;
+            for idx in sorted {
+                if page.objects_mut().remove_object_at_index(idx).is_ok() {
+                    removed_here += 1;
+                }
+            }
+            if removed_here > 0 {
+                total_removed += removed_here;
+                let _ = page.regenerate_content();
+            }
+        }
+    }
+
+    if total_removed == 0 {
+        return Ok(pdf_bytes);
+    }
+
+    work_doc
+        .save_to_bytes()
+        .map_err(|e| PdfError::RedactionFailed(format!("failed serializing PDFium fallback doc: {e}")))
 }
 
 /// Counts non-whitespace glyphs whose page bounds intersect any `RedactionRect` via `FPDFText_*`.

@@ -10,6 +10,7 @@ members = [
     "crates/gp-pdf-pdfium",
     "bindings/wasm",
     "bindings/frb",
+    "bindings/jni",
 ]
 
 [workspace.package]

@@ -63,6 +63,8 @@ export function SelectionOverlay({
   const abortTransaction = useEditorStore((s) => s.abortTransaction);
   const updateElements = useEditorStore((s) => s.updateElements);
   const snapEnabled = useEditorStore((s) => s.snapEnabled);
+  const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
+  const isMultiSelected = selectedElementIds.length > 1;
 
   const [guides, setGuides] = useState<SnapGuide[]>([]);
   const [liveAngle, setLiveAngle] = useState<number | null>(null);
@@ -78,6 +80,7 @@ export function SelectionOverlay({
 
   const handleMovePointerDown = (e: ReactPointerEvent<HTMLDivElement>) => {
     if (e.button !== 0 || !e.isPrimary) return;
+    if (useEditorStore.getState().marqueeSelectMode) return;
     if (useEditorStore.getState().activeTouchCount >= 2 || useEditorStore.getState().isPinching) {
       return;
     }
@@ -117,6 +120,16 @@ export function SelectionOverlay({
       width: element.width,
       height: element.height,
     };
+
+    const startPositions = new Map(
+      useEditorStore
+        .getState()
+        .elements.filter(
+          (item) =>
+            useEditorStore.getState().selectedElementIds.includes(item.id) && !item.locked,
+        )
+        .map((item) => [item.id, { x: item.x, y: item.y }]),
+    );
 
     beginTransaction();
 
@@ -166,10 +179,22 @@ export function SelectionOverlay({
         snapEnabled && !moveEvent.altKey,
       );
       setGuides(snapped.guides);
-      updateElements(
-        [{ id: element.id, patch: { x: snapped.x, y: snapped.y } }],
-        false,
-      );
+      const finalDx = snapped.x - startRect.x;
+      const finalDy = snapped.y - startRect.y;
+      if (startPositions.size > 1) {
+        updateElements(
+          Array.from(startPositions.entries()).map(([id, pos]) => ({
+            id,
+            patch: { x: pos.x + finalDx, y: pos.y + finalDy },
+          })),
+          false,
+        );
+      } else {
+        updateElements(
+          [{ id: element.id, patch: { x: snapped.x, y: snapped.y } }],
+          false,
+        );
+      }
     };
 
     const onUp = () => {
@@ -453,7 +478,7 @@ export function SelectionOverlay({
           </div>
         )}
         {/* Top Rotation Stem & Handle */}
-        {!element.locked && (
+        {!element.locked && !isMultiSelected && (
           <div
             onPointerDown={handleRotatePointerDown}
             data-testid="rotate-handle"
@@ -490,6 +515,7 @@ export function SelectionOverlay({
 
         {/* 8 Resize Handles */}
         {!element.locked &&
+          !isMultiSelected &&
           HANDLE_LIST.map((h) => {
             const dynamicCursor = computeRotatedResizeCursor(h.id, frame.rotation);
             const isCorner = h.id.length === 2;

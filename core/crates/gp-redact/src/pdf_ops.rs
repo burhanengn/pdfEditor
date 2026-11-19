@@ -15,7 +15,7 @@ use lopdf::{
 };
 
 use crate::content_redact::{
-    read_rect_box, real_op, redact_pdf_bytes_with_lopdf, RedactionOptions,
+    read_rect_box, real_op, redact_pdf_bytes_with_lopdf, ObjectTransform, RedactionOptions,
 };
 
 fn normalize_angle(deg: i64) -> RotationAngle {
@@ -836,7 +836,18 @@ pub fn extract_embedded_fonts_with_lopdf(
             .get(b"Type")
             .and_then(Object::as_name)
             .map(|n| n == b"Font")
-            .unwrap_or(false);
+            .unwrap_or_else(|_| {
+                dict.get(b"Subtype")
+                    .and_then(Object::as_name)
+                    .map(|s| {
+                        matches!(
+                            s,
+                            b"Type0" | b"TrueType" | b"Type1" | b"MMType1" | b"CIDFontType2" | b"CIDFontType0"
+                        )
+                    })
+                    .unwrap_or(false)
+                    && (dict.has(b"FontDescriptor") || dict.has(b"DescendantFonts"))
+            });
         if !is_font {
             continue;
         }
@@ -866,7 +877,10 @@ pub fn extract_embedded_fonts_with_lopdf(
         let Ok((_, Object::Dictionary(desc_dict))) = doc.dereference(desc_obj) else {
             continue;
         };
-        let Ok(ff2_ref) = desc_dict.get(b"FontFile2") else {
+        let ff_ref = desc_dict
+            .get(b"FontFile2")
+            .or_else(|_| desc_dict.get(b"FontFile3"));
+        let Ok(ff2_ref) = ff_ref else {
             continue;
         };
         if let Object::Reference(sid) = ff2_ref {
@@ -883,13 +897,23 @@ pub fn extract_embedded_fonts_with_lopdf(
         if ttf_bytes.len() < 128 {
             continue;
         }
+        // Subset fonts usually map private PDF char codes in their cmap; re-expose the glyphs
+        // under real Unicode so the editor can render/edit text in the ORIGINAL typeface.
+        let ttf_bytes = crate::font_unicode_map::unicode_ready_font_bytes(&doc, dict, ttf_bytes);
 
         let Ok(ttf_meta) = inspect_ttf_font(&ttf_bytes) else {
             continue;
         };
 
+        let desc_font_name = desc_dict
+            .get(b"FontName")
+            .and_then(Object::as_name)
+            .map(|n| String::from_utf8_lossy(n).to_string())
+            .unwrap_or_default();
         let effective_name = if !base_font.is_empty() {
             base_font.clone()
+        } else if !desc_font_name.is_empty() {
+            desc_font_name
         } else {
             ttf_meta.full_name.clone()
         };
@@ -913,6 +937,9 @@ pub fn extract_embedded_fonts_with_lopdf(
         }
         match norm.variant {
             FontStyleVariant::Regular if bucket.regular.is_none() => {
+                // Name the family after its regular face (not whichever variant came first).
+                bucket.clean_name = parsed.clean_font_name.clone();
+                bucket.fallback_family = parsed.font_family.clone();
                 bucket.regular = Some(ttf_bytes)
             }
             FontStyleVariant::Bold if bucket.bold.is_none() => bucket.bold = Some(ttf_bytes),
@@ -975,29 +1002,45 @@ pub fn prepare_clean_page_preview_with_lopdf(
     image_rects: &[RectBox],
     shape_rects: &[RectBox],
 ) -> Result<Vec<u8>, PdfError> {
-    let to_redact_rect = |r: &RectBox| RedactionRect {
-        page_index: source_page_index,
-        x: r.x,
-        y: r.y,
-        width: r.width,
-        height: r.height,
-    };
-
-    let (redacted_full, _) = redact_pdf_bytes_with_lopdf(
+    prepare_clean_page_preview_targets(
         pdf_bytes,
-        &[],
-        RedactionOptions {
-            draw_redaction_boxes: false,
-            text_only_rects: text_rects.iter().map(to_redact_rect).collect(),
-            image_only_rects: image_rects.iter().map(to_redact_rect).collect(),
-            shape_rects: shape_rects.iter().map(to_redact_rect).collect(),
+        source_page_index,
+        &CleanPreviewTargets {
+            text_rects: text_rects.to_vec(),
+            image_rects: image_rects.to_vec(),
+            shape_rects: shape_rects.to_vec(),
+            ..Default::default()
         },
-    )?;
+    )
+}
 
-    let mut single_doc = Document::load_mem(&redacted_full)
-        .map_err(|e| PdfError::Backend(format!("failed loading redacted clean preview: {e}")))?;
+/// Everything the editor changes on one page for its live preview.
+#[derive(Debug, Clone, Default)]
+pub struct CleanPreviewTargets {
+    pub text_rects: Vec<RectBox>,
+    pub image_rects: Vec<RectBox>,
+    pub shape_rects: Vec<RectBox>,
+    /// In-place moves; `from.page_index` is ignored (the preview is a single page).
+    pub image_transforms: Vec<ObjectTransform>,
+    pub shape_transforms: Vec<ObjectTransform>,
+}
+
+pub fn prepare_clean_page_preview_targets(
+    pdf_bytes: &[u8],
+    source_page_index: usize,
+    targets: &CleanPreviewTargets,
+) -> Result<Vec<u8>, PdfError> {
+    // Isolate the single target page FIRST so the content rewrite + serialization only touch
+    // one page (large documents previously re-serialized every page on each edit/selection).
+    let mut single_doc = Document::load_mem(pdf_bytes)
+        .map_err(|e| PdfError::Backend(format!("failed loading clean preview source: {e}")))?;
     let pages = single_doc.get_pages();
     let target_page_num = (source_page_index + 1) as u32;
+    if !pages.contains_key(&target_page_num) {
+        return Err(PdfError::Backend(format!(
+            "clean preview page {source_page_index} out of bounds"
+        )));
+    }
     let to_delete: Vec<u32> = pages
         .keys()
         .copied()
@@ -1007,10 +1050,34 @@ pub fn prepare_clean_page_preview_with_lopdf(
         single_doc.delete_pages(&to_delete);
         single_doc.prune_objects();
     }
-
-    let mut out = Vec::new();
+    let mut single_bytes = Vec::new();
     single_doc
-        .save_to(&mut out)
+        .save_to(&mut single_bytes)
         .map_err(|e| PdfError::Backend(format!("failed serializing clean page preview: {e}")))?;
-    Ok(out)
+
+    let to_redact_rect = |r: &RectBox| RedactionRect {
+        page_index: 0,
+        x: r.x,
+        y: r.y,
+        width: r.width,
+        height: r.height,
+    };
+    let on_single_page = |t: &ObjectTransform| ObjectTransform {
+        from: RedactionRect { page_index: 0, ..t.from },
+        ..*t
+    };
+
+    let (redacted_single, _) = redact_pdf_bytes_with_lopdf(
+        &single_bytes,
+        &[],
+        RedactionOptions {
+            draw_redaction_boxes: false,
+            text_only_rects: targets.text_rects.iter().map(to_redact_rect).collect(),
+            image_only_rects: targets.image_rects.iter().map(to_redact_rect).collect(),
+            shape_rects: targets.shape_rects.iter().map(to_redact_rect).collect(),
+            image_transforms: targets.image_transforms.iter().map(on_single_page).collect(),
+            shape_transforms: targets.shape_transforms.iter().map(on_single_page).collect(),
+        },
+    )?;
+    Ok(redacted_single)
 }

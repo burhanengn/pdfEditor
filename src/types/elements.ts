@@ -63,6 +63,8 @@ export interface TextEditElement extends BaseElement {
   widthResizedByUser?: boolean;
   maskColor?: string;
   deleted?: boolean;
+  /** Snapshot signature taken when promoted from DetectedTextBlock; used to avoid stripping untouched clicks. */
+  originalSignature?: string;
 }
 
 export interface TextAddElement extends BaseElement {
@@ -171,6 +173,7 @@ export interface ImageReplacementElement extends BaseElement {
   clipMask?: ImageClipMask;
   repeatGroupId?: string;
   repeatScope?: 'all' | 'odd' | 'even';
+  originalRotation?: number;
   deleted?: boolean;
 }
 
@@ -204,6 +207,7 @@ export interface SignatureElement extends BaseElement {
 export interface NormalizedPoint {
   x: number;
   y: number;
+  smooth?: boolean;
 }
 
 export interface StrokeElement extends BaseElement {
@@ -321,4 +325,61 @@ export function getElementDefaultLayerTier(
 export function getElementLayerTier(el: CanvasElement): LayerTier {
   if (el.layerOverride) return el.layerOverride;
   return getElementDefaultLayerTier(el);
+}
+
+const rSig = (v: number | undefined, mult = 100) => Math.round((v ?? 0) * mult);
+
+export function computeTextEditSignature(
+  el: Pick<
+    TextEditElement,
+    | 'text'
+    | 'runs'
+    | 'x'
+    | 'y'
+    | 'width'
+    | 'height'
+    | 'rotation'
+    | 'fontFamily'
+    | 'fontSize'
+    | 'color'
+    | 'bold'
+    | 'italic'
+    | 'align'
+    | 'lineHeight'
+    | 'horizontalScale'
+    | 'letterSpacing'
+  >,
+): string {
+  const hasRichDiff =
+    Boolean(el.runs?.length) &&
+    el.runs!.some(
+      (r) =>
+        (r.bold ?? el.bold) !== el.bold ||
+        (r.italic ?? el.italic) !== el.italic ||
+        (r.script ?? 'normal') !== 'normal',
+    );
+  const runsSig = hasRichDiff ? JSON.stringify(el.runs) : '';
+  return [
+    el.text,
+    runsSig,
+    rSig(el.x, 10),
+    rSig(el.y, 10),
+    rSig(el.width, 10),
+    rSig(el.height, 10),
+    rSig(el.rotation, 10),
+    el.fontFamily,
+    rSig(el.fontSize, 100),
+    el.color.toLowerCase(),
+    el.bold ? '1' : '0',
+    el.italic ? '1' : '0',
+    el.align,
+    rSig(el.lineHeight, 100),
+    rSig(el.horizontalScale ?? 1, 1000),
+    rSig(el.letterSpacing ?? 0, 100),
+  ].join('|');
+}
+
+export function isUnmodifiedTextEdit(el: TextEditElement): boolean {
+  if (el.deleted || !el.originalSignature) return false;
+  return computeTextEditSignature(el) === el.originalSignature;
 }

@@ -1,15 +1,26 @@
 package dev.gullacpdf.gullacpdf_mobile
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
 import android.content.ClipData
+import android.content.Context
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
+import android.os.Bundle
+import android.os.CancellationSignal
 import android.os.Handler
 import android.os.Looper
+import android.os.ParcelFileDescriptor
+import android.print.PageRange
+import android.print.PrintAttributes
+import android.print.PrintDocumentAdapter
+import android.print.PrintDocumentInfo
+import android.print.PrintManager
 import android.provider.DocumentsContract
 import android.provider.OpenableColumns
 import android.provider.Settings
+import android.webkit.MimeTypeMap
 import androidx.core.content.FileProvider
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.plugin.common.EventChannel
@@ -35,6 +46,7 @@ class FileBridgePlugin(private val activity: Activity) :
         private const val REQUEST_OPEN_DOCUMENT = 9101
         private const val REQUEST_CREATE_DOCUMENT = 9102
         private const val STREAM_BUFFER_BYTES = 64 * 1024
+        private val KNOWN_EXTENSIONS = listOf(".pdf", ".png", ".jpg", ".jpeg", ".webp", ".ttf", ".otf")
     }
 
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -44,6 +56,7 @@ class FileBridgePlugin(private val activity: Activity) :
     private var eventSink: EventChannel.EventSink? = null
     private var initialOpenRequest: Map<String, Any?>? = null
     private var pendingPickerResult: MethodChannel.Result? = null
+    private var pendingPickerDefaultExt: String = ".pdf"
     private var pendingCreateResult: MethodChannel.Result? = null
     private var pendingCreateSourcePath: String? = null
 
@@ -87,7 +100,15 @@ class FileBridgePlugin(private val activity: Activity) :
                     // Non-persistable provider: temporary URI remains usable for working copy.
                 }
             }
-            res.success(buildRequestMap(uris, data.flags, origin = "picker", canPersist = true))
+            res.success(
+                buildRequestMap(
+                    uris = uris,
+                    intentFlags = data.flags,
+                    origin = "picker",
+                    canPersist = true,
+                    defaultExt = pendingPickerDefaultExt,
+                ),
+            )
             return true
         }
 
@@ -155,7 +176,22 @@ class FileBridgePlugin(private val activity: Activity) :
             }
             "openDocumentPicker" -> {
                 val allowMultiple = call.argument<Boolean>("allowMultiple") ?: false
-                launchOpenDocumentPicker(allowMultiple, result)
+                val mimeTypes = call.argument<List<String>>("mimeTypes")
+                    ?.filter { it.isNotBlank() }
+                    ?: listOf("application/pdf")
+                launchOpenDocumentPicker(allowMultiple, mimeTypes, result)
+            }
+            "printPdf" -> {
+                val srcPath = call.argument<String>("sourceWorkPath")
+                val displayName = sanitizeFileName(
+                    call.argument<String>("displayName") ?: "document.pdf",
+                    fallbackExt = ".pdf",
+                )
+                if (srcPath.isNullOrBlank()) {
+                    result.error("INVALID_ARGS", "sourceWorkPath required", null)
+                    return
+                }
+                printPdfFile(srcPath, displayName, result)
             }
             "createDocument" -> {
                 val suggestedName = sanitizeFileName(call.argument<String>("suggestedName") ?: "document-edited.pdf")
@@ -316,9 +352,14 @@ class FileBridgePlugin(private val activity: Activity) :
         intentFlags: Int,
         origin: String,
         canPersist: Boolean,
+        defaultExt: String = ".pdf",
     ): Map<String, Any?> {
         val primary = uris.first()
-        val displayName = sanitizeFileName(queryDisplayName(primary) ?: primary.lastPathSegment ?: "document.pdf")
+        val inferredExt = inferExtensionForUri(primary) ?: defaultExt
+        val displayName = sanitizeFileName(
+            raw = queryDisplayName(primary) ?: primary.lastPathSegment ?: "document$inferredExt",
+            fallbackExt = inferredExt,
+        )
         val sizeBytes = queryFileSize(primary)
         val hasGrantWrite = (intentFlags and Intent.FLAG_GRANT_WRITE_URI_PERMISSION) != 0
         val supportsDocWrite = checkDocumentSupportsWrite(primary)
@@ -399,13 +440,17 @@ class FileBridgePlugin(private val activity: Activity) :
 
         ioExecutor.execute {
             val workDir = File(activity.cacheDir, "work").apply { mkdirs() }
-            val safeName = sanitizeFileName(preferredName ?: queryDisplayName(uri) ?: "document.pdf")
+            val inferredExt = inferExtensionForUri(uri) ?: ""
+            val safeName = sanitizeFileName(
+                raw = preferredName ?: queryDisplayName(uri) ?: "document${if (inferredExt.isEmpty()) ".pdf" else inferredExt}",
+                fallbackExt = if (inferredExt.isEmpty()) ".pdf" else inferredExt,
+            )
             val destFile = File(workDir, "${System.currentTimeMillis()}_${safeName}")
             val totalBytes = queryFileSize(uri) ?: -1L
             var copied = 0L
 
             try {
-                val input = activity.contentResolver.openInputStream(uri)
+                val input = openReadableStream(uri)
                     ?: throw IllegalStateException("Cannot open input stream for URI")
                 input.use { stream ->
                     FileOutputStream(destFile).use { out ->
@@ -453,8 +498,13 @@ class FileBridgePlugin(private val activity: Activity) :
     private fun writeFileToUri(srcPath: String, targetUri: Uri) {
         val src = File(srcPath)
         if (!src.exists()) throw IllegalStateException("Missing compiled file: $srcPath")
-        val out = activity.contentResolver.openOutputStream(targetUri, "wt")
-            ?: throw IllegalStateException("Cannot open output stream for target URI")
+        val out = try {
+            activity.contentResolver.openOutputStream(targetUri, "wt")
+        } catch (_: UnsupportedOperationException) {
+            activity.contentResolver.openOutputStream(targetUri, "w")
+        } catch (_: IllegalArgumentException) {
+            activity.contentResolver.openOutputStream(targetUri, "w")
+        } ?: throw IllegalStateException("Cannot open output stream for target URI")
         out.use { outputStream ->
             FileInputStream(src).use { inputStream ->
                 val buf = ByteArray(STREAM_BUFFER_BYTES)
@@ -468,20 +518,101 @@ class FileBridgePlugin(private val activity: Activity) :
         }
     }
 
-    private fun launchOpenDocumentPicker(allowMultiple: Boolean, result: MethodChannel.Result) {
+    private fun openReadableStream(uri: Uri): java.io.InputStream? {
+        try {
+            activity.contentResolver.openInputStream(uri)?.let { return it }
+        } catch (_: Exception) {
+            // Try PFD / direct safe file path fallback below.
+        }
+        try {
+            val pfd = activity.contentResolver.openFileDescriptor(uri, "r")
+            if (pfd != null) {
+                return ParcelFileDescriptor.AutoCloseInputStream(pfd)
+            }
+        } catch (_: Exception) {
+            // Fall through to safe file path check.
+        }
+        if (uri.scheme == "file" && uri.path != null) {
+            val f = File(uri.path!!)
+            if (f.exists() && f.canRead()) {
+                return FileInputStream(f)
+            }
+        }
+        return null
+    }
+
+    private fun inferExtensionForUri(uri: Uri): String? {
+        val name = queryDisplayName(uri) ?: uri.lastPathSegment
+        if (!name.isNullOrBlank()) {
+            val lower = name.lowercase()
+            for (ext in KNOWN_EXTENSIONS) {
+                if (lower.endsWith(ext)) return ext
+            }
+        }
+        val mime = try {
+            activity.contentResolver.getType(uri)?.lowercase()
+        } catch (_: Exception) {
+            null
+        } ?: return null
+        return when {
+            mime.contains("pdf") -> ".pdf"
+            mime == "image/png" -> ".png"
+            mime == "image/jpeg" || mime == "image/jpg" -> ".jpg"
+            mime == "image/webp" -> ".webp"
+            mime.contains("ttf") -> ".ttf"
+            mime.contains("otf") -> ".otf"
+            else -> MimeTypeMap.getSingleton().getExtensionFromMimeType(mime)?.let { ".$it" }
+        }
+    }
+
+    private fun launchOpenDocumentPicker(
+        allowMultiple: Boolean,
+        mimeTypes: List<String>,
+        result: MethodChannel.Result,
+    ) {
         pendingPickerResult?.error("CANCELLED", "Superseded by another picker request", null)
         pendingPickerResult = result
-        val intent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
-            addCategory(Intent.CATEGORY_OPENABLE)
-            type = "application/pdf"
-            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
-            addFlags(
-                Intent.FLAG_GRANT_READ_URI_PERMISSION or
-                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION or
-                    Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION,
-            )
+        val primaryMime = mimeTypes.firstOrNull() ?: "application/pdf"
+        pendingPickerDefaultExt = when {
+            primaryMime.startsWith("image/") -> ".png"
+            primaryMime.contains("ttf") || primaryMime.contains("otf") -> ".ttf"
+            else -> ".pdf"
         }
-        activity.startActivityForResult(intent, REQUEST_OPEN_DOCUMENT)
+
+        val intentMimeList = if (mimeTypes == listOf("application/pdf")) {
+            listOf("application/pdf", "application/x-pdf")
+        } else {
+            mimeTypes
+        }
+
+        val docIntent = Intent(Intent.ACTION_OPEN_DOCUMENT).apply {
+            addCategory(Intent.CATEGORY_OPENABLE)
+            type = if (intentMimeList.size == 1) intentMimeList.first() else "*/*"
+            putExtra(Intent.EXTRA_MIME_TYPES, intentMimeList.toTypedArray())
+            putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
+            var flags = Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_PERSISTABLE_URI_PERMISSION
+            if (pendingPickerDefaultExt == ".pdf") {
+                flags = flags or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            }
+            addFlags(flags)
+        }
+        try {
+            activity.startActivityForResult(docIntent, REQUEST_OPEN_DOCUMENT)
+        } catch (_: ActivityNotFoundException) {
+            val fallback = Intent(Intent.ACTION_GET_CONTENT).apply {
+                addCategory(Intent.CATEGORY_OPENABLE)
+                type = if (intentMimeList.size == 1) intentMimeList.first() else "*/*"
+                putExtra(Intent.EXTRA_MIME_TYPES, intentMimeList.toTypedArray())
+                putExtra(Intent.EXTRA_ALLOW_MULTIPLE, allowMultiple)
+                addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            }
+            try {
+                activity.startActivityForResult(fallback, REQUEST_OPEN_DOCUMENT)
+            } catch (e: ActivityNotFoundException) {
+                pendingPickerResult = null
+                result.error("PICKER_UNAVAILABLE", e.message ?: "No document picker available", null)
+            }
+        }
     }
 
     private fun launchCreateDocument(
@@ -552,9 +683,88 @@ class FileBridgePlugin(private val activity: Activity) :
         }
     }
 
-    private fun sanitizeFileName(raw: String): String {
+    private fun printPdfFile(srcPath: String, displayName: String, result: MethodChannel.Result) {
+        val src = File(srcPath)
+        if (!src.exists()) {
+            result.error("PRINT_FAILED", "Missing compiled PDF file", null)
+            return
+        }
+        val printManager = activity.getSystemService(Context.PRINT_SERVICE) as? PrintManager
+        if (printManager == null) {
+            result.error("PRINT_UNAVAILABLE", "Android PrintManager service unavailable", null)
+            return
+        }
+        try {
+            val adapter = PdfPrintDocumentAdapter(src, displayName)
+            printManager.print(displayName, adapter, PrintAttributes.Builder().build())
+            result.success(true)
+        } catch (e: Exception) {
+            result.error("PRINT_FAILED", e.message ?: "Print failed", null)
+        }
+    }
+
+    private fun sanitizeFileName(raw: String, fallbackExt: String = ".pdf"): String {
         val base = raw.replace(Regex("""[/\\:*?"<>|\u0000-\u001F]"""), "_").trim()
-        val nonEmpty = if (base.isEmpty()) "document.pdf" else base
-        return if (nonEmpty.lowercase().endsWith(".pdf")) nonEmpty else "$nonEmpty.pdf"
+        val nonEmpty = if (base.isEmpty()) "document$fallbackExt" else base
+        val lower = nonEmpty.lowercase()
+        if (KNOWN_EXTENSIONS.any { lower.endsWith(it) }) {
+            return nonEmpty
+        }
+        return "$nonEmpty$fallbackExt"
+    }
+
+    private class PdfPrintDocumentAdapter(
+        private val file: File,
+        private val jobName: String,
+    ) : PrintDocumentAdapter() {
+        override fun onLayout(
+            oldAttributes: PrintAttributes?,
+            newAttributes: PrintAttributes?,
+            cancellationSignal: CancellationSignal?,
+            callback: LayoutResultCallback?,
+            extras: Bundle?,
+        ) {
+            if (cancellationSignal?.isCanceled == true) {
+                callback?.onLayoutCancelled()
+                return
+            }
+            val info = PrintDocumentInfo.Builder(jobName)
+                .setContentType(PrintDocumentInfo.CONTENT_TYPE_DOCUMENT)
+                .setPageCount(PrintDocumentInfo.PAGE_COUNT_UNKNOWN)
+                .build()
+            callback?.onLayoutFinished(info, true)
+        }
+
+        override fun onWrite(
+            pages: Array<out PageRange>?,
+            destination: ParcelFileDescriptor?,
+            cancellationSignal: CancellationSignal?,
+            callback: WriteResultCallback?,
+        ) {
+            if (destination == null) {
+                callback?.onWriteFailed("Missing print destination")
+                return
+            }
+            try {
+                FileInputStream(file).use { input ->
+                    FileOutputStream(destination.fileDescriptor).use { out ->
+                        val buf = ByteArray(STREAM_BUFFER_BYTES)
+                        while (true) {
+                            if (cancellationSignal?.isCanceled == true) {
+                                callback?.onWriteCancelled()
+                                return
+                            }
+                            val n = input.read(buf)
+                            if (n < 0) break
+                            out.write(buf, 0, n)
+                        }
+                        out.flush()
+                    }
+                }
+                callback?.onWriteFinished(arrayOf(PageRange.ALL_PAGES))
+            } catch (e: Exception) {
+                callback?.onWriteFailed(e.message)
+            }
+        }
     }
 }

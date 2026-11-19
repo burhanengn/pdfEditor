@@ -58,6 +58,49 @@ impl Matrix2D {
         }
     }
 
+    pub fn scale(sx: f64, sy: f64) -> Self {
+        Self {
+            a: sx,
+            b: 0.0,
+            c: 0.0,
+            d: sy,
+            e: 0.0,
+            f: 0.0,
+        }
+    }
+
+    /// Counter-clockwise rotation in PDF user space (y axis pointing up).
+    pub fn rotate_rad(theta: f64) -> Self {
+        let (sin, cos) = theta.sin_cos();
+        Self {
+            a: cos,
+            b: sin,
+            c: -sin,
+            d: cos,
+            e: 0.0,
+            f: 0.0,
+        }
+    }
+
+    pub fn inverse(&self) -> Option<Self> {
+        let det = self.a * self.d - self.b * self.c;
+        if det.abs() < 1e-12 {
+            return None;
+        }
+        let a = self.d / det;
+        let b = -self.b / det;
+        let c = -self.c / det;
+        let d = self.a / det;
+        Some(Self {
+            a,
+            b,
+            c,
+            d,
+            e: -(self.e * a + self.f * c),
+            f: -(self.e * b + self.f * d),
+        })
+    }
+
     pub fn transform_point(&self, x: f64, y: f64) -> (f64, f64) {
         (self.a * x + self.c * y + self.e, self.b * x + self.d * y + self.f)
     }
@@ -93,11 +136,59 @@ impl BBox {
             && self.y1 > other.y0 + eps
             && self.y0 < other.y1 - eps
     }
+
+    fn intersect(&self, other: &Self) -> Option<Self> {
+        let x0 = self.x0.max(other.x0);
+        let y0 = self.y0.max(other.y0);
+        let x1 = self.x1.min(other.x1);
+        let y1 = self.y1.min(other.y1);
+        if x1 > x0 && y1 > y0 {
+            Some(Self { x0, y0, x1, y1 })
+        } else {
+            None
+        }
+    }
+
+    /// True when both boxes describe the same painted object (edges agree within a small
+    /// tolerance). Used for targeted image/shape replacement so stripping one object never
+    /// removes other images or vector paths that merely overlap it (e.g. a logo on a photo).
+    fn matches(&self, other: &Self) -> bool {
+        let (ax0, ax1) = (self.x0.min(self.x1), self.x0.max(self.x1));
+        let (ay0, ay1) = (self.y0.min(self.y1), self.y0.max(self.y1));
+        let (bx0, bx1) = (other.x0.min(other.x1), other.x0.max(other.x1));
+        let (by0, by1) = (other.y0.min(other.y1), other.y0.max(other.y1));
+        let tol_x = 3.5f64.max(0.08 * (ax1 - ax0).max(bx1 - bx0));
+        let tol_y = 3.5f64.max(0.08 * (ay1 - ay0).max(by1 - by0));
+        (ax0 - bx0).abs() <= tol_x
+            && (ax1 - bx1).abs() <= tol_x
+            && (ay0 - by0).abs() <= tol_y
+            && (ay1 - by1).abs() <= tol_y
+    }
+}
+
+/// Image strip targets: full redaction regions remove every intersecting image, while
+/// replacement/delete targets only remove the image whose placement matches exactly.
+#[derive(Debug, Clone, Default)]
+struct ImageStripTargets {
+    redact: Vec<BBox>,
+    exact: Vec<BBox>,
+    moves: Vec<(BBox, Matrix2D)>,
+}
+
+impl ImageStripTargets {
+    fn should_strip(&self, img: &BBox) -> bool {
+        self.redact.iter().any(|rb| img.intersects(rb)) || self.exact.iter().any(|eb| img.matches(eb))
+    }
+
+    fn move_for(&self, img: &BBox) -> Option<&Matrix2D> {
+        self.moves.iter().find(|(from, _)| img.matches(from)).map(|(_, m)| m)
+    }
 }
 
 #[derive(Debug, Clone)]
 struct GraphicsState {
     ctm: Matrix2D,
+    clip_bbox: Option<BBox>,
     font_name: Option<Vec<u8>>,
     font_size: f64,
     char_spacing: f64,
@@ -111,6 +202,7 @@ impl Default for GraphicsState {
     fn default() -> Self {
         Self {
             ctm: Matrix2D::identity(),
+            clip_bbox: None,
             font_name: None,
             font_size: 12.0,
             char_spacing: 0.0,
@@ -132,6 +224,163 @@ pub struct RedactionOptions {
     pub text_only_rects: Vec<RedactionRect>,
     /// Image-only regions whose image XObjects should be stripped without deleting foreground text.
     pub image_only_rects: Vec<RedactionRect>,
+    /// Images moved/resized/rotated/flipped IN PLACE (same paint order, original encoding).
+    pub image_transforms: Vec<ObjectTransform>,
+    /// Vector paths moved/resized/rotated IN PLACE (same paint order).
+    pub shape_transforms: Vec<ObjectTransform>,
+}
+
+/// Re-places one original page object: the object whose placement matches `from` (visual page
+/// rect, top-down points) is mapped onto `to`, applying the rotation/flip deltas about its centre.
+#[derive(Debug, Clone, Copy)]
+pub struct ObjectTransform {
+    pub from: RedactionRect,
+    pub to_x: f64,
+    pub to_y: f64,
+    pub to_width: f64,
+    pub to_height: f64,
+    /// Visual (clockwise, screen) rotation of the object before/after the edit, degrees.
+    pub from_rotation_deg: f64,
+    pub to_rotation_deg: f64,
+    pub flip_x_changed: bool,
+    pub flip_y_changed: bool,
+}
+
+/// Which kind of original object an in-place edit targets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InPlaceKind {
+    Image,
+    Shape,
+}
+
+/// In-place move for a replacement element (`inPlace: true`, not deleted), if any.
+pub fn element_in_place_transform(
+    el: &gp_model::CanvasElement,
+    page_index: usize,
+) -> Option<(InPlaceKind, ObjectTransform)> {
+    use gp_model::CanvasElement;
+    let (kind, base, orig, rot0, fx_changed, fy_changed) = match el {
+        CanvasElement::ImageReplacement {
+            base,
+            original_rect,
+            in_place: Some(true),
+            deleted,
+            flip_x,
+            flip_y,
+            original_rotation,
+            original_flip_x,
+            original_flip_y,
+            ..
+        } if !deleted.unwrap_or(false) => (
+            InPlaceKind::Image,
+            base,
+            (*original_rect)?,
+            original_rotation.unwrap_or(0.0),
+            flip_x.unwrap_or(false) != original_flip_x.unwrap_or(false),
+            flip_y.unwrap_or(false) != original_flip_y.unwrap_or(false),
+        ),
+        CanvasElement::ShapeReplacement {
+            base,
+            original_rect,
+            in_place: Some(true),
+            deleted,
+            ..
+        } if !deleted.unwrap_or(false) => (InPlaceKind::Shape, base, (*original_rect)?, 0.0, false, false),
+        _ => return None,
+    };
+    Some((
+        kind,
+        ObjectTransform {
+            from: RedactionRect {
+                page_index,
+                x: orig.x,
+                y: orig.y,
+                width: orig.width,
+                height: orig.height,
+            },
+            to_x: base.x,
+            to_y: base.y,
+            to_width: base.width,
+            to_height: base.height,
+            from_rotation_deg: rot0,
+            to_rotation_deg: base.rotation,
+            flip_x_changed: fx_changed,
+            flip_y_changed: fy_changed,
+        },
+    ))
+}
+
+/// Original-text regions a text edit removes: only its changed lines when the editor sent
+/// them, otherwise the whole original paragraph box.
+pub fn element_text_strip_rects(el: &gp_model::CanvasElement) -> Vec<gp_model::RectBox> {
+    match el {
+        gp_model::CanvasElement::TextEdit { strip_rects: Some(rects), deleted, .. }
+            if !deleted.unwrap_or(false) =>
+        {
+            rects.clone()
+        }
+        gp_model::CanvasElement::TextEdit { .. } => vec![el.strip_rect()],
+        _ => Vec::new(),
+    }
+}
+
+/// Builds the user-space matrix `A` with `new_placement = old_placement then A`.
+fn object_transform_matrix(t: &ObjectTransform, crop_box: [f64; 4], rotation: i64) -> Option<(BBox, Matrix2D)> {
+    let from = visual_rect_to_user_bbox(&t.from, crop_box, rotation);
+    let to_rect = RedactionRect {
+        page_index: t.from.page_index,
+        x: t.to_x,
+        y: t.to_y,
+        width: t.to_width,
+        height: t.to_height,
+    };
+    let to = visual_rect_to_user_bbox(&to_rect, crop_box, rotation);
+    let fw = (from.x1 - from.x0).abs();
+    let fh = (from.y1 - from.y0).abs();
+    if fw < 0.01 || fh < 0.01 {
+        return None;
+    }
+    let sx = (to.x1 - to.x0).abs() / fw;
+    let sy = (to.y1 - to.y0).abs() / fh;
+    let c0 = ((from.x0 + from.x1) * 0.5, (from.y0 + from.y1) * 0.5);
+    let c1 = ((to.x0 + to.x1) * 0.5, (to.y0 + to.y1) * 0.5);
+    let page_quarter_turn = matches!(((rotation % 360) + 360) % 360, 90 | 270);
+    let (flip_ux, flip_uy) = if page_quarter_turn {
+        (t.flip_y_changed, t.flip_x_changed)
+    } else {
+        (t.flip_x_changed, t.flip_y_changed)
+    };
+    // Visual clockwise rotation == counter-clockwise negative rotation in y-up user space.
+    let r0 = -t.from_rotation_deg.to_radians();
+    let r1 = -t.to_rotation_deg.to_radians();
+    let m = Matrix2D::translate(-c0.0, -c0.1)
+        .multiply(&Matrix2D::rotate_rad(-r0))
+        .multiply(&Matrix2D::scale(
+            if flip_ux { -sx } else { sx },
+            if flip_uy { -sy } else { sy },
+        ))
+        .multiply(&Matrix2D::rotate_rad(r1))
+        .multiply(&Matrix2D::translate(c1.0, c1.1));
+    Some((from, m))
+}
+
+/// Local `cm` to insert right before an object painted under `ctm` so it lands at `ctm then a`.
+fn local_move_matrix(ctm: &Matrix2D, a: &Matrix2D) -> Option<Matrix2D> {
+    Some(ctm.multiply(a).multiply(&ctm.inverse()?))
+}
+
+fn matrix_op(m: &Matrix2D) -> Operation {
+    Operation::new(
+        "cm",
+        vec![real_op(m.a), real_op(m.b), real_op(m.c), real_op(m.d), real_op(m.e), real_op(m.f)],
+    )
+}
+
+/// Vector path strip/move targets.
+#[derive(Debug, Clone, Default)]
+struct ShapeTargets {
+    strip: Vec<BBox>,
+    moves: Vec<(BBox, Matrix2D)>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -249,6 +498,7 @@ pub fn redact_pdf_bytes_with_lopdf(
     let mut doc = Document::load_mem(pdf_bytes)
         .map_err(|e| PdfError::RedactionFailed(format!("failed to parse PDF for redaction: {e}")))?;
     let pages = doc.get_pages();
+    let page_count = pages.len();
 
     let mut by_page: HashMap<usize, Vec<RedactionRect>> = HashMap::new();
     for &r in rects {
@@ -278,6 +528,15 @@ pub fn redact_pdf_bytes_with_lopdf(
         }
     }
 
+    let mut image_moves_by_page: HashMap<usize, Vec<ObjectTransform>> = HashMap::new();
+    for t in &options.image_transforms {
+        image_moves_by_page.entry(t.from.page_index).or_default().push(*t);
+    }
+    let mut shape_moves_by_page: HashMap<usize, Vec<ObjectTransform>> = HashMap::new();
+    for t in &options.shape_transforms {
+        shape_moves_by_page.entry(t.from.page_index).or_default().push(*t);
+    }
+
     let mut stats = RedactionStreamStats::default();
 
     for (page_num_one_based, page_id) in pages {
@@ -295,10 +554,20 @@ pub fn redact_pdf_bytes_with_lopdf(
             .get(&page_index)
             .map(|v| v.as_slice())
             .unwrap_or(&[]);
+        let page_image_moves = image_moves_by_page
+            .get(&page_index)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
+        let page_shape_moves = shape_moves_by_page
+            .get(&page_index)
+            .map(|v| v.as_slice())
+            .unwrap_or(&[]);
         if page_rects.is_empty()
             && page_text_only.is_empty()
             && page_image_only.is_empty()
             && page_shape_rects.is_empty()
+            && page_image_moves.is_empty()
+            && page_shape_moves.is_empty()
         {
             continue;
         }
@@ -323,23 +592,43 @@ pub fn redact_pdf_bytes_with_lopdf(
                 .iter()
                 .map(|r| visual_rect_to_user_bbox(r, crop_box, rotation)),
         );
-        let mut image_boxes: Vec<BBox> = redact_boxes.clone();
-        image_boxes.extend(
-            page_image_only
+        let image_targets = ImageStripTargets {
+            redact: redact_boxes.clone(),
+            exact: page_image_only
                 .iter()
-                .map(|r| visual_rect_to_user_bbox(r, crop_box, rotation)),
-        );
-        let shape_boxes: Vec<BBox> = page_shape_rects
-            .iter()
-            .map(|r| visual_rect_to_user_bbox(r, crop_box, rotation))
-            .collect();
+                .map(|r| visual_rect_to_user_bbox(r, crop_box, rotation))
+                .collect(),
+            moves: page_image_moves
+                .iter()
+                .filter_map(|t| object_transform_matrix(t, crop_box, rotation))
+                .collect(),
+        };
+        let shape_boxes = ShapeTargets {
+            strip: page_shape_rects
+                .iter()
+                .map(|r| visual_rect_to_user_bbox(r, crop_box, rotation))
+                .collect(),
+            moves: page_shape_moves
+                .iter()
+                .filter_map(|t| object_transform_matrix(t, crop_box, rotation))
+                .collect(),
+        };
 
-        let (resources_opt, _) = doc
+        let (resources_opt, resource_ids) = doc
             .get_page_resources(page_id)
             .unwrap_or((None, Vec::new()));
-        let resources_owned = resources_opt.cloned();
+        // `/Resources` given by reference (very common) is reported via the id list, not inline.
+        let resources_owned = resources_opt.cloned().or_else(|| {
+            resource_ids
+                .iter()
+                .find_map(|id| doc.get_dictionary(*id).ok().cloned())
+        });
         let fonts = resolve_page_fonts(&doc, resources_owned.as_ref());
         let xobjects = resolve_page_xobjects(&doc, resources_owned.as_ref());
+        let resources_shared = resource_ids
+            .iter()
+            .any(|id| count_object_references(&doc, *id) > 1)
+            || (resources_opt.is_none() && resource_ids.is_empty() && page_count > 1);
 
         let content_bytes = doc.get_page_content(page_id);
         if content_bytes.is_empty() && !options.draw_redaction_boxes {
@@ -349,17 +638,27 @@ pub fn redact_pdf_bytes_with_lopdf(
         let decoded = Content::decode(&content_bytes)
             .map_err(|e| PdfError::RedactionFailed(format!("failed decoding content stream: {e}")))?;
 
+        let mut added_page_xobjects: HashMap<Vec<u8>, ObjectId> = HashMap::new();
+        let mut clone_seq = 0usize;
         let (mut new_ops, changed_here) = rewrite_operations(
             &mut doc,
             &decoded.operations,
             Matrix2D::identity(),
+            None,
             &text_boxes,
-            &image_boxes,
+            &image_targets,
             &shape_boxes,
             &fonts,
             &xobjects,
+            resources_shared,
+            &mut added_page_xobjects,
+            &mut clone_seq,
             &mut stats,
         )?;
+
+        if !added_page_xobjects.is_empty() {
+            attach_xobjects_to_page(&mut doc, page_id, &added_page_xobjects);
+        }
 
         if options.draw_redaction_boxes {
             for b in &redact_boxes {
@@ -397,21 +696,113 @@ pub fn redact_pdf_bytes_with_lopdf(
     Ok((out, stats))
 }
 
+fn attach_xobjects_to_dict(
+    doc: &mut Document,
+    dict_id: ObjectId,
+    added: &HashMap<Vec<u8>, ObjectId>,
+) {
+    if added.is_empty() {
+        return;
+    }
+    let owner_obj = match doc.get_object(dict_id).cloned() {
+        Ok(o) => o,
+        Err(_) => return,
+    };
+    let res_obj_opt = match &owner_obj {
+        Object::Dictionary(d) => d.get(b"Resources").ok().cloned(),
+        Object::Stream(s) => s.dict.get(b"Resources").ok().cloned(),
+        _ => return,
+    };
+    if let Some(Object::Reference(res_id)) = res_obj_opt {
+        if let Ok(mut res_dict) = doc.get_dictionary(res_id).cloned() {
+            let xobj_ref = res_dict.get(b"XObject").ok().and_then(|o| o.as_reference().ok());
+            if let Some(xid) = xobj_ref {
+                if let Ok(mut xd) = doc.get_dictionary(xid).cloned() {
+                    for (k, &v) in added {
+                        xd.set(k.clone(), Object::Reference(v));
+                    }
+                    doc.objects.insert(xid, Object::Dictionary(xd));
+                    return;
+                }
+            }
+            let mut xd = res_dict
+                .get(b"XObject")
+                .ok()
+                .and_then(|o| o.as_dict().ok())
+                .cloned()
+                .unwrap_or_default();
+            for (k, &v) in added {
+                xd.set(k.clone(), Object::Reference(v));
+            }
+            res_dict.set(b"XObject", Object::Dictionary(xd));
+            doc.objects.insert(res_id, Object::Dictionary(res_dict));
+            return;
+        }
+    }
+
+    let merge_into_dict = |owner_dict: &mut Dictionary| {
+        let mut res_dict = owner_dict
+            .get(b"Resources")
+            .ok()
+            .and_then(|o| doc.dereference(o).ok())
+            .and_then(|(_, o)| o.as_dict().ok())
+            .cloned()
+            .unwrap_or_default();
+        let mut xd = res_dict
+            .get(b"XObject")
+            .ok()
+            .and_then(|o| doc.dereference(o).ok())
+            .and_then(|(_, o)| o.as_dict().ok())
+            .cloned()
+            .unwrap_or_default();
+        for (k, &v) in added {
+            xd.set(k.clone(), Object::Reference(v));
+        }
+        res_dict.set(b"XObject", Object::Dictionary(xd));
+        owner_dict.set(b"Resources", Object::Dictionary(res_dict));
+    };
+
+    match owner_obj {
+        Object::Dictionary(mut owner_dict) => {
+            merge_into_dict(&mut owner_dict);
+            doc.objects.insert(dict_id, Object::Dictionary(owner_dict));
+        }
+        Object::Stream(mut stream) => {
+            merge_into_dict(&mut stream.dict);
+            doc.objects.insert(dict_id, Object::Stream(stream));
+        }
+        _ => {}
+    }
+}
+
+fn attach_xobjects_to_page(
+    doc: &mut Document,
+    page_id: ObjectId,
+    added: &HashMap<Vec<u8>, ObjectId>,
+) {
+    attach_xobjects_to_dict(doc, page_id, added);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn rewrite_operations(
     doc: &mut Document,
     ops: &[Operation],
     initial_ctm: Matrix2D,
+    initial_clip: Option<BBox>,
     text_boxes: &[BBox],
-    image_boxes: &[BBox],
-    shape_boxes: &[BBox],
+    image_boxes: &ImageStripTargets,
+    shape_boxes: &ShapeTargets,
     fonts: &HashMap<Vec<u8>, FontMetricsMap>,
     xobjects: &HashMap<Vec<u8>, ObjectId>,
+    resources_shared: bool,
+    parent_added_xobjects: &mut HashMap<Vec<u8>, ObjectId>,
+    clone_seq: &mut usize,
     stats: &mut RedactionStreamStats,
 ) -> Result<(Vec<Operation>, bool), PdfError> {
     let mut stack: Vec<GraphicsState> = Vec::new();
     let mut gs = GraphicsState {
         ctm: initial_ctm,
+        clip_bbox: initial_clip,
         ..GraphicsState::default()
     };
     let mut tm = Matrix2D::identity();
@@ -420,6 +811,7 @@ fn rewrite_operations(
     let mut modified = false;
     let mut out_ops: Vec<Operation> = Vec::with_capacity(ops.len());
     let default_font = FontMetricsMap::default();
+    let mut recent_redacted: Option<(BBox, f64)> = None;
 
     // Path construction tracking for vector shape/banner removal (`shape_boxes`).
     let mut pending_path_ops: Vec<Operation> = Vec::new();
@@ -491,18 +883,20 @@ fn rewrite_operations(
             }
             "S" | "s" | "f" | "F" | "f*" | "B" | "B*" | "b" | "b*" | "n" if !in_text => {
                 let mut strip = false;
-                if operator != "n" && !is_clip_next && !shape_boxes.is_empty() && !pending_path_pts.is_empty() {
+                let mut move_m: Option<Matrix2D> = None;
+                if is_clip_next && !pending_path_pts.is_empty() {
+                    let clip = BBox::from_points(&pending_path_pts);
+                    gs.clip_bbox = Some(match gs.clip_bbox {
+                        Some(existing) => existing.intersect(&clip).unwrap_or(clip),
+                        None => clip,
+                    });
+                }
+                if operator != "n" && !is_clip_next && !pending_path_pts.is_empty() {
                     let path_bbox = BBox::from_points(&pending_path_pts);
-                    if shape_boxes.iter().any(|sb| {
-                        let overlap_w = (path_bbox.x1.min(sb.x1) - path_bbox.x0.max(sb.x0)).max(0.0);
-                        let overlap_h = (path_bbox.y1.min(sb.y1) - path_bbox.y0.max(sb.y0)).max(0.0);
-                        let sb_area = ((sb.x1 - sb.x0).abs() * (sb.y1 - sb.y0).abs()).max(1.0);
-                        let path_area = ((path_bbox.x1 - path_bbox.x0).abs() * (path_bbox.y1 - path_bbox.y0).abs()).max(1.0);
-                        let overlap_area = overlap_w * overlap_h;
-                        path_bbox.intersects(sb)
-                            && (overlap_area / sb_area.min(path_area)) >= 0.45
-                    }) {
+                    if shape_boxes.strip.iter().any(|sb| path_bbox.matches(sb)) {
                         strip = true;
+                    } else if let Some((_, a)) = shape_boxes.moves.iter().find(|(from, _)| path_bbox.matches(from)) {
+                        move_m = local_move_matrix(&gs.ctm, a);
                     }
                 }
                 if strip {
@@ -510,6 +904,14 @@ fn rewrite_operations(
                     stats.removed_shapes += 1;
                     pending_path_ops.clear();
                     pending_path_pts.clear();
+                } else if let Some(local) = move_m {
+                    modified = true;
+                    out_ops.push(Operation::new("q", vec![]));
+                    out_ops.push(matrix_op(&local));
+                    out_ops.append(&mut pending_path_ops);
+                    pending_path_pts.clear();
+                    out_ops.push(op.clone());
+                    out_ops.push(Operation::new("Q", vec![]));
                 } else {
                     flush_path_default(&mut out_ops, &mut pending_path_ops, &mut pending_path_pts);
                     out_ops.push(op.clone());
@@ -550,10 +952,12 @@ fn rewrite_operations(
                 in_text = true;
                 tm = Matrix2D::identity();
                 tlm = Matrix2D::identity();
+                recent_redacted = None;
                 out_ops.push(op.clone());
             }
             "ET" => {
                 in_text = false;
+                recent_redacted = None;
                 out_ops.push(op.clone());
             }
             "Tf" if op.operands.len() >= 2 => {
@@ -607,6 +1011,7 @@ fn rewrite_operations(
                     tm = Matrix2D { a, b, c, d, e, f };
                     tlm = tm;
                 }
+                recent_redacted = None;
                 out_ops.push(op.clone());
             }
             "Td" if op.operands.len() >= 2 => {
@@ -616,6 +1021,7 @@ fn rewrite_operations(
                     tlm = Matrix2D::translate(tx, ty).multiply(&tlm);
                     tm = tlm;
                 }
+                recent_redacted = None;
                 out_ops.push(op.clone());
             }
             "TD" if op.operands.len() >= 2 => {
@@ -626,11 +1032,13 @@ fn rewrite_operations(
                     tlm = Matrix2D::translate(tx, ty).multiply(&tlm);
                     tm = tlm;
                 }
+                recent_redacted = None;
                 out_ops.push(op.clone());
             }
             "T*" => {
                 tlm = Matrix2D::translate(0.0, -gs.leading).multiply(&tlm);
                 tm = tlm;
+                recent_redacted = None;
                 out_ops.push(op.clone());
             }
             "Tj" | "TJ" | "'" | "\"" if in_text => {
@@ -674,7 +1082,176 @@ fn rewrite_operations(
 
                 let fs = gs.font_size;
                 let th = gs.horiz_scale / 100.0;
-                let mut hit_any = false;
+
+                struct EmittedGlyph {
+                    raw_bytes: Vec<u8>,
+                    unicode: String,
+                    start_tm: Matrix2D,
+                    bbox: BBox,
+                    hit_rb_idx: Option<usize>,
+                    redacted: bool,
+                    big_jump_before: bool,
+                }
+
+                let mut emitted: Vec<EmittedGlyph> = Vec::new();
+                let mut pending_jump_from_prev = false;
+
+                for item in &items {
+                    match item {
+                        Object::Integer(kern) => {
+                            let dx = (-*kern as f64 / 1000.0) * fs * th;
+                            tm = Matrix2D::translate(dx, 0.0).multiply(&tm);
+                            if !emitted.is_empty() && dx.abs() > fs.abs() * 0.15 {
+                                pending_jump_from_prev = true;
+                            }
+                        }
+                        Object::Real(kern) => {
+                            let dx = (-f64::from(*kern) / 1000.0) * fs * th;
+                            tm = Matrix2D::translate(dx, 0.0).multiply(&tm);
+                            if !emitted.is_empty() && dx.abs() > fs.abs() * 0.15 {
+                                pending_jump_from_prev = true;
+                            }
+                        }
+                        Object::String(raw, _) => {
+                            let glyphs: Vec<DecodedGlyph> = font.decode_glyphs(raw);
+                            for glyph in glyphs {
+                                let glyph_advance = glyph_user_advance(
+                                    &glyph,
+                                    fs,
+                                    gs.char_spacing,
+                                    gs.word_spacing,
+                                    th,
+                                );
+                                let glyph_bbox =
+                                    glyph_page_bbox(&gs.ctm, &tm, glyph_advance, fs, gs.rise);
+                                let hit_rb_idx =
+                                    text_boxes.iter().position(|rb| glyph_bbox.intersects(rb));
+                                emitted.push(EmittedGlyph {
+                                    raw_bytes: glyph.raw_bytes,
+                                    unicode: glyph.unicode,
+                                    start_tm: tm,
+                                    bbox: glyph_bbox,
+                                    hit_rb_idx,
+                                    redacted: hit_rb_idx.is_some(),
+                                    big_jump_before: pending_jump_from_prev,
+                                });
+                                pending_jump_from_prev = false;
+                                tm = Matrix2D::translate(glyph_advance, 0.0).multiply(&tm);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+
+                // Drifted-tail & unspaced continuation cleanup: cumulative width estimation
+                // drift inside long Tj/TJ strings or immediately-following Tj calls without
+                // repositioning can push trailing punctuation (`.`, `,`, `;`) or the last 1-3
+                // chars slightly past `rb` while in reality they rendered inside the deleted box.
+                let eff_fs = effective_page_font_size(&gs.ctm, &tm, fs);
+                if let Some((prev_rb, prev_fs)) = recent_redacted {
+                    if !emitted.is_empty()
+                        && emitted.len() <= 4
+                        && !emitted.iter().any(|g| g.redacted)
+                        && emitted.iter().all(|g| {
+                            is_drifted_tail_candidate(&g.bbox, &prev_rb, prev_fs)
+                        })
+                    {
+                        for g in &mut emitted {
+                            g.redacted = true;
+                        }
+                    }
+                }
+
+                let is_tail_punct = |u: &str| {
+                    let s = u.trim();
+                    !s.is_empty()
+                        && s.chars().all(|c| {
+                            matches!(
+                                c,
+                                '.' | ','
+                                    | ';'
+                                    | ':'
+                                    | '!'
+                                    | '?'
+                                    | ')'
+                                    | ']'
+                                    | '}'
+                                    | '%'
+                                    | '-'
+                                    | '–'
+                                    | '—'
+                                    | '\''
+                                    | '"'
+                                    | '’'
+                                    | '”'
+                            )
+                        })
+                };
+
+                let mut i = 0;
+                while i < emitted.len() {
+                    if let Some(rb_idx) = emitted[i].hit_rb_idx {
+                        let rb = text_boxes[rb_idx];
+                        let mut j = i + 1;
+                        while j < emitted.len()
+                            && !emitted[j].redacted
+                            && !emitted[j].big_jump_before
+                        {
+                            let is_space = emitted[j].unicode.trim().is_empty();
+                            if is_space {
+                                // Only absorb a space if it's immediately followed by short trailing punctuation at the end.
+                                let rest = &emitted[(j + 1)..];
+                                if !rest.is_empty()
+                                    && rest.len() <= 2
+                                    && rest.iter().all(|g| {
+                                        !g.big_jump_before
+                                            && is_tail_punct(&g.unicode)
+                                            && is_drifted_tail_candidate(&g.bbox, &rb, eff_fs)
+                                    })
+                                {
+                                    for k in j..emitted.len() {
+                                        emitted[k].redacted = true;
+                                    }
+                                }
+                                break;
+                            }
+                            j += 1;
+                        }
+                        let tail_len = j - (i + 1);
+                        let terminated_at_word_end =
+                            j == emitted.len() || emitted[j].unicode.trim().is_empty() || emitted[j].big_jump_before;
+                        if tail_len > 0 && tail_len <= 4 && terminated_at_word_end {
+                            let all_near_and_aligned = emitted[(i + 1)..j]
+                                .iter()
+                                .all(|g| is_drifted_tail_candidate(&g.bbox, &rb, eff_fs));
+                            let only_punct = emitted[(i + 1)..j]
+                                .iter()
+                                .all(|g| is_tail_punct(&g.unicode));
+                            if all_near_and_aligned && (tail_len <= 3 || only_punct) {
+                                for g in &mut emitted[(i + 1)..j] {
+                                    g.redacted = true;
+                                }
+                            }
+                        }
+                    }
+                    i += 1;
+                }
+
+                if let Some(last_hit) = emitted.iter().rposition(|g| g.hit_rb_idx.is_some()) {
+                    if last_hit + 1 == emitted.len()
+                        || emitted[(last_hit + 1)..].iter().all(|g| g.redacted)
+                    {
+                        if let Some(rb_idx) = emitted[last_hit].hit_rb_idx {
+                            recent_redacted = Some((text_boxes[rb_idx], eff_fs));
+                        }
+                    } else {
+                        recent_redacted = None;
+                    }
+                } else if !emitted.iter().all(|g| g.redacted) {
+                    recent_redacted = None;
+                }
+
+                let hit_any = emitted.iter().any(|g| g.redacted);
                 let mut spans: Vec<SurvivingSpan> = Vec::new();
                 let mut cur_bytes: Vec<u8> = Vec::new();
                 let mut cur_start_tm = tm;
@@ -690,49 +1267,17 @@ fn rewrite_operations(
                     }
                 };
 
-                for item in &items {
-                    match item {
-                        Object::Integer(kern) => {
-                            let dx = (-*kern as f64 / 1000.0) * fs * th;
-                            tm = Matrix2D::translate(dx, 0.0).multiply(&tm);
-                            if !cur_bytes.is_empty() && dx.abs() > fs.abs() * 0.15 {
-                                flush_span(&mut cur_bytes, cur_start_tm, &mut spans);
-                            }
+                for g in emitted {
+                    if g.redacted {
+                        flush_span(&mut cur_bytes, cur_start_tm, &mut spans);
+                    } else {
+                        if g.big_jump_before {
+                            flush_span(&mut cur_bytes, cur_start_tm, &mut spans);
                         }
-                        Object::Real(kern) => {
-                            let dx = (-f64::from(*kern) / 1000.0) * fs * th;
-                            tm = Matrix2D::translate(dx, 0.0).multiply(&tm);
-                            if !cur_bytes.is_empty() && dx.abs() > fs.abs() * 0.15 {
-                                flush_span(&mut cur_bytes, cur_start_tm, &mut spans);
-                            }
+                        if cur_bytes.is_empty() {
+                            cur_start_tm = g.start_tm;
                         }
-                        Object::String(raw, _) => {
-                            let glyphs: Vec<DecodedGlyph> = font.decode_glyphs(raw);
-                            for glyph in glyphs {
-                                let glyph_advance = glyph_user_advance(
-                                    &glyph,
-                                    fs,
-                                    gs.char_spacing,
-                                    gs.word_spacing,
-                                    th,
-                                );
-                                let glyph_bbox =
-                                    glyph_page_bbox(&gs.ctm, &tm, glyph_advance, fs, gs.rise);
-                                let redacted =
-                                    text_boxes.iter().any(|rb| glyph_bbox.intersects(rb));
-                                if redacted {
-                                    hit_any = true;
-                                    flush_span(&mut cur_bytes, cur_start_tm, &mut spans);
-                                } else {
-                                    if cur_bytes.is_empty() {
-                                        cur_start_tm = tm;
-                                    }
-                                    cur_bytes.extend_from_slice(&glyph.raw_bytes);
-                                }
-                                tm = Matrix2D::translate(glyph_advance, 0.0).multiply(&tm);
-                            }
-                        }
-                        _ => {}
+                        cur_bytes.extend_from_slice(&g.raw_bytes);
                     }
                 }
                 flush_span(&mut cur_bytes, cur_start_tm, &mut spans);
@@ -785,14 +1330,36 @@ fn rewrite_operations(
                                     gs.ctm.transform_point(0.0, 1.0),
                                     gs.ctm.transform_point(1.0, 1.0),
                                 ];
-                                let img_bbox = BBox::from_points(&pts);
-                                if image_boxes.iter().any(|rb| img_bbox.intersects(rb)) {
+                                let raw_bbox = BBox::from_points(&pts);
+                                let clipped_bbox = gs
+                                    .clip_bbox
+                                    .and_then(|c| raw_bbox.intersect(&c))
+                                    .unwrap_or(raw_bbox);
+                                let strip_img = image_boxes.should_strip(&raw_bbox)
+                                    || image_boxes.should_strip(&clipped_bbox);
+                                if strip_img {
                                     keep_do = false;
                                     modified = true;
+                                } else if let Some(a) = image_boxes
+                                    .move_for(&raw_bbox)
+                                    .or_else(|| image_boxes.move_for(&clipped_bbox))
+                                {
+                                    if let Some(local) = local_move_matrix(&gs.ctm, a) {
+                                        keep_do = false;
+                                        modified = true;
+                                        out_ops.push(Operation::new("q", vec![]));
+                                        out_ops.push(matrix_op(&local));
+                                        out_ops.push(op.clone());
+                                        out_ops.push(Operation::new("Q", vec![]));
+                                    }
                                 }
                             } else if is_form {
                                 if let Ok(form_bytes) = stream.decompressed_content() {
                                     if let Ok(form_content) = Content::decode(&form_bytes) {
+                                        let form_matrix =
+                                            read_matrix_from_dict(&stream.dict, b"Matrix")
+                                                .unwrap_or_else(Matrix2D::identity);
+                                        let form_ctm = form_matrix.multiply(&gs.ctm);
                                         let form_res = stream
                                             .dict
                                             .get(b"Resources")
@@ -802,16 +1369,31 @@ fn rewrite_operations(
                                             .cloned();
                                         let form_fonts = resolve_page_fonts(doc, form_res.as_ref());
                                         let merged_fonts = merge_fonts(fonts, &form_fonts);
-                                        let form_xobjs = resolve_page_xobjects(doc, form_res.as_ref());
+                                        let own_form_xobjs =
+                                            resolve_page_xobjects(doc, form_res.as_ref());
+                                        let merged_xobjs = merge_xobjects(xobjects, &own_form_xobjs);
+                                        let form_resources_shared = stream
+                                            .dict
+                                            .get(b"Resources")
+                                            .ok()
+                                            .and_then(|o| o.as_reference().ok())
+                                            .map(|id| count_object_references(doc, id) > 1)
+                                            .unwrap_or(resources_shared);
+                                        let mut inner_added_xobjects: HashMap<Vec<u8>, ObjectId> =
+                                            HashMap::new();
                                         let (form_new_ops, form_changed) = rewrite_operations(
                                             doc,
                                             &form_content.operations,
-                                            gs.ctm,
+                                            form_ctm,
+                                            gs.clip_bbox,
                                             text_boxes,
                                             image_boxes,
                                             shape_boxes,
                                             &merged_fonts,
-                                            &form_xobjs,
+                                            &merged_xobjs,
+                                            form_resources_shared,
+                                            &mut inner_added_xobjects,
+                                            clone_seq,
                                             stats,
                                         )?;
                                         if form_changed {
@@ -830,7 +1412,51 @@ fn rewrite_operations(
                                             {
                                                 target.set_plain_content(encoded);
                                                 let _ = target.compress();
-                                                doc.objects.insert(obj_id, Object::Stream(target));
+                                                let same_stream_uses = ops
+                                                    .iter()
+                                                    .filter(|o| {
+                                                        o.operator == "Do"
+                                                            && o.operands
+                                                                .first()
+                                                                .and_then(|x| x.as_name().ok())
+                                                                == Some(name)
+                                                    })
+                                                    .count();
+                                                let shared_in_doc = same_stream_uses > 1
+                                                    || count_object_references(doc, obj_id) > 1
+                                                    || resources_shared;
+                                                if shared_in_doc {
+                                                    *clone_seq += 1;
+                                                    let new_name =
+                                                        format!("GpRedForm{}", *clone_seq)
+                                                            .into_bytes();
+                                                    let new_id =
+                                                        doc.add_object(Object::Stream(target));
+                                                    if !inner_added_xobjects.is_empty() {
+                                                        attach_xobjects_to_dict(
+                                                            doc,
+                                                            new_id,
+                                                            &inner_added_xobjects,
+                                                        );
+                                                    }
+                                                    parent_added_xobjects
+                                                        .insert(new_name.clone(), new_id);
+                                                    keep_do = false;
+                                                    out_ops.push(Operation::new(
+                                                        "Do",
+                                                        vec![Object::Name(new_name)],
+                                                    ));
+                                                } else {
+                                                    doc.objects
+                                                        .insert(obj_id, Object::Stream(target));
+                                                    if !inner_added_xobjects.is_empty() {
+                                                        attach_xobjects_to_dict(
+                                                            doc,
+                                                            obj_id,
+                                                            &inner_added_xobjects,
+                                                        );
+                                                    }
+                                                }
                                                 stats.modified_streams += 1;
                                             }
                                         }
@@ -878,6 +1504,71 @@ fn glyph_user_advance(
     ((glyph.width_thousandths / 1000.0) * font_size + char_spacing + tw) * horiz_scale
 }
 
+fn merge_xobjects(
+    outer: &HashMap<Vec<u8>, ObjectId>,
+    inner: &HashMap<Vec<u8>, ObjectId>,
+) -> HashMap<Vec<u8>, ObjectId> {
+    let mut combined = outer.clone();
+    for (k, v) in inner {
+        combined.insert(k.clone(), *v);
+    }
+    combined
+}
+
+fn read_matrix_from_dict(dict: &Dictionary, key: &[u8]) -> Option<Matrix2D> {
+    let arr = dict.get(key).ok()?.as_array().ok()?;
+    if arr.len() < 6 {
+        return None;
+    }
+    Some(Matrix2D {
+        a: num_arg(arr.first())?,
+        b: num_arg(arr.get(1))?,
+        c: num_arg(arr.get(2))?,
+        d: num_arg(arr.get(3))?,
+        e: num_arg(arr.get(4))?,
+        f: num_arg(arr.get(5))?,
+    })
+}
+
+fn count_object_references(doc: &Document, target: ObjectId) -> usize {
+    fn count_in_obj(obj: &Object, target: ObjectId) -> usize {
+        match obj {
+            Object::Reference(id) => usize::from(*id == target),
+            Object::Array(arr) => arr.iter().map(|o| count_in_obj(o, target)).sum(),
+            Object::Dictionary(dict) => dict.iter().map(|(_, v)| count_in_obj(v, target)).sum(),
+            Object::Stream(stream) => stream
+                .dict
+                .iter()
+                .map(|(_, v)| count_in_obj(v, target))
+                .sum(),
+            _ => 0,
+        }
+    }
+    doc.objects.values().map(|o| count_in_obj(o, target)).sum()
+}
+
+fn effective_page_font_size(ctm: &Matrix2D, tm: &Matrix2D, font_size: f64) -> f64 {
+    let total = tm.multiply(ctm);
+    let scale = total.a.hypot(total.b).max(total.c.hypot(total.d)).max(1e-6);
+    (font_size.abs().max(1e-4) * scale).max(2.0)
+}
+
+fn is_drifted_tail_candidate(glyph_bbox: &BBox, rb: &BBox, eff_fs: f64) -> bool {
+    let vert_overlap = glyph_bbox.y1.min(rb.y1) - glyph_bbox.y0.max(rb.y0);
+    let glyph_h = (glyph_bbox.y1 - glyph_bbox.y0).max(eff_fs * 0.5);
+    if vert_overlap < glyph_h * 0.2 {
+        return false;
+    }
+    let dx_gap = if glyph_bbox.x0 > rb.x1 {
+        glyph_bbox.x0 - rb.x1
+    } else if rb.x0 > glyph_bbox.x1 {
+        rb.x0 - glyph_bbox.x1
+    } else {
+        0.0
+    };
+    dx_gap <= (eff_fs * 2.5).max(16.0)
+}
+
 fn glyph_page_bbox(
     ctm: &Matrix2D,
     tm: &Matrix2D,
@@ -886,8 +1577,8 @@ fn glyph_page_bbox(
     rise: f64,
 ) -> BBox {
     let total = tm.multiply(ctm);
-    let abs_fs = font_size.abs().max(1.0);
-    let w = advance_x.max(abs_fs * 0.25);
+    let abs_fs = font_size.abs().max(1e-4);
+    let w = advance_x.max(abs_fs * 0.18);
     let y_bot = rise - abs_fs * 0.28;
     let y_top = rise + abs_fs * 0.88;
     let corners = [
@@ -965,4 +1656,322 @@ pub fn create_sample_pdf_with_text_lines(lines: &[(&str, f64, f64, f64)]) -> Res
     doc.save_to(&mut out)
         .map_err(|e| PdfError::Backend(format!("failed saving test PDF: {e}")))?;
     Ok(out)
+}
+
+#[cfg(test)]
+mod image_target_tests {
+    use super::*;
+
+    /// One page with a full-page background image and a small logo image drawn on top of it.
+    fn two_image_pdf() -> Vec<u8> {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let img = |doc: &mut Document| {
+            doc.add_object(Stream::new(
+                dictionary! {
+                    "Type" => "XObject",
+                    "Subtype" => "Image",
+                    "Width" => 1,
+                    "Height" => 1,
+                    "ColorSpace" => "DeviceRGB",
+                    "BitsPerComponent" => 8,
+                },
+                vec![255, 0, 0],
+            ))
+        };
+        let bg = img(&mut doc);
+        let logo = img(&mut doc);
+        let resources_id = doc.add_object(dictionary! {
+            "XObject" => dictionary! { "Bg" => bg, "Logo" => logo },
+        });
+        let ops = vec![
+            Operation::new("q", vec![]),
+            Operation::new("cm", vec![595.into(), 0.into(), 0.into(), 842.into(), 0.into(), 0.into()]),
+            Operation::new("Do", vec!["Bg".into()]),
+            Operation::new("Q", vec![]),
+            Operation::new("q", vec![]),
+            Operation::new("cm", vec![100.into(), 0.into(), 0.into(), 100.into(), 400.into(), 600.into()]),
+            Operation::new("Do", vec!["Logo".into()]),
+            Operation::new("Q", vec![]),
+        ];
+        let content_id = doc.add_object(Stream::new(dictionary! {}, Content { operations: ops }.encode().unwrap()));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+            "Resources" => resources_id,
+            "Contents" => content_id,
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1 }),
+        );
+        let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog_id);
+        let mut out = Vec::new();
+        doc.save_to(&mut out).unwrap();
+        out
+    }
+
+    fn drawn_xobjects(pdf: &[u8]) -> Vec<String> {
+        let doc = Document::load_mem(pdf).unwrap();
+        let page_id = *doc.get_pages().get(&1).unwrap();
+        let content = Content::decode(&doc.get_page_content(page_id)).unwrap();
+        content
+            .operations
+            .iter()
+            .filter(|op| op.operator == "Do")
+            .filter_map(|op| op.operands.first()?.as_name().ok().map(|n| String::from_utf8_lossy(n).to_string()))
+            .collect()
+    }
+
+    fn strip_image(pdf: &[u8], x: f64, y: f64, w: f64, h: f64) -> Vec<u8> {
+        redact_pdf_bytes_with_lopdf(
+            pdf,
+            &[],
+            RedactionOptions {
+                image_only_rects: vec![RedactionRect { page_index: 0, x, y, width: w, height: h }],
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .0
+    }
+
+    #[test]
+    fn stripping_logo_keeps_overlapping_background_image() {
+        // Logo visual rect: x=400, top = 842 - 700 = 142.
+        let out = strip_image(&two_image_pdf(), 400.0, 142.0, 100.0, 100.0);
+        assert_eq!(drawn_xobjects(&out), vec!["Bg".to_string()]);
+    }
+
+    /// Visits every image `Do` with its effective user-space bbox, in paint order.
+    fn painted_images(pdf: &[u8]) -> Vec<(String, BBox)> {
+        let doc = Document::load_mem(pdf).unwrap();
+        let page_id = *doc.get_pages().get(&1).unwrap();
+        let content = Content::decode(&doc.get_page_content(page_id)).unwrap();
+        let mut stack = vec![Matrix2D::identity()];
+        let mut out = Vec::new();
+        for op in &content.operations {
+            match op.operator.as_str() {
+                "q" => stack.push(*stack.last().unwrap()),
+                "Q" => {
+                    stack.pop();
+                }
+                "cm" => {
+                    let v: Vec<f64> = op.operands.iter().map(|o| num_arg(Some(o)).unwrap()).collect();
+                    let m = Matrix2D { a: v[0], b: v[1], c: v[2], d: v[3], e: v[4], f: v[5] };
+                    let top = stack.last_mut().unwrap();
+                    *top = m.multiply(top);
+                }
+                "Do" => {
+                    let ctm = stack.last().unwrap();
+                    let pts = [
+                        ctm.transform_point(0.0, 0.0),
+                        ctm.transform_point(1.0, 0.0),
+                        ctm.transform_point(0.0, 1.0),
+                        ctm.transform_point(1.0, 1.0),
+                    ];
+                    let name = String::from_utf8_lossy(op.operands[0].as_name().unwrap()).to_string();
+                    out.push((name, BBox::from_points(&pts)));
+                }
+                _ => {}
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn moving_background_in_place_keeps_it_beneath_the_logo() {
+        let out = redact_pdf_bytes_with_lopdf(
+            &two_image_pdf(),
+            &[],
+            RedactionOptions {
+                image_transforms: vec![ObjectTransform {
+                    from: RedactionRect { page_index: 0, x: 0.0, y: 0.0, width: 595.0, height: 842.0 },
+                    to_x: 40.0,
+                    to_y: 30.0,
+                    to_width: 297.5,
+                    to_height: 421.0,
+                    from_rotation_deg: 0.0,
+                    to_rotation_deg: 0.0,
+                    flip_x_changed: false,
+                    flip_y_changed: false,
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .0;
+        let painted = painted_images(&out);
+        assert_eq!(painted.iter().map(|p| p.0.as_str()).collect::<Vec<_>>(), vec!["Bg", "Logo"]);
+        let bg = painted[0].1;
+        // Visual (40,30,297.5x421) => user x 40..337.5, y 842-451=391..812.
+        assert!((bg.x0 - 40.0).abs() < 0.05 && (bg.x1 - 337.5).abs() < 0.05, "{bg:?}");
+        assert!((bg.y0 - 391.0).abs() < 0.05 && (bg.y1 - 812.0).abs() < 0.05, "{bg:?}");
+        let logo = painted[1].1;
+        assert!((logo.x0 - 400.0).abs() < 0.01 && (logo.y0 - 600.0).abs() < 0.01, "{logo:?}");
+    }
+
+    #[test]
+    fn stripping_background_keeps_logo_drawn_on_top() {
+        let out = strip_image(&two_image_pdf(), 0.0, 0.0, 595.0, 842.0);
+        assert_eq!(drawn_xobjects(&out), vec!["Logo".to_string()]);
+    }
+
+    #[test]
+    fn stripping_image_inside_translated_form_xobject_respects_matrix() {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let img = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 1,
+                "Height" => 1,
+                "ColorSpace" => "DeviceRGB",
+                "BitsPerComponent" => 8,
+            },
+            vec![0, 255, 0],
+        ));
+        let form = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Form",
+                "BBox" => vec![0.into(), 0.into(), 100.into(), 50.into()],
+                "Matrix" => vec![1.into(), 0.into(), 0.into(), 1.into(), 120.into(), 600.into()],
+                "Resources" => dictionary! {
+                    "XObject" => dictionary! { "ImInner" => img },
+                },
+            },
+            Content {
+                operations: vec![
+                    Operation::new("q", vec![]),
+                    Operation::new("cm", vec![100.into(), 0.into(), 0.into(), 50.into(), 0.into(), 0.into()]),
+                    Operation::new("Do", vec!["ImInner".into()]),
+                    Operation::new("Q", vec![]),
+                ],
+            }
+            .encode()
+            .unwrap(),
+        ));
+        let resources_id = doc.add_object(dictionary! {
+            "XObject" => dictionary! { "Fm1" => form },
+        });
+        let content_id = doc.add_object(Stream::new(
+            dictionary! {},
+            Content {
+                operations: vec![Operation::new("Do", vec!["Fm1".into()])],
+            }
+            .encode()
+            .unwrap(),
+        ));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+            "Resources" => resources_id,
+            "Contents" => content_id,
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1 }),
+        );
+        let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog_id);
+        let mut pdf = Vec::new();
+        doc.save_to(&mut pdf).unwrap();
+
+        // Image user-space bbox is x=120..220, y=600..650 => visual y = 842 - 650 = 192.
+        let out = strip_image(&pdf, 120.0, 192.0, 100.0, 50.0);
+        let out_doc = Document::load_mem(&out).unwrap();
+        let out_form = match out_doc.get_object(form).unwrap() {
+            Object::Stream(s) => s,
+            other => panic!("expected Stream, got {other:?}"),
+        };
+        let form_ops = Content::decode(&out_form.decompressed_content().unwrap()).unwrap();
+        assert!(
+            !form_ops.operations.iter().any(|op| op.operator == "Do"),
+            "inner image Do should be stripped when Form /Matrix is applied: {:?}",
+            form_ops.operations
+        );
+    }
+
+    #[test]
+    fn stripping_clipped_image_matches_visible_clip_rect() {
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let img = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 1,
+                "Height" => 1,
+                "ColorSpace" => "DeviceRGB",
+                "BitsPerComponent" => 8,
+            },
+            vec![0, 0, 255],
+        ));
+        let resources_id = doc.add_object(dictionary! {
+            "XObject" => dictionary! { "ClippedImg" => img },
+        });
+        let ops = vec![
+            Operation::new("q", vec![]),
+            Operation::new("re", vec![100.into(), 500.into(), 60.into(), 40.into()]),
+            Operation::new("W", vec![]),
+            Operation::new("n", vec![]),
+            Operation::new("cm", vec![200.into(), 0.into(), 0.into(), 200.into(), 50.into(), 450.into()]),
+            Operation::new("Do", vec!["ClippedImg".into()]),
+            Operation::new("Q", vec![]),
+        ];
+        let content_id = doc.add_object(Stream::new(dictionary! {}, Content { operations: ops }.encode().unwrap()));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 595.into(), 842.into()],
+            "Resources" => resources_id,
+            "Contents" => content_id,
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! { "Type" => "Pages", "Kids" => vec![page_id.into()], "Count" => 1 }),
+        );
+        let catalog_id = doc.add_object(dictionary! { "Type" => "Catalog", "Pages" => pages_id });
+        doc.trailer.set("Root", catalog_id);
+        let mut pdf = Vec::new();
+        doc.save_to(&mut pdf).unwrap();
+
+        // Visible clip user-space bbox is (100, 500..540) => visual y = 842 - 540 = 302.
+        let out = strip_image(&pdf, 100.0, 302.0, 60.0, 40.0);
+        assert!(drawn_xobjects(&out).is_empty());
+    }
+
+    #[test]
+    fn stripping_text_does_not_leave_trailing_period_due_to_metric_drift() {
+        let pdf = create_sample_pdf_with_text_lines(&[("Merhaba dunya.", 72.0, 700.0, 12.0)]).unwrap();
+        // Deliberately stop redaction rect 5pt short of the trailing period so drift leaves `.` outside.
+        let (out, _) = redact_pdf_bytes_with_lopdf(
+            &pdf,
+            &[],
+            RedactionOptions {
+                text_only_rects: vec![RedactionRect {
+                    page_index: 0,
+                    x: 72.0,
+                    y: 842.0 - 712.0,
+                    width: 72.0,
+                    height: 16.0,
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let doc = Document::load_mem(&out).unwrap();
+        let page_id = *doc.get_pages().get(&1).unwrap();
+        let content = Content::decode(&doc.get_page_content(page_id)).unwrap();
+        assert!(
+            !content.operations.iter().any(|op| op.operator == "Tj" || op.operator == "TJ"),
+            "trailing punctuation should not be left behind: {:?}",
+            content.operations
+        );
+    }
 }

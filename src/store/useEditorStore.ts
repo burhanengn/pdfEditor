@@ -1,6 +1,8 @@
 import { create } from 'zustand';
 import {
+  computeTextEditSignature,
   getElementLayerTier,
+  isUnmodifiedTextEdit,
   type CanvasElement,
   type HighlightElement,
   type ImageAddElement,
@@ -39,7 +41,8 @@ import type {
   ZoomMode,
 } from '@/types/pdf';
 import { clearSourceDocBytes, setSourceDocBytes } from '@/engine/sourceDocRegistry';
-import { normalizeRotation } from '@/engine/coordinates';
+import { getRotatedBoundingBox, normalizeRotation } from '@/engine/coordinates';
+import { computeAlignedPositions, type AlignAction } from '@/utils/alignment';
 import {
   applyCropSubRectToElement,
   buildClippingMaskFromElement,
@@ -128,6 +131,8 @@ interface EditorState {
   selectedPageIds: string[];
   lastSelectedPageId: string | null;
   selectedElementIds: string[];
+  selectedPathVertexIndices: number[];
+  marqueeSelectMode: boolean;
   editingTextElementId: string | null;
   editingPathElementId: string | null;
   croppingImageElementId: string | null;
@@ -253,8 +258,18 @@ interface EditorState {
     modifiers?: { shiftKey?: boolean; ctrlOrMetaKey?: boolean },
   ) => void;
   selectElements: (ids: string[]) => void;
+  selectElementsInRect: (pageId: string, rect: RectBox, additive?: boolean) => void;
+  setSelectedPathVertexIndices: (indices: number[]) => void;
+  setMarqueeSelectMode: (enabled: boolean) => void;
   setEditingTextElementId: (id: string | null) => void;
   setEditingPathElementId: (id: string | null) => void;
+  togglePathVerticesSmooth: (
+    elementId: string,
+    vertexIndices: number[],
+    forceValue?: boolean,
+  ) => void;
+  deletePathVertices: (elementId: string, vertexIndices: number[]) => void;
+  alignSelectedElements: (action: AlignAction) => void;
   setCroppingImageElementId: (id: string | null) => void;
   setContextMenu: (menu: CanvasContextMenuState | null) => void;
   openRotateCopyDialog: (ids: string[] | null) => void;
@@ -715,6 +730,8 @@ export const useEditorStore = create<EditorState>((set, get) => ({
   selectedPageIds: [],
   lastSelectedPageId: null,
   selectedElementIds: [],
+  selectedPathVertexIndices: [],
+  marqueeSelectMode: false,
   editingTextElementId: null,
   editingPathElementId: null,
   croppingImageElementId: null,
@@ -818,19 +835,30 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       lastSavedChangeCounter: s.changeCounter,
     })),
   setToolMode: (toolMode) =>
-    set({
-      toolMode,
-      ...(toolMode !== 'select' ? { appMode: 'edit' as AppMode } : {}),
-      pendingSignaturePlacement: null,
-      ...(toolMode !== 'select'
-        ? {
-            selectedElementIds: [],
-            editingTextElementId: null,
-            editingPathElementId: null,
-            croppingImageElementId: null,
-            contextMenu: null,
-          }
-        : {}),
+    set((s) => {
+      const pruned = s.elements.filter((el) => !(el.kind === 'text-edit' && isUnmodifiedTextEdit(el)));
+      let nextPast = s.past;
+      if (pruned.length < s.elements.length && s.past.length > 0 && s.past[s.past.length - 1].elements.length === pruned.length) {
+        nextPast = s.past.slice(0, -1);
+      }
+      return {
+        toolMode,
+        ...(toolMode !== 'select' ? { appMode: 'edit' as AppMode } : {}),
+        pendingSignaturePlacement: null,
+        ...(toolMode !== 'select'
+          ? {
+              elements: pruned,
+              selectedElementIds: [],
+              selectedPathVertexIndices: [],
+              editingTextElementId: null,
+              editingPathElementId: null,
+              croppingImageElementId: null,
+              contextMenu: null,
+              past: nextPast,
+              canUndo: nextPast.length > 0,
+            }
+          : {}),
+      };
     }),
   setZoom: (zoom, mode = 'custom') =>
     set({
@@ -1186,20 +1214,285 @@ export const useEditorStore = create<EditorState>((set, get) => ({
     }),
 
   selectElements: (selectedElementIds) =>
-    set((s) => ({
-      selectedElementIds,
-      editingPathElementId:
+    set((s) => {
+      const keepPathEdit =
         s.editingPathElementId && selectedElementIds.includes(s.editingPathElementId)
           ? s.editingPathElementId
-          : null,
-      croppingImageElementId:
-        s.croppingImageElementId && selectedElementIds.includes(s.croppingImageElementId)
-          ? s.croppingImageElementId
-          : null,
-    })),
-  setEditingTextElementId: (editingTextElementId) => set({ editingTextElementId }),
+          : null;
+      const keepIds = new Set(selectedElementIds);
+      if (s.editingTextElementId) keepIds.add(s.editingTextElementId);
+      const pruned = s.elements.filter(
+        (el) => !(el.kind === 'text-edit' && isUnmodifiedTextEdit(el) && !keepIds.has(el.id)),
+      );
+      let nextPast = s.past;
+      if (pruned.length < s.elements.length && s.past.length > 0) {
+        const top = s.past[s.past.length - 1];
+        if (top.elements.length === pruned.length) {
+          nextPast = s.past.slice(0, -1);
+        }
+      }
+      return {
+        elements: pruned,
+        selectedElementIds,
+        selectedPathVertexIndices: keepPathEdit ? s.selectedPathVertexIndices : [],
+        editingPathElementId: keepPathEdit,
+        croppingImageElementId:
+          s.croppingImageElementId && selectedElementIds.includes(s.croppingImageElementId)
+            ? s.croppingImageElementId
+            : null,
+        past: nextPast,
+        canUndo: nextPast.length > 0,
+      };
+    }),
+  selectElementsInRect: (pageId, rect, additive = false) =>
+    set((s) => {
+      const rx0 = Math.min(rect.x, rect.x + rect.width);
+      const ry0 = Math.min(rect.y, rect.y + rect.height);
+      const rx1 = Math.max(rect.x, rect.x + rect.width);
+      const ry1 = Math.max(rect.y, rect.y + rect.height);
+      const rectIntersects = (bx: number, by: number, bw: number, bh: number) =>
+        bx + bw >= rx0 && bx <= rx1 && by + bh >= ry0 && by <= ry1;
+
+      const workingElements = [...s.elements];
+      const hits: string[] = [];
+      const seenBlockIds = new Set<string>();
+      const seenImageIds = new Set<string>();
+      const seenShapeIds = new Set<string>();
+
+      for (const el of workingElements) {
+        if (el.pageId !== pageId) continue;
+        if (el.kind === 'text-edit') seenBlockIds.add(el.originalBlockId);
+        if (el.kind === 'image-replacement') seenImageIds.add(el.originalImageId);
+        if (el.kind === 'shape-replacement') seenShapeIds.add(el.originalShapeId);
+        if (
+          (el.kind === 'text-edit' ||
+            el.kind === 'image-replacement' ||
+            el.kind === 'shape-replacement') &&
+          el.deleted
+        ) {
+          continue;
+        }
+        if (el.isBackgroundLayer && !s.selectBackgroundMode) continue;
+        const b = getRotatedBoundingBox(
+          { x: el.x, y: el.y, width: el.width, height: el.height },
+          el.rotation ?? 0,
+        );
+        if (rectIntersects(b.x, b.y, b.width, b.height)) {
+          hits.push(el.id);
+        }
+      }
+
+      const extraction = s.pageExtractions[pageId];
+      if (extraction) {
+        for (const img of extraction.images) {
+          if (seenImageIds.has(img.id)) continue;
+          const isBgLayer = Boolean(img.isBackgroundLayer || img.isHeaderOrBackground);
+          if (img.isBackgroundLayer && !s.selectBackgroundMode) continue;
+          if (!rectIntersects(img.x, img.y, img.width, img.height)) continue;
+          const previewUrl = blobRegistry.createUrlFromBytes(img.pngBytes, 'image/png', 'doc');
+          const isBehind = Boolean(img.behindContent || isBgLayer);
+          const tier: LayerTier = isBehind ? 1 : 2;
+          const created: ImageReplacementElement = {
+            id: createId('imgedit'),
+            pageId,
+            kind: 'image-replacement',
+            originalImageId: img.id,
+            resourceName: img.resourceName,
+            originalRect: { x: img.x, y: img.y, width: img.width, height: img.height },
+            originalRotation: img.rotation,
+            name: img.resourceName || 'Embedded Image',
+            mimeType: 'image/png',
+            bytes: img.pngBytes,
+            previewUrl,
+            x: img.x,
+            y: img.y,
+            width: img.width,
+            height: img.height,
+            rotation: img.rotation,
+            flipX: img.flipX,
+            flipY: img.flipY,
+            opacity: img.opacity ?? 1,
+            zIndex: img.operatorIndex ?? getNextZIndexForTier(workingElements, pageId, tier),
+            naturalWidth: img.pixelWidth,
+            naturalHeight: img.pixelHeight,
+            aspectLocked: true,
+            behindContent: isBehind,
+            isBackgroundLayer: isBgLayer,
+          };
+          workingElements.push(created);
+          hits.push(created.id);
+        }
+
+        for (const shp of extraction.shapes ?? []) {
+          if (seenShapeIds.has(shp.id)) continue;
+          const isBgLayer = Boolean(shp.isBackgroundLayer || shp.isHeaderOrBackground);
+          if (shp.isBackgroundLayer && !s.selectBackgroundMode) continue;
+          if (!rectIntersects(shp.x, shp.y, shp.width, shp.height)) continue;
+          const isBehind = Boolean(shp.behindContent || isBgLayer);
+          const tier: LayerTier = isBehind ? 1 : 2;
+          const created: ShapeReplacementElement = {
+            id: createId('shpedit'),
+            pageId,
+            kind: 'shape-replacement',
+            originalShapeId: shp.id,
+            originalRect: { x: shp.x, y: shp.y, width: shp.width, height: shp.height },
+            originalStrokeWidth: shp.strokeWidth,
+            fillColor: shp.fillColor ?? 'transparent',
+            strokeColor: shp.strokeColor ?? undefined,
+            strokeWidth: shp.strokeWidth,
+            x: shp.x,
+            y: shp.y,
+            width: shp.width,
+            height: shp.height,
+            rotation: 0,
+            opacity: shp.opacity ?? 1,
+            zIndex: shp.operatorIndex ?? getNextZIndexForTier(workingElements, pageId, tier),
+            behindContent: isBehind,
+            isBackgroundLayer: isBgLayer,
+          };
+          workingElements.push(created);
+          hits.push(created.id);
+        }
+
+        for (const blk of extraction.textBlocks) {
+          if (seenBlockIds.has(blk.id)) continue;
+          if (!rectIntersects(blk.x, blk.y, blk.width, blk.height)) continue;
+          const lines = blk.text.split('\n');
+          const longest = lines.reduce((best, cur) => (cur.length > best.length ? cur : best), '');
+          const fontStatus = resolveFontDisplayStatus({
+            fontFamily: blk.fontFamily,
+            fallbackFontFamily: blk.fallbackFontFamily,
+            originalFontName: blk.originalFontName ?? blk.rawFontName,
+            isCustomFont: blk.isCustomFont,
+            text: blk.text,
+            userFonts: s.userFonts,
+            extractedFonts: s.extractedFonts,
+          });
+          const isMultiVisualLine =
+            lines.length > 1 ||
+            blk.height >= blk.fontSize * Math.max(1.05, blk.lineHeight || 1.2) * 1.65;
+          const calibration = calibrateDomTextMetrics({
+            sampleText: longest,
+            targetPdfWidthPt: isMultiVisualLine ? 0 : blk.width,
+            fontSizePt: blk.fontSize,
+            lineHeight: blk.lineHeight,
+            baselineOffsetPt: blk.baselineOffset,
+            fontFamily: blk.fontFamily,
+            cssFontFamily: fontStatus.cssFamily,
+            fontWeight: blk.bold ? 700 : 400,
+            fontStyle: blk.italic ? 'italic' : 'normal',
+            initialHorizontalScale: blk.horizontalScale ?? 1,
+          });
+          const initialWidth =
+            Math.max(blk.paragraphWidth ?? blk.width, blk.width) +
+            (isMultiVisualLine ? 0 : Math.max(4, blk.fontSize * 0.25));
+          const created: TextEditElement = {
+            id: createId('txtedit'),
+            pageId,
+            kind: 'text-edit',
+            originalBlockId: blk.id,
+            originalRect: { x: blk.x, y: blk.y, width: blk.width, height: blk.height },
+            originalText: blk.text,
+            x: blk.x,
+            y: blk.y,
+            width: initialWidth,
+            height: Math.max(blk.height, blk.fontSize * 1.25),
+            rotation: 0,
+            opacity: 1,
+            zIndex: getNextZIndexForTier(workingElements, pageId, 3),
+            text: blk.text,
+            runs: blk.runs ? blk.runs.map((r) => ({ ...r })) : undefined,
+            fontFamily: blk.fontFamily,
+            fallbackFontFamily: blk.fallbackFontFamily,
+            fontSource: blk.fontSource,
+            rawFontName: blk.rawFontName,
+            originalFontName: blk.originalFontName,
+            isCustomFont: blk.isCustomFont,
+            fontSize: blk.fontSize,
+            color: blk.color,
+            bold: blk.bold,
+            italic: blk.italic,
+            align: blk.align ?? 'left',
+            lineHeight: blk.lineHeight,
+            baselineOffset: blk.baselineOffset,
+            horizontalScale: calibration.horizontalScale,
+            letterSpacing:
+              calibration.letterSpacingPt !== 0
+                ? calibration.letterSpacingPt
+                : (blk.letterSpacing ?? 0),
+            renderedLineCount: isMultiVisualLine
+              ? Math.max(
+                  lines.length,
+                  Math.round(blk.height / (blk.fontSize * Math.max(1.05, blk.lineHeight || 1.2))),
+                )
+              : lines.length,
+            widthResizedByUser: false,
+            maskColor: '#ffffff',
+          };
+          created.originalSignature = computeTextEditSignature(created);
+          workingElements.push(created);
+          hits.push(created.id);
+        }
+      }
+
+      const nextSelected = additive
+        ? Array.from(new Set([...s.selectedElementIds, ...hits]))
+        : hits;
+      const keepIds = new Set(nextSelected);
+      const pruned = workingElements.filter(
+        (el) => !(el.kind === 'text-edit' && isUnmodifiedTextEdit(el) && !keepIds.has(el.id)),
+      );
+      let nextPast = s.past;
+      if (pruned.length < s.elements.length && s.past.length > 0) {
+        const top = s.past[s.past.length - 1];
+        if (top.elements.length === pruned.length) {
+          nextPast = s.past.slice(0, -1);
+        }
+      }
+      return {
+        elements: pruned,
+        activePageId: pageId,
+        selectedElementIds: nextSelected,
+        selectedPathVertexIndices: [],
+        editingTextElementId: null,
+        editingPathElementId: null,
+        croppingImageElementId: null,
+        contextMenu: null,
+        past: nextPast,
+        canUndo: nextPast.length > 0,
+      };
+    }),
+  setSelectedPathVertexIndices: (selectedPathVertexIndices) => set({ selectedPathVertexIndices }),
+  setMarqueeSelectMode: (marqueeSelectMode) => set({ marqueeSelectMode }),
+  setEditingTextElementId: (editingTextElementId) =>
+    set((s) => {
+      if (editingTextElementId !== null) {
+        return { editingTextElementId };
+      }
+      const keepIds = new Set(s.selectedElementIds);
+      const pruned = s.elements.filter(
+        (el) => !(el.kind === 'text-edit' && isUnmodifiedTextEdit(el) && !keepIds.has(el.id)),
+      );
+      let nextPast = s.past;
+      if (pruned.length < s.elements.length && s.past.length > 0) {
+        const top = s.past[s.past.length - 1];
+        if (top.elements.length === pruned.length) {
+          nextPast = s.past.slice(0, -1);
+        }
+      }
+      return {
+        editingTextElementId: null,
+        elements: pruned,
+        past: nextPast,
+        canUndo: nextPast.length > 0,
+      };
+    }),
   setEditingPathElementId: (editingPathElementId) =>
-    set({ editingPathElementId, croppingImageElementId: null }),
+    set({
+      editingPathElementId,
+      selectedPathVertexIndices: [],
+      croppingImageElementId: null,
+    }),
   setCroppingImageElementId: (croppingImageElementId) =>
     set((s) => ({
       croppingImageElementId,
@@ -2201,6 +2494,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       widthResizedByUser: false,
       maskColor: maskColor ?? '#ffffff',
     };
+    created.originalSignature = computeTextEditSignature(created);
 
     const snapshot = cloneSnapshot(state.pages, state.elements, state.pageNumbering);
     const nextElements = [...state.elements, created];
@@ -2258,6 +2552,7 @@ export const useEditorStore = create<EditorState>((set, get) => ({
         width: img.width,
         height: img.height,
       },
+      originalRotation: img.rotation,
       name: img.resourceName || 'Embedded Image',
       mimeType: 'image/png',
       bytes: img.pngBytes,
@@ -2920,6 +3215,92 @@ export const useEditorStore = create<EditorState>((set, get) => ({
       ],
       options.recordHistory ?? false,
     );
+  },
+
+  togglePathVerticesSmooth: (elementId, vertexIndices, forceValue) => {
+    const state = get();
+    const target = state.elements.find(
+      (el): el is VectorPathElement => el.kind === 'path' && el.id === elementId,
+    );
+    if (!target || target.points.length < 2) return;
+    const targetSet = new Set(
+      vertexIndices.length > 0
+        ? vertexIndices.filter((i) => i >= 0 && i < target.points.length)
+        : target.points.map((_, i) => i),
+    );
+    if (targetSet.size === 0) return;
+
+    const allCurrentlySmooth = Array.from(targetSet).every(
+      (idx) => target.points[idx]?.smooth ?? Boolean(target.smooth),
+    );
+    const nextSmooth = forceValue !== undefined ? forceValue : !allCurrentlySmooth;
+    const nextPoints = target.points.map((pt, idx) =>
+      targetSet.has(idx)
+        ? { ...pt, smooth: nextSmooth }
+        : { ...pt, smooth: pt.smooth ?? Boolean(target.smooth) },
+    );
+    const nextGlobalSmooth = nextPoints.every((pt) => Boolean(pt.smooth));
+    state.updateElements(
+      [
+        {
+          id: elementId,
+          patch: {
+            points: nextPoints,
+            smooth: nextGlobalSmooth,
+          },
+        },
+      ],
+      true,
+    );
+  },
+
+  deletePathVertices: (elementId, vertexIndices) => {
+    const state = get();
+    const target = state.elements.find(
+      (el): el is VectorPathElement => el.kind === 'path' && el.id === elementId,
+    );
+    if (!target || vertexIndices.length === 0) return;
+    const delSet = new Set(vertexIndices);
+    const absPts = denormalizePathPoints(target);
+    const remaining = absPts.filter((_, i) => !delSet.has(i));
+    if (remaining.length < 2) {
+      state.deleteElements([elementId]);
+      set({ editingPathElementId: null, selectedPathVertexIndices: [] });
+      return;
+    }
+    const { rect, points } = normalizeAbsolutePoints(remaining);
+    state.updateElements(
+      [
+        {
+          id: elementId,
+          patch: {
+            x: rect.x,
+            y: rect.y,
+            width: rect.width,
+            height: rect.height,
+            rotation: 0,
+            points,
+          },
+        },
+      ],
+      true,
+    );
+    set({ selectedPathVertexIndices: [] });
+  },
+
+  alignSelectedElements: (action) => {
+    const state = get();
+    const selectedSet = new Set(state.selectedElementIds);
+    const targets = state.elements.filter((el) => selectedSet.has(el.id) && !el.locked);
+    if (targets.length < 2) return;
+    const positions = computeAlignedPositions(targets, action);
+    const updates = Object.entries(positions).map(([id, pos]) => ({
+      id,
+      patch: { x: pos.x, y: pos.y } as Partial<CanvasElement>,
+    }));
+    if (updates.length > 0) {
+      state.updateElements(updates, true);
+    }
   },
 
   clearHistory: () => set({ past: [], future: [], canUndo: false, canRedo: false }),

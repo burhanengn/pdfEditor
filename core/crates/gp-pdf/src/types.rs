@@ -193,6 +193,14 @@ pub struct DetectedImageObject {
     pub natural_width: u32,
     pub natural_height: u32,
     #[serde(default)]
+    pub z_order: usize,
+    #[serde(default)]
+    pub behind_content: bool,
+    #[serde(default)]
+    pub is_background_layer: bool,
+    #[serde(default = "default_opacity_one")]
+    pub opacity: f64,
+    #[serde(default)]
     pub ctm: [f64; 6],
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rgba: Option<Vec<u8>>,
@@ -216,6 +224,18 @@ pub struct DetectedVectorShape {
     pub stroke_width: f64,
     pub is_filled: bool,
     pub is_stroked: bool,
+    #[serde(default)]
+    pub z_order: usize,
+    #[serde(default)]
+    pub behind_content: bool,
+    #[serde(default)]
+    pub is_background_layer: bool,
+    #[serde(default = "default_opacity_one")]
+    pub opacity: f64,
+}
+
+fn default_opacity_one() -> f64 {
+    1.0
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -19,6 +19,41 @@ pub struct RectBox {
     pub height: f64,
 }
 
+/// One run of glyphs drawn at an exact position (visual page coordinates, points).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionedTextSegment {
+    pub text: String,
+    pub x: f64,
+    #[serde(default)]
+    pub width: f64,
+    #[serde(default)]
+    pub bold: bool,
+    #[serde(default)]
+    pub italic: bool,
+    #[serde(default)]
+    pub underline: bool,
+    #[serde(default)]
+    pub strikethrough: bool,
+    /// Glyphs missing from the document's embedded font: draw with the fallback family.
+    #[serde(default)]
+    pub fallback: bool,
+    /// Font size override in points (superscript/subscript); 0 = element font size.
+    #[serde(default)]
+    pub size: f64,
+    /// Baseline offset in points (visual, positive = down) for super/subscript.
+    #[serde(default)]
+    pub rise: f64,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct PositionedTextLine {
+    /// Baseline y in visual page coordinates (top-down, points).
+    pub baseline: f64,
+    pub segments: Vec<PositionedTextSegment>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct NormalizedPoint {
@@ -26,6 +61,8 @@ pub struct NormalizedPoint {
     pub y: f64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub pressure: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub smooth: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -47,7 +84,7 @@ pub enum TextScriptMode {
     Sub,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct TextRun {
     pub text: String,
@@ -55,6 +92,10 @@ pub struct TextRun {
     pub bold: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub italic: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub underline: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub strikethrough: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub script: Option<TextScriptMode>,
 }
@@ -240,6 +281,8 @@ pub enum CanvasElement {
         #[serde(flatten)]
         base: BaseElement,
         source_block_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        original_rect: Option<RectBox>,
         original_text: String,
         text: String,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -251,6 +294,14 @@ pub enum CanvasElement {
         background_color: Option<String>,
         bold: bool,
         italic: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        underline: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strikethrough: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        script_mode: Option<TextScriptMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        embedded_font_id: Option<String>,
         align: TextAlign,
         line_height: f64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -259,6 +310,15 @@ pub enum CanvasElement {
         letter_spacing: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         deleted: Option<bool>,
+        /// Only these regions of the original text are stripped (the lines that really changed);
+        /// untouched lines stay byte-for-byte original. Falls back to `original_rect` when absent.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strip_rects: Option<Vec<RectBox>>,
+        /// Editor-computed, exactly positioned replacement lines (visual page coordinates). When
+        /// present, export draws these instead of re-flowing the paragraph, so the saved/printed
+        /// text matches the on-screen editor glyph for glyph.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        layout_lines: Option<Vec<PositionedTextLine>>,
     },
     #[serde(rename = "text-add", rename_all = "camelCase")]
     TextAdd {
@@ -274,6 +334,14 @@ pub enum CanvasElement {
         background_color: Option<String>,
         bold: bool,
         italic: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        underline: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        strikethrough: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        script_mode: Option<TextScriptMode>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        embedded_font_id: Option<String>,
         align: TextAlign,
         line_height: f64,
         #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -310,6 +378,8 @@ pub enum CanvasElement {
         #[serde(flatten)]
         base: BaseElement,
         source_image_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        original_rect: Option<RectBox>,
         mime_type: String,
         #[serde(default)]
         preview_url: String,
@@ -328,12 +398,24 @@ pub enum CanvasElement {
         flip_x: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         flip_y: Option<bool>,
+        /// Move/resize/rotate/flip the ORIGINAL image object inside the content stream (keeps its
+        /// layer order and original encoding) instead of stripping and re-drawing it on top.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        in_place: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        original_rotation: Option<f64>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        original_flip_x: Option<bool>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        original_flip_y: Option<bool>,
     },
     #[serde(rename = "shape-replacement", rename_all = "camelCase")]
     ShapeReplacement {
         #[serde(flatten)]
         base: BaseElement,
         source_shape_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        original_rect: Option<RectBox>,
         fill_color: String,
         stroke_color: String,
         stroke_width: f64,
@@ -343,6 +425,9 @@ pub enum CanvasElement {
         deleted: Option<bool>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         behind_content: Option<bool>,
+        /// Move/resize/rotate the ORIGINAL vector path in place (keeps layer order).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        in_place: Option<bool>,
     },
     #[serde(rename = "shape", rename_all = "camelCase")]
     VectorShape {
@@ -504,6 +589,24 @@ impl CanvasElement {
             | Self::ShapeReplacement { deleted, .. } => deleted.unwrap_or(false),
             _ => false,
         }
+    }
+
+    pub fn strip_rect(&self) -> RectBox {
+        let orig = match self {
+            Self::TextEdit { original_rect, .. }
+            | Self::ImageReplacement { original_rect, .. }
+            | Self::ShapeReplacement { original_rect, .. } => *original_rect,
+            _ => None,
+        };
+        orig.unwrap_or_else(|| {
+            let b = self.base();
+            RectBox {
+                x: b.x,
+                y: b.y,
+                width: b.width,
+                height: b.height,
+            }
+        })
     }
 }
 

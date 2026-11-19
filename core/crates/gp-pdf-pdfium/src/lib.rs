@@ -1,26 +1,35 @@
+pub mod compile;
 pub mod objects;
 pub mod redaction;
 
+#[cfg(test)]
+mod compile_fidelity_tests;
+
 use std::{collections::HashMap, path::Path};
 
-use gp_model::{CanvasElement, PageMeta, RotationAngle};
+use gp_model::{CanvasElement, PageMeta, RectBox, RotationAngle};
 use gp_pdf::{
     CancellationFlag, PdfBackend, PdfError, PdfLinkAnnotation, PdfLinkKind, PdfOpenResult,
     PdfOpenStatus, PdfOutlineNode, PdfPageSummary, PdfSearchHit, PdfSearchRect, PdfTextCharBox,
     PdfTextSpan, ReadingTheme, RedactionRect, RedactionReport, RenderedBitmap, TileRenderRequest,
 };
+use gp_redact::extract_embedded_fonts_with_lopdf;
 use gp_text::normalize_for_turkish_search;
 use pdfium_render::prelude::*;
 
 use crate::{
-    objects::{analyze_page_objects_with_pdfium, PageObjectAnalysis},
+    compile::{compile_native_pdf_impl, CompilePdfOptions, CompiledFontBundle},
+    objects::{
+        analyze_page_objects_with_pdfium, extract_embedded_image_bitmap_with_pdfium,
+        PageObjectAnalysis,
+    },
     redaction::redact_document_verified,
 };
 
-struct StoredDoc {
+pub(crate) struct StoredDoc {
     doc: PdfDocument<'static>,
-    raw_bytes: Vec<u8>,
-    password: Option<String>,
+    pub(crate) raw_bytes: Vec<u8>,
+    pub(crate) password: Option<String>,
     pages: Vec<PdfPageSummary>,
 }
 
@@ -53,31 +62,44 @@ impl PdfiumBackend {
 
     #[cfg(test)]
     pub(crate) fn new_for_test() -> Result<Self, PdfError> {
-        let mut candidates: Vec<std::path::PathBuf> = Vec::new();
-        if let Ok(env_path) = std::env::var("PDFIUM_LIB_PATH") {
-            candidates.push(std::path::PathBuf::from(env_path));
-        }
-        let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
-        if let Some(root) = manifest_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
-            candidates.push(root.join(".pdfium-cache").join("pdfium.dll"));
-            candidates.push(root.join(".pdfium-cache").join("libpdfium.so"));
-            candidates.push(root.join(".pdfium-cache").join("libpdfium.dylib"));
-        }
-        if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
-            candidates.push(
-                std::path::PathBuf::from(home)
-                    .join(".cache")
-                    .join("pdfium-bundled")
-                    .join("pdfium-8066")
-                    .join("pdfium.dll"),
-            );
-        }
-        for path in &candidates {
-            if path.exists() {
-                return Self::from_library_path(path);
+        // pdfium-render permits a single library binding per process, so every test backend
+        // shares one leaked `Pdfium` instance (tests run in parallel threads).
+        static SHARED: std::sync::OnceLock<Result<&'static Pdfium, String>> = std::sync::OnceLock::new();
+        let shared = SHARED.get_or_init(|| {
+            let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+            if let Ok(env_path) = std::env::var("PDFIUM_LIB_PATH") {
+                candidates.push(std::path::PathBuf::from(env_path));
             }
+            let manifest_dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+            if let Some(root) = manifest_dir.parent().and_then(|p| p.parent()).and_then(|p| p.parent()) {
+                candidates.push(root.join(".pdfium-cache").join("pdfium.dll"));
+                candidates.push(root.join(".pdfium-cache").join("libpdfium.so"));
+                candidates.push(root.join(".pdfium-cache").join("libpdfium.dylib"));
+            }
+            if let Ok(home) = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")) {
+                candidates.push(
+                    std::path::PathBuf::from(home)
+                        .join(".cache")
+                        .join("pdfium-bundled")
+                        .join("pdfium-8066")
+                        .join("pdfium.dll"),
+                );
+            }
+            let bindings = match candidates.iter().find(|p| p.exists()) {
+                Some(path) => Pdfium::bind_to_library(path),
+                None => Pdfium::bind_to_system_library(),
+            }
+            .map_err(|e| format!("failed to bind PDFium library: {e}"))?;
+            let leaked: &'static Pdfium = Box::leak(Box::new(Pdfium::new(bindings)));
+            Ok(leaked)
+        });
+        match shared {
+            Ok(pdfium) => Ok(Self {
+                pdfium,
+                docs: HashMap::new(),
+            }),
+            Err(e) => Err(PdfError::Backend(e.clone())),
         }
-        Self::from_system()
     }
 
     pub fn pdfium(&self) -> &'static Pdfium {
@@ -94,8 +116,86 @@ impl PdfiumBackend {
         analyze_page_objects_with_pdfium(&stored.doc, page_index, page_id)
     }
 
-    /// Compiles reordered/rotated pages, blank pages, and new TrueType/path elements cleanly
+    pub fn extract_embedded_fonts(
+        &self,
+        doc_id: &str,
+    ) -> Result<gp_pdf::ExtractedFontsBundle, PdfError> {
+        let stored = self.get_doc(doc_id)?;
+        extract_embedded_fonts_with_lopdf(doc_id, &stored.raw_bytes)
+    }
+
+    pub fn extract_page_image_rgba(
+        &self,
+        doc_id: &str,
+        page_index: usize,
+        image_id: &str,
+    ) -> Result<(u32, u32, Vec<u8>), PdfError> {
+        let stored = self.get_doc(doc_id)?;
+        extract_embedded_image_bitmap_with_pdfium(&stored.doc, page_index, image_id)
+    }
+
+    pub fn prepare_clean_page_preview(
+        &self,
+        doc_id: &str,
+        page_index: usize,
+        text_rects: &[RectBox],
+        image_rects: &[RectBox],
+        shape_rects: &[RectBox],
+    ) -> Result<Vec<u8>, PdfError> {
+        self.prepare_clean_page_preview_targets(
+            doc_id,
+            page_index,
+            &gp_redact::CleanPreviewTargets {
+                text_rects: text_rects.to_vec(),
+                image_rects: image_rects.to_vec(),
+                shape_rects: shape_rects.to_vec(),
+                ..Default::default()
+            },
+        )
+    }
+
+    pub fn prepare_clean_page_preview_targets(
+        &self,
+        doc_id: &str,
+        page_index: usize,
+        targets: &gp_redact::CleanPreviewTargets,
+    ) -> Result<Vec<u8>, PdfError> {
+        let stored = self.get_doc(doc_id)?;
+        let stripped = gp_redact::prepare_clean_page_preview_targets(&stored.raw_bytes, page_index, targets)?;
+        if targets.image_rects.is_empty() && targets.text_rects.is_empty() {
+            return Ok(stripped);
+        }
+        let to_p0 = |r: &RectBox| gp_pdf::RedactionRect {
+            page_index: 0,
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        };
+        let img_p0: Vec<gp_pdf::RedactionRect> = targets.image_rects.iter().map(to_p0).collect();
+        let txt_p0: Vec<gp_pdf::RedactionRect> = targets.text_rects.iter().map(to_p0).collect();
+        redaction::strip_leftover_objects_with_pdfium(
+            self.pdfium,
+            stripped.clone(),
+            stored.password.as_deref(),
+            &img_p0,
+            &txt_p0,
+        )
+        .or(Ok(stripped))
+    }
+
+    /// Compiles reordered/rotated pages, blank pages, and full Web-parity layer elements cleanly
     /// via PDFium native object APIs + D3 redaction verification (`FPDF_SaveAsCopy`).
+    pub fn compile_native_pdf_with_options(
+        &self,
+        pages: &[PageMeta],
+        elements: &[CanvasElement],
+        redactions: &[RedactionRect],
+        options: CompilePdfOptions<'_>,
+    ) -> Result<Vec<u8>, PdfError> {
+        compile_native_pdf_impl(self.pdfium, &self.docs, pages, elements, redactions, options)
+    }
+
     pub fn compile_native_pdf(
         &self,
         pages: &[PageMeta],
@@ -103,213 +203,22 @@ impl PdfiumBackend {
         redactions: &[RedactionRect],
         truetype_font_bytes: Option<&[u8]>,
     ) -> Result<Vec<u8>, PdfError> {
-        let mut out_doc = self
-            .pdfium
-            .create_new_pdf()
-            .map_err(|e| PdfError::Backend(format!("failed creating output PDF: {e}")))?;
-
-        let ttf_token = truetype_font_bytes
-            .and_then(|bytes| out_doc.fonts_mut().load_true_type_from_bytes(bytes, true).ok());
-        let fallback_font = out_doc.fonts_mut().helvetica();
-
-        // Build source document working map after any required redactions on source docs
-        let mut redacted_sources: HashMap<String, Vec<u8>> = HashMap::new();
-        for (doc_id, stored) in &self.docs {
-            let doc_redactions: Vec<RedactionRect> = redactions
-                .iter()
-                .filter(|r| {
-                    pages.iter().any(|p| {
-                        p.source_doc_id == *doc_id && p.source_page_index == r.page_index
-                    })
-                })
-                .copied()
-                .collect();
-            if doc_redactions.is_empty() {
-                redacted_sources.insert(doc_id.clone(), stored.raw_bytes.clone());
-            } else {
-                let (clean_bytes, _) = redact_document_verified(
-                    self.pdfium,
-                    stored.raw_bytes.clone(),
-                    stored.password.as_deref(),
-                    &doc_redactions,
-                )?;
-                redacted_sources.insert(doc_id.clone(), clean_bytes);
-            }
-        }
-
-        let mut loaded_sources: HashMap<String, PdfDocument<'_>> = HashMap::new();
-        for (doc_id, bytes) in redacted_sources {
-            let pw = self.docs.get(&doc_id).and_then(|s| s.password.as_deref());
-            if let Ok(d) = self.pdfium.load_pdf_from_byte_vec(bytes, pw) {
-                loaded_sources.insert(doc_id, d);
-            }
-        }
-
-        for (out_idx, pm) in pages.iter().enumerate() {
-            if let Some(src_doc) = loaded_sources.get(&pm.source_doc_id) {
-                let src_idx = pm.source_page_index as PdfPageIndex;
-                out_doc
-                    .pages_mut()
-                    .copy_page_from_document(src_doc, src_idx, out_idx as PdfPageIndex)
-                    .map_err(|e| PdfError::Backend(format!("failed importing page {src_idx}: {e}")))?;
-            } else {
-                out_doc
-                    .pages_mut()
-                    .create_page_at_index(
-                        PdfPagePaperSize::Custom(
-                            PdfPoints::new(pm.base_width as f32),
-                            PdfPoints::new(pm.base_height as f32),
-                        ),
-                        out_idx as PdfPageIndex,
-                    )
-                    .map_err(|e| PdfError::Backend(format!("failed creating blank page: {e}")))?;
-            }
-
-            let mut out_page = out_doc
-                .pages()
-                .get(out_idx as PdfPageIndex)
-                .map_err(|e| PdfError::Backend(format!("failed opening output page: {e}")))?;
-            let page_h = out_page.height().value as f64;
-
-            let parse_hex_color = |hex: &str, alpha: u8| -> PdfColor {
-                let h = hex.trim_start_matches('#');
-                if h.len() >= 6 {
-                    let r = u8::from_str_radix(&h[0..2], 16).unwrap_or(15);
-                    let g = u8::from_str_radix(&h[2..4], 16).unwrap_or(23);
-                    let b = u8::from_str_radix(&h[4..6], 16).unwrap_or(42);
-                    PdfColor::new(r, g, b, alpha)
-                } else {
-                    PdfColor::new(15, 23, 42, alpha)
-                }
-            };
-
-            if pm.user_rotation != 0 {
-                let cur = intrinsic_rotation_to_angle(Ok(out_page.rotation().unwrap_or(PdfPageRenderRotation::None)));
-                out_page.set_rotation(to_pdfium_rotation((cur + pm.user_rotation) % 360));
-            }
-
-            for el in elements {
-                if el.page_id() != pm.id || el.is_deleted() {
-                    continue;
-                }
-                match el {
-                    CanvasElement::TextAdd {
-                        base,
-                        text,
-                        font_size,
-                        color,
-                        ..
-                    }
-                    | CanvasElement::TextEdit {
-                        base,
-                        text,
-                        font_size,
-                        color,
-                        ..
-                    } => {
-                        let font = ttf_token.unwrap_or(fallback_font);
-                        let pdf_y = (page_h - base.y - font_size).max(8.0);
-                        if let Ok(mut txt_obj) = out_page.objects_mut().create_text_object(
-                            PdfPoints::new(base.x as f32),
-                            PdfPoints::new(pdf_y as f32),
-                            text,
-                            font,
-                            PdfPoints::new(*font_size as f32),
-                        ) {
-                            let _ = txt_obj.set_fill_color(parse_hex_color(color, 255));
-                        }
-                    }
-                    CanvasElement::Highlight {
-                        base,
-                        fill_color,
-                        shape,
-                    } => {
-                        let y_bot = (page_h - (base.y + base.height)).clamp(0.0, page_h);
-                        let y_top = (page_h - base.y).clamp(0.0, page_h);
-                        let rect = PdfRect::new(
-                            PdfPoints::new(y_bot.min(y_top) as f32),
-                            PdfPoints::new(base.x as f32),
-                            PdfPoints::new(y_top.max(y_bot) as f32),
-                            PdfPoints::new((base.x + base.width) as f32),
-                        );
-                        let col = if shape == "redact" {
-                            PdfColor::BLACK
-                        } else {
-                            parse_hex_color(fill_color, ((base.opacity * 255.0).round() as u8).clamp(40, 180))
-                        };
-                        let _ = out_page.objects_mut().create_path_object_rect(rect, None, None, Some(col));
-                    }
-                    CanvasElement::VectorShape {
-                        base,
-                        fill_color,
-                        stroke_color,
-                        stroke_width,
-                        ..
-                    } => {
-                        let y_bot = (page_h - (base.y + base.height)).clamp(0.0, page_h);
-                        let y_top = (page_h - base.y).clamp(0.0, page_h);
-                        let rect = PdfRect::new(
-                            PdfPoints::new(y_bot.min(y_top) as f32),
-                            PdfPoints::new(base.x as f32),
-                            PdfPoints::new(y_top.max(y_bot) as f32),
-                            PdfPoints::new((base.x + base.width) as f32),
-                        );
-                        let fill = if fill_color == "transparent" {
-                            None
-                        } else {
-                            Some(parse_hex_color(fill_color, 255))
-                        };
-                        let stroke = if stroke_color == "transparent" {
-                            None
-                        } else {
-                            Some(parse_hex_color(stroke_color, 255))
-                        };
-                        let _ = out_page.objects_mut().create_path_object_rect(
-                            rect,
-                            stroke,
-                            Some(PdfPoints::new((*stroke_width as f32).max(0.5))),
-                            fill,
-                        );
-                    }
-                    CanvasElement::Stroke {
-                        base,
-                        points,
-                        color,
-                        stroke_width,
-                    } if !points.is_empty() => {
-                        let first = PdfPoints::new((base.x + points[0].x * base.width) as f32);
-                        let first_y = PdfPoints::new(
-                            (page_h - (base.y + points[0].y * base.height)) as f32,
-                        );
-                        if let Ok(mut path_obj) = PdfPagePathObject::new(
-                            &out_doc,
-                            first,
-                            first_y,
-                            Some(parse_hex_color(color, 255)),
-                            Some(PdfPoints::new((*stroke_width as f32).max(0.75))),
-                            None,
-                        ) {
-                            for pt in points.iter().skip(1) {
-                                let _ = path_obj.line_to(
-                                    PdfPoints::new((base.x + pt.x * base.width) as f32),
-                                    PdfPoints::new((page_h - (base.y + pt.y * base.height)) as f32),
-                                );
-                            }
-                            let _ = out_page.objects_mut().add_path_object(path_obj);
-                        }
-                    }
-                    _ => {}
-                }
-            }
-            let _ = out_page.regenerate_content();
-        }
-
-        out_doc
-            .save_to_bytes()
-            .map_err(|e| PdfError::Backend(format!("failed saving compiled PDF: {e}")))
+        self.compile_native_pdf_with_options(
+            pages,
+            elements,
+            redactions,
+            CompilePdfOptions {
+                fonts: CompiledFontBundle {
+                    custom_ttf_bytes: truetype_font_bytes,
+                    regular_ttf_bytes: truetype_font_bytes,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
     }
 
-    fn get_doc(&self, doc_id: &str) -> Result<&StoredDoc, PdfError> {
+    pub(crate) fn get_doc(&self, doc_id: &str) -> Result<&StoredDoc, PdfError> {
         self.docs
             .get(doc_id)
             .ok_or_else(|| PdfError::DocumentNotFound(doc_id.to_string()))
@@ -343,7 +252,7 @@ fn pdfium_rect_to_visual(page_h: f64, rect: &PdfRect) -> (f64, f64, f64, f64) {
     (x, y, w, h)
 }
 
-fn intrinsic_rotation_to_angle(rot: Result<PdfPageRenderRotation, PdfiumError>) -> RotationAngle {
+pub(crate) fn intrinsic_rotation_to_angle(rot: Result<PdfPageRenderRotation, PdfiumError>) -> RotationAngle {
     match rot {
         Ok(PdfPageRenderRotation::Degrees90) => 90,
         Ok(PdfPageRenderRotation::Degrees180) => 180,
@@ -352,7 +261,7 @@ fn intrinsic_rotation_to_angle(rot: Result<PdfPageRenderRotation, PdfiumError>) 
     }
 }
 
-fn to_pdfium_rotation(deg: RotationAngle) -> PdfPageRenderRotation {
+pub(crate) fn to_pdfium_rotation(deg: RotationAngle) -> PdfPageRenderRotation {
     match ((deg % 360) + 360) % 360 {
         90 => PdfPageRenderRotation::Degrees90,
         180 => PdfPageRenderRotation::Degrees180,
@@ -508,11 +417,11 @@ impl PdfBackend for PdfiumBackend {
             vec![255u8; (w as usize) * (h as usize) * 4]
         };
 
-        // Allocate PDFium BGRA bitmap sized strictly to the requested tile (`w x h`), shifted by `set_origin`.
-        let mut bitmap = PdfBitmap::empty(w as Pixels, h as Pixels, PdfBitmapFormat::BGRA)
-            .map_err(|e| PdfError::RenderFailed(format!("failed creating PDFium bitmap: {e}")))?;
-
+        // Render directly into `rgba` with reverse byte order (RGBA), avoiding 2 extra intermediate buffer allocations & copies.
         {
+            let mut bitmap = PdfBitmap::from_bytes(w as Pixels, h as Pixels, PdfBitmapFormat::BGRA, &mut rgba)
+                .map_err(|e| PdfError::RenderFailed(format!("failed creating PDFium bitmap: {e}")))?;
+
             let clear = if req.transparent_bg {
                 PdfColor::new(0, 0, 0, 0)
             } else {
@@ -535,9 +444,6 @@ impl PdfBackend for PdfiumBackend {
         }
 
         cancel.check()?;
-        let rendered = bitmap.as_rgba_bytes();
-        let copy_len = rgba.len().min(rendered.len());
-        rgba[..copy_len].copy_from_slice(&rendered[..copy_len]);
         apply_reading_theme(&mut rgba, req.theme, req.dark_paper_invert);
 
         Ok(RenderedBitmap {
@@ -1179,6 +1085,10 @@ mod tests {
                     background_color: None,
                     bold: false,
                     italic: false,
+                    underline: None,
+                    strikethrough: None,
+                    script_mode: None,
+                    embedded_font_id: None,
                     align: gp_model::TextAlign::Left,
                     line_height: 1.25,
                     horizontal_scale: None,
@@ -1194,6 +1104,556 @@ mod tests {
         assert!(
             extracted.contains("Çağrı İğne Şeker"),
             "Compiled Turkish text missing: {extracted}"
+        );
+    }
+
+    #[test]
+    fn phase3_compiles_shapes_images_signatures_paths_text_edit_and_page_numbers() {
+        let mut backend = PdfiumBackend::new_for_test().unwrap();
+        let src_pdf = gp_redact::create_sample_pdf_with_text_lines(&[
+            ("OLD_ORIGINAL_TITLE", 72.0, 742.0, 14.0),
+            ("STATIC_FOOTER", 72.0, 100.0, 11.0),
+        ])
+        .unwrap();
+        backend.open_document("src-rich", &src_pdf, None).unwrap();
+
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let font_bytes = std::fs::read(
+            root.join("node_modules")
+                .join("dejavu-fonts-ttf")
+                .join("ttf")
+                .join("DejaVuSans.ttf"),
+        )
+        .unwrap();
+
+        let mut img_map = std::collections::HashMap::new();
+        img_map.insert(
+            "img-1".to_string(),
+            crate::compile::PreDecodedImage {
+                width: 4,
+                height: 4,
+                rgba: vec![37, 99, 235, 255].repeat(16),
+            },
+        );
+
+        let page_meta = PageMeta {
+            id: "p1".to_string(),
+            source_doc_id: "src-rich".to_string(),
+            source_page_index: 0,
+            base_width: 595.0,
+            base_height: 842.0,
+            intrinsic_rotation: 0,
+            user_rotation: 0,
+            media_box: [0.0, 0.0, 595.0, 842.0],
+            crop_box: [0.0, 0.0, 595.0, 842.0],
+        };
+
+        let base = |id: &str, x: f64, y: f64, w: f64, h: f64| gp_model::BaseElement {
+            id: id.to_string(),
+            page_id: "p1".to_string(),
+            x,
+            y,
+            width: w,
+            height: h,
+            rotation: 0.0,
+            opacity: 1.0,
+            z_index: 1,
+            locked: None,
+            is_background_layer: None,
+            layer_tier: None,
+            group_id: None,
+        };
+
+        let elements = vec![
+            CanvasElement::TextEdit {
+                base: base("te-1", 68.0, 84.0, 260.0, 28.0),
+                source_block_id: "blk-1".to_string(),
+                original_rect: None,
+                original_text: "OLD_ORIGINAL_TITLE".to_string(),
+                text: "YENİ BAŞLIK: Çağrı".to_string(),
+                runs: None,
+                font_family: "DejaVuSans".to_string(),
+                font_size: 14.0,
+                color: "#0F172A".to_string(),
+                background_color: None,
+                bold: true,
+                italic: false,
+                underline: Some(true),
+                strikethrough: None,
+                script_mode: None,
+                embedded_font_id: None,
+                align: gp_model::TextAlign::Justify,
+                line_height: 1.25,
+                horizontal_scale: None,
+                letter_spacing: None,
+                deleted: None,
+                strip_rects: None,
+                layout_lines: None,
+            },
+            CanvasElement::VectorShape {
+                base: base("shp-arrow", 80.0, 200.0, 140.0, 48.0),
+                shape_type: gp_model::VectorShapeType::Arrow,
+                fill_color: "#2563EB".to_string(),
+                stroke_color: "#1E3A8A".to_string(),
+                stroke_width: 2.0,
+                border_radius: None,
+                stroke_dash: Some(gp_model::VectorStrokeDash::Dashed),
+                behind_content: Some(false),
+            },
+            CanvasElement::VectorPath {
+                base: base("path-1", 80.0, 280.0, 160.0, 60.0),
+                points: vec![
+                    gp_model::NormalizedPoint { x: 0.0, y: 0.5, pressure: None, smooth: None },
+                    gp_model::NormalizedPoint { x: 0.5, y: 0.1, pressure: None, smooth: None },
+                    gp_model::NormalizedPoint { x: 1.0, y: 0.9, pressure: None, smooth: None },
+                ],
+                closed: false,
+                smooth: Some(true),
+                fill_color: "transparent".to_string(),
+                stroke_color: "#DC2626".to_string(),
+                stroke_width: 2.5,
+                stroke_dash: None,
+                behind_content: None,
+            },
+            CanvasElement::ImageAdd {
+                base: base("img-1", 300.0, 200.0, 64.0, 64.0),
+                name: "logo.png".to_string(),
+                mime_type: "image/png".to_string(),
+                preview_url: String::new(),
+                natural_width: 4.0,
+                natural_height: 4.0,
+                aspect_locked: true,
+                behind_content: Some(true),
+                crop_rect: None,
+                clip_mask: None,
+                repeat_across_pages: None,
+                flip_x: None,
+                flip_y: None,
+            },
+            CanvasElement::Signature {
+                base: base("sig-1", 320.0, 500.0, 140.0, 60.0),
+                signature_id: "vault-1".to_string(),
+                data_url: String::new(),
+                aspect_locked: true,
+                realistic_ink: Some(true),
+                svg_paths: Some(vec![gp_model::SignatureVectorPath {
+                    d: "M 10 80 Q 120 10 280 90".to_string(),
+                    fill: None,
+                    stroke: Some("#1D4ED8".to_string()),
+                    stroke_width: Some(2.5),
+                }]),
+                view_box_width: Some(300.0),
+                view_box_height: Some(120.0),
+            },
+        ];
+
+        let num_cfg = gp_model::PageNumberingConfig {
+            enabled: true,
+            position: gp_model::PageNumberingPosition::BottomCenter,
+            format: gp_model::PageNumberingFormat::PageNumberOfTotal,
+            font_family: "DejaVuSans".to_string(),
+            font_size: 11.0,
+            color: "#334155".to_string(),
+            margin_x: 36.0,
+            margin_y: 24.0,
+            start_from_page: 1,
+            start_number: 1,
+            opacity: 1.0,
+        };
+
+        let compiled = backend
+            .compile_native_pdf_with_options(
+                &[page_meta],
+                &elements,
+                &[],
+                crate::compile::CompilePdfOptions {
+                    fonts: crate::compile::CompiledFontBundle {
+                        regular_ttf_bytes: Some(&font_bytes),
+                        bold_ttf_bytes: Some(&font_bytes),
+                        ..Default::default()
+                    },
+                    page_numbering: Some(&num_cfg),
+                    embedded_images: Some(&img_map),
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+
+        backend.open_document("out-rich", &compiled, None).unwrap();
+        let text = backend.extract_page_text("out-rich", 0).unwrap();
+        assert!(!text.contains("OLD_ORIGINAL_TITLE"), "Old text remained: {text}");
+        assert!(text.contains("YENİ BAŞLIK: Çağrı"), "New Turkish edit missing: {text}");
+        assert!(text.contains("Sayfa 1 / 1"), "Dynamic page number missing: {text}");
+        let analysis = backend.analyze_page_objects("out-rich", 0, "p1").unwrap();
+        assert!(!analysis.images.is_empty(), "Embedded RGBA image missing in output PDF");
+        assert!(!analysis.shapes.is_empty(), "Vector shape/path missing in output PDF");
+    }
+
+    #[test]
+    fn f34_ctm_scaled_font_size_xobject_form_and_justify_rich_compile() {
+        use lopdf::{dictionary, Document, Object, Stream};
+
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let font_id = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+
+        // 2x2 RGB raw image XObject placed inside a Form XObject
+        let img_pixels: Vec<u8> = vec![
+            220, 40, 40, 40, 180, 40,
+            40, 80, 220, 240, 200, 40,
+        ];
+        let img_id = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 2,
+                "Height" => 2,
+                "ColorSpace" => "DeviceRGB",
+                "BitsPerComponent" => 8,
+            },
+            img_pixels,
+        ));
+
+        // Form XObject containing a bordered rectangle + nested image
+        let form_ops = b"q 0.9 0.9 0.95 rg 0.1 0.2 0.8 RG 2 w 10 10 180 90 re B Q q 60 0 0 60 20 20 cm /Im1 Do Q";
+        let form_id = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Form",
+                "BBox" => vec![0.into(), 0.into(), 220.into(), 120.into()],
+                "Resources" => dictionary! {
+                    "XObject" => dictionary! {
+                        "Im1" => img_id,
+                    },
+                },
+            },
+            form_ops.to_vec(),
+        ));
+
+        // Page content:
+        // 1) CTM-scaled text: 0.3x matrix * 30 Tf => 9pt effective visual size
+        // 2) Multi-line justified block spanning x=[72..472] with wide word spacing
+        // 3) Form XObject placement
+        let content_str = concat!(
+            "q 0.3 0 0 0.3 72 720 cm BT /F1 30 Tf 0 0 Td (Scaled nine point line) Tj ET Q\n",
+            "BT /F1 12 Tf ",
+            "72 620 Td 18 Tw (Alpha beta gamma delta epsilon) Tj ",
+            "0 Tw 0 -18 Td 14 Tw (Zeta eta theta iota kappa) Tj ",
+            "0 Tw 0 -18 Td (Short last line.) Tj ET\n",
+            "q 1 0 0 1 100 320 cm /Fm1 Do Q\n"
+        );
+        let content_id = doc.add_object(Stream::new(dictionary! {}, content_str.as_bytes().to_vec()));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            "Resources" => dictionary! {
+                "Font" => dictionary! { "F1" => font_id },
+                "XObject" => dictionary! { "Fm1" => form_id },
+            },
+            "Contents" => content_id,
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+
+        let mut pdf_bytes = Vec::new();
+        doc.save_to(&mut pdf_bytes).unwrap();
+
+        let mut backend = PdfiumBackend::new_for_test().unwrap();
+        backend.open_document("ctm-form", &pdf_bytes, None).unwrap();
+        let analysis = backend.analyze_page_objects("ctm-form", 0, "p1").unwrap();
+
+        let scaled_blk = analysis
+            .text_blocks
+            .iter()
+            .find(|b| b.text.contains("Scaled"))
+            .expect("Expected CTM-scaled text block");
+        assert!(
+            scaled_blk.font_size >= 7.5 && scaled_blk.font_size <= 11.5,
+            "Expected CTM-scaled ~9pt font size, got {}",
+            scaled_blk.font_size
+        );
+
+        assert!(
+            !analysis.images.is_empty(),
+            "Expected raster image detected inside XObject Form"
+        );
+        assert!(
+            !analysis.shapes.is_empty(),
+            "Expected bordered rectangle shape detected inside XObject Form"
+        );
+        let justified_blk = analysis
+            .text_blocks
+            .iter()
+            .find(|b| b.text.contains("Alpha"));
+        assert!(
+            justified_blk.map(|b| matches!(b.align, gp_model::TextAlign::Justify)).unwrap_or(false),
+            "Expected justified block detection, got {:?}",
+            justified_blk.map(|b| b.align)
+        );
+
+        // Now verify compiling rich styles (justify + underline + strikethrough + inline super/sub)
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap();
+        let font_bytes = std::fs::read(
+            root.join("node_modules")
+                .join("dejavu-fonts-ttf")
+                .join("ttf")
+                .join("DejaVuSans.ttf"),
+        )
+        .unwrap();
+
+        let page_meta = PageMeta {
+            id: "p1".to_string(),
+            source_doc_id: "ctm-form".to_string(),
+            source_page_index: 0,
+            base_width: 612.0,
+            base_height: 792.0,
+            intrinsic_rotation: 0,
+            user_rotation: 0,
+            media_box: [0.0, 0.0, 612.0, 792.0],
+            crop_box: [0.0, 0.0, 612.0, 792.0],
+        };
+        let elements = vec![CanvasElement::TextAdd {
+            base: gp_model::BaseElement {
+                id: "rich-add".to_string(),
+                page_id: "p1".to_string(),
+                x: 72.0,
+                y: 200.0,
+                width: 320.0,
+                height: 90.0,
+                rotation: 0.0,
+                opacity: 1.0,
+                z_index: 3,
+                locked: None,
+                is_background_layer: None,
+                layer_tier: Some(3),
+                group_id: None,
+            },
+            text: "Normal Underline Strike H2O x2".to_string(),
+            runs: Some(vec![
+                gp_model::TextRun {
+                    text: "Normal ".to_string(),
+                    ..Default::default()
+                },
+                gp_model::TextRun {
+                    text: "Underline".to_string(),
+                    bold: Some(true),
+                    underline: Some(true),
+                    ..Default::default()
+                },
+                gp_model::TextRun {
+                    text: " Strike ".to_string(),
+                    italic: Some(true),
+                    strikethrough: Some(true),
+                    ..Default::default()
+                },
+                gp_model::TextRun {
+                    text: "2".to_string(),
+                    script: Some(gp_model::TextScriptMode::Sub),
+                    ..Default::default()
+                },
+            ]),
+            font_size: 12.0,
+            font_family: "DejaVuSans".to_string(),
+            bold: false,
+            italic: false,
+            underline: None,
+            strikethrough: None,
+            script_mode: None,
+            embedded_font_id: None,
+            color: "#111827".to_string(),
+            background_color: None,
+            align: gp_model::TextAlign::Justify,
+            line_height: 1.25,
+            letter_spacing: Some(0.2),
+            horizontal_scale: None,
+        }];
+        let compiled = backend
+            .compile_native_pdf_with_options(
+                &[page_meta],
+                &elements,
+                &[],
+                crate::compile::CompilePdfOptions {
+                    fonts: crate::compile::CompiledFontBundle {
+                        regular_ttf_bytes: Some(&font_bytes),
+                        bold_ttf_bytes: Some(&font_bytes),
+                        italic_ttf_bytes: Some(&font_bytes),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        backend.open_document("out-rich-2", &compiled, None).unwrap();
+        let txt = backend.extract_page_text("out-rich-2", 0).unwrap();
+        assert!(txt.contains("Underline") && txt.contains("Strike"), "Missing compiled rich text: {txt}");
+    }
+
+    #[test]
+    fn analysis_detects_behind_image_and_inline_runs_and_strips_original_rect() {
+        use lopdf::{dictionary, Document, Object, Stream};
+
+        let mut doc = Document::with_version("1.5");
+        let pages_id = doc.new_object_id();
+        let font_reg = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica",
+        });
+        let font_bold = doc.add_object(dictionary! {
+            "Type" => "Font",
+            "Subtype" => "Type1",
+            "BaseFont" => "Helvetica-Bold",
+        });
+        let img_pixels: Vec<u8> = vec![
+            200, 210, 220, 200, 210, 220,
+            200, 210, 220, 200, 210, 220,
+        ];
+        let img_id = doc.add_object(Stream::new(
+            dictionary! {
+                "Type" => "XObject",
+                "Subtype" => "Image",
+                "Width" => 2,
+                "Height" => 2,
+                "ColorSpace" => "DeviceRGB",
+                "BitsPerComponent" => 8,
+            },
+            img_pixels,
+        ));
+        // Background image drawn BEFORE text spanning almost the full page + inline Bold/Regular run.
+        let content_str = concat!(
+            "q 500 0 0 700 45 45 cm /BgIm Do Q\n",
+            "BT /FB 12 Tf 72 640 Td (Note: ) Tj /F1 12 Tf (regular body words on the same line) Tj ET\n"
+        );
+        let content_id = doc.add_object(Stream::new(dictionary! {}, content_str.as_bytes().to_vec()));
+        let page_id = doc.add_object(dictionary! {
+            "Type" => "Page",
+            "Parent" => pages_id,
+            "MediaBox" => vec![0.into(), 0.into(), 612.into(), 792.into()],
+            "Resources" => dictionary! {
+                "Font" => dictionary! { "F1" => font_reg, "FB" => font_bold },
+                "XObject" => dictionary! { "BgIm" => img_id },
+            },
+            "Contents" => content_id,
+        });
+        doc.objects.insert(
+            pages_id,
+            Object::Dictionary(dictionary! {
+                "Type" => "Pages",
+                "Kids" => vec![page_id.into()],
+                "Count" => 1,
+            }),
+        );
+        let catalog_id = doc.add_object(dictionary! {
+            "Type" => "Catalog",
+            "Pages" => pages_id,
+        });
+        doc.trailer.set("Root", catalog_id);
+
+        let mut pdf_bytes = Vec::new();
+        doc.save_to(&mut pdf_bytes).unwrap();
+
+        let mut backend = PdfiumBackend::new_for_test().unwrap();
+        backend.open_document("bg-src", &pdf_bytes, None).unwrap();
+        let analysis = backend.analyze_page_objects("bg-src", 0, "p1").unwrap();
+
+        let bg_img = analysis.images.first().expect("expected analyzed image");
+        assert!(bg_img.behind_content, "image drawn under text must be flagged behind_content");
+        assert!(bg_img.is_background_layer, "large page-covering behind image must be flagged background");
+
+        let blk = analysis
+            .text_blocks
+            .iter()
+            .find(|b| b.text.contains("Note:"))
+            .expect("expected mixed inline run text block");
+        assert!(!blk.bold, "dominant block weight should remain regular when only short prefix is bold");
+        let runs = blk.runs.as_ref().expect("expected inline TextRuns");
+        assert!(runs.iter().any(|r| r.bold == Some(true) && r.text.contains("Note:")), "expected bold prefix run: {runs:?}");
+        assert!(runs.iter().any(|r| r.bold != Some(true) && r.text.contains("regular body")), "expected regular body run: {runs:?}");
+        assert_eq!(blk.font_source.as_deref(), Some("builtin"));
+
+        let moved_deleted_img = CanvasElement::ImageReplacement {
+            base: gp_model::BaseElement {
+                id: "del-bg".to_string(),
+                page_id: "p1".to_string(),
+                x: 200.0,
+                y: 250.0,
+                width: 80.0,
+                height: 80.0,
+                rotation: 0.0,
+                opacity: 1.0,
+                z_index: 1,
+                locked: None,
+                is_background_layer: Some(true),
+                layer_tier: Some(1),
+                group_id: None,
+            },
+            source_image_id: bg_img.id.clone(),
+            original_rect: Some(gp_model::RectBox {
+                x: bg_img.x,
+                y: bg_img.y,
+                width: bg_img.width,
+                height: bg_img.height,
+            }),
+            mime_type: "image/png".to_string(),
+            preview_url: String::new(),
+            natural_width: 2.0,
+            natural_height: 2.0,
+            aspect_locked: true,
+            deleted: Some(true),
+            behind_content: Some(true),
+            crop_rect: None,
+            clip_mask: None,
+            flip_x: None,
+            flip_y: None,
+            in_place: None,
+            original_rotation: None,
+            original_flip_x: None,
+            original_flip_y: None,
+        };
+        assert_eq!(moved_deleted_img.strip_rect().x, bg_img.x);
+        assert_eq!(moved_deleted_img.strip_rect().width, bg_img.width);
+
+        let cleaned = gp_redact::prepare_clean_page_preview_with_lopdf(
+            &pdf_bytes,
+            0,
+            &[],
+            &[moved_deleted_img.strip_rect()],
+            &[],
+        )
+        .unwrap();
+        backend.open_document("bg-cleaned", &cleaned, None).unwrap();
+        let cleaned_analysis = backend.analyze_page_objects("bg-cleaned", 0, "p1").unwrap();
+        assert!(
+            cleaned_analysis.images.is_empty(),
+            "original image must be stripped at originalRect even after move+delete"
         );
     }
 }

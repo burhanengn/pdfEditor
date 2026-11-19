@@ -60,7 +60,11 @@ pub fn inspect_ttf_font(bytes: &[u8]) -> Result<TtfFontMetadata, String> {
             if subtable.is_unicode() {
                 subtable.codepoints(|cp| {
                     if cp >= 0x20 {
-                        codepoints.insert(cp);
+                        if let Some(ch) = char::from_u32(cp) {
+                            if face.glyph_index(ch).map(|g| g.0 != 0).unwrap_or(false) {
+                                codepoints.insert(cp);
+                            }
+                        }
                     }
                 });
             }
@@ -77,4 +81,50 @@ pub fn inspect_ttf_font(bytes: &[u8]) -> Result<TtfFontMetadata, String> {
         descender: face.descender(),
         supported_code_points: codepoints.into_iter().collect(),
     })
+}
+
+/// Computes exact horizontal text advance in points using `ttf-parser` glyph advances.
+pub fn measure_ttf_text_width(ttf_bytes: &[u8], text: &str, font_size: f64) -> Option<f64> {
+    let face = Face::parse(ttf_bytes, 0).ok()?;
+    let upm = f64::from(face.units_per_em()).max(1.0);
+    let scale = font_size / upm;
+    let mut total_units: i64 = 0;
+    let min_space = (upm * 0.25).round() as i64;
+    let space_adv = face
+        .glyph_index(' ')
+        .filter(|gid| gid.0 != 0)
+        .and_then(|gid| face.glyph_hor_advance(gid))
+        .map(|a| (a as i64).max(min_space))
+        .unwrap_or(min_space);
+    for ch in text.chars() {
+        if ch == ' ' {
+            total_units += space_adv;
+            continue;
+        }
+        let adv = face
+            .glyph_index(ch)
+            .filter(|gid| gid.0 != 0)
+            .and_then(|gid| face.glyph_hor_advance(gid))
+            .map(|a| a as i64)
+            .unwrap_or(space_adv);
+        total_units += adv;
+    }
+    Some((total_units as f64) * scale)
+}
+
+/// Returns `true` if the TTF/OTF stream contains a non-zero glyph mapping for every printable character in `text`.
+pub fn ttf_font_supports_text(ttf_bytes: &[u8], text: &str) -> bool {
+    let Ok(face) = Face::parse(ttf_bytes, 0) else {
+        return false;
+    };
+    for ch in text.chars() {
+        if ch.is_whitespace() {
+            continue;
+        }
+        match face.glyph_index(ch) {
+            Some(gid) if gid.0 != 0 => {}
+            _ => return false,
+        }
+    }
+    true
 }

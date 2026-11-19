@@ -1,9 +1,12 @@
 import 'dart:async';
+import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:gullacpdf_mobile/app/gullacpdf_app.dart';
 import 'package:gullacpdf_mobile/app/session_state.dart';
@@ -13,7 +16,53 @@ import 'package:gullacpdf_mobile/gestures/pdf_gesture_arena.dart';
 import 'package:gullacpdf_mobile/l10n/gp_l10n.g.dart';
 import 'package:gullacpdf_mobile/theme/gp_tokens.g.dart';
 
-class _FakeSessionBridge implements GpSessionBridge {
+Uint8List _buildMinimalRgbaPng(int width, int height) {
+  int crc32(List<int> data) {
+    var crc = 0xFFFFFFFF;
+    for (final b in data) {
+      crc ^= b;
+      for (var i = 0; i < 8; i++) {
+        crc = (crc & 1) != 0 ? ((crc >>> 1) ^ 0xEDB88320) : (crc >>> 1);
+      }
+    }
+    return crc ^ 0xFFFFFFFF;
+  }
+
+  List<int> chunk(String type, List<int> data) {
+    final t = type.codeUnits;
+    final len = ByteData(4)..setUint32(0, data.length, Endian.big);
+    final crcVal = crc32([...t, ...data]);
+    final crcBytes = ByteData(4)..setUint32(0, crcVal, Endian.big);
+    return [
+      ...len.buffer.asUint8List(),
+      ...t,
+      ...data,
+      ...crcBytes.buffer.asUint8List(),
+    ];
+  }
+
+  final ihdr = ByteData(13)
+    ..setUint32(0, width, Endian.big)
+    ..setUint32(4, height, Endian.big)
+    ..setUint8(8, 8)
+    ..setUint8(9, 6); // RGBA
+  final rawRows = <int>[];
+  for (var y = 0; y < height; y++) {
+    rawRows.add(0);
+    for (var x = 0; x < width; x++) {
+      rawRows.addAll(const [37, 99, 235, 255]);
+    }
+  }
+  final idat = zlib.encode(rawRows);
+  return Uint8List.fromList([
+    0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A,
+    ...chunk('IHDR', ihdr.buffer.asUint8List()),
+    ...chunk('IDAT', idat),
+    ...chunk('IEND', const []),
+  ]);
+}
+
+class _FakeSessionBridge extends GpSessionBridge {
   int savedCount = 0;
   bool trimmed = false;
 
@@ -132,6 +181,8 @@ class _FakeSessionBridge implements GpSessionBridge {
     required List<GpOverlayElement> elements,
     required List<Rect> redactionsPage0,
     required String outputPath,
+    GpPageNumberingConfig? pageNumbering,
+    Uint8List? customTtfBytes,
   }) async {
     savedCount++;
     return pages.length;
@@ -354,5 +405,133 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text('Pages 1'), findsOneWidget);
     expect(find.text('Pages 2'), findsOneWidget);
+  });
+
+  testWidgets('M4: Shape variant strip, Full Inspector Sheet, Signature Studio, Image insert & Page Organizer', (tester) async {
+    SharedPreferences.setMockInitialValues({});
+    tester.view.physicalSize = const Size(412 * 2, 915 * 2);
+    tester.view.devicePixelRatio = 2.0;
+    addTearDown(tester.view.reset);
+
+    final tmpImgDir = Directory.systemTemp.createTempSync('gp_widget_img_');
+    addTearDown(() {
+      try {
+        if (tmpImgDir.existsSync()) tmpImgDir.deleteSync(recursive: true);
+      } catch (_) {}
+    });
+    final imgPath = '${tmpImgDir.path}/sample.png';
+    final pngBytes = _buildMinimalRgbaPng(16, 12);
+    File(imgPath).writeAsBytesSync(pngBytes);
+
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(fileChannel, (call) async {
+      if (call.method == 'getInitialOpenRequest') {
+        return {
+          'sourceId': 'content://docs/parity.pdf',
+          'uris': ['content://docs/parity.pdf'],
+          'displayName': 'parity-contract.pdf',
+          'writable': true,
+          'canPersist': true,
+          'origin': 'view',
+        };
+      }
+      if (call.method == 'openDocumentPicker') {
+        final args = call.arguments as Map<dynamic, dynamic>?;
+        final mimes = (args?['mimeTypes'] as List<dynamic>? ?? const []).map((e) => e.toString()).toList();
+        if (mimes.any((m) => m.startsWith('image/'))) {
+          return {
+            'sourceId': 'content://media/sample.png',
+            'uris': ['content://media/sample.png'],
+            'displayName': 'sample.png',
+            'writable': false,
+            'canPersist': false,
+            'origin': 'picker',
+          };
+        }
+        return null;
+      }
+      if (call.method == 'copyToWorkFile') {
+        final args = call.arguments as Map<dynamic, dynamic>?;
+        final dn = args?['displayName']?.toString() ?? '';
+        if (dn == 'sample.png') {
+          return {'workPath': imgPath, 'displayName': 'sample.png', 'byteSize': pngBytes.length};
+        }
+        return {'workPath': '/tmp/parity.pdf', 'displayName': 'parity-contract.pdf', 'byteSize': 4096};
+      }
+      return null;
+    });
+
+    await tester.pumpWidget(
+      ProviderScope(
+        child: GullacpdfApp(customBridge: _FakeSessionBridge()),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // Switch to Edit mode
+    await tester.tap(find.byKey(const Key('viewer-edit-fab')));
+    await tester.pumpAndSettle();
+
+    // 1. Shape tool reveals shape variant strip & creates shape on tap
+    await tester.ensureVisible(find.byKey(const Key('tool-shape')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const Key('tool-shape')));
+    await tester.pumpAndSettle();
+    await tester.tapAt(const Offset(200, 320));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('open-full-inspector-btn')), findsOneWidget);
+
+    // 2. Open Full Style Inspector Sheet -> verify controls & close
+    await tester.tap(find.byKey(const Key('open-full-inspector-btn')));
+    await tester.pumpAndSettle();
+    expect(find.byIcon(Icons.close), findsWidgets);
+    await tester.tap(find.byIcon(Icons.close).first);
+    await tester.pumpAndSettle();
+
+    // 3. Insert Image via tool-image picker
+    await tester.ensureVisible(find.byKey(const Key('tool-image')));
+    await tester.tap(find.byKey(const Key('tool-image')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('open-full-inspector-btn')), findsOneWidget);
+
+    // 4. Open Signature Studio Sheet -> Draw stroke with velocity ink -> spawn ghost signature & place it
+    await tester.ensureVisible(find.byKey(const Key('tool-sign')));
+    await tester.tap(find.byKey(const Key('tool-sign')));
+    await tester.pumpAndSettle();
+    final sigPadFinder = find.byType(GestureDetector).last;
+    final padRect = tester.getRect(find.byWidgetPredicate(
+      (w) => w is Container && w.constraints?.maxHeight == 170,
+    ));
+    await tester.timedDragFrom(
+      Offset(padRect.left + 30, padRect.center.dy),
+      const Offset(180, -24),
+      const Duration(milliseconds: 120),
+    );
+    await tester.pumpAndSettle();
+    expect(sigPadFinder, findsOneWidget);
+    await tester.tap(find.text('Place here'));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('ghost-place-btn')), findsOneWidget);
+    await tester.tap(find.byKey(const Key('ghost-place-btn')));
+    await tester.pumpAndSettle();
+    expect(find.byKey(const Key('ghost-place-btn')), findsNothing);
+
+    // 5. Undo removes last element
+    await tester.tap(find.byKey(const Key('editor-undo-btn')));
+    await tester.pumpAndSettle();
+
+    // 6. Open Rich Page Organizer Sheet -> insert blank page -> count increases 2 -> 3
+    await tester.ensureVisible(find.byKey(const Key('tool-pages')));
+    await tester.tap(find.byKey(const Key('tool-pages')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('(2)'), findsOneWidget);
+    await tester.tap(find.text('Blank Page'));
+    await tester.pumpAndSettle();
+
+    // Close sheet happened automatically; reopen organizer to confirm 3 pages
+    await tester.ensureVisible(find.byKey(const Key('tool-pages')));
+    await tester.tap(find.byKey(const Key('tool-pages')));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('(3)'), findsOneWidget);
   });
 }

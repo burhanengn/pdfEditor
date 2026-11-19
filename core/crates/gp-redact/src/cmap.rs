@@ -1,6 +1,16 @@
 use std::collections::HashMap;
 
 use lopdf::{Dictionary, Document, Object};
+use ttf_parser::{Face, GlyphId};
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StandardFontFamily {
+    Helvetica,
+    HelveticaBold,
+    Times,
+    Courier,
+    Other,
+}
 
 #[derive(Debug, Clone)]
 pub struct FontMetricsMap {
@@ -8,6 +18,7 @@ pub struct FontMetricsMap {
     pub to_unicode: HashMap<u16, String>,
     pub widths_thousandths: HashMap<u16, f64>,
     pub default_width_thousandths: f64,
+    family: StandardFontFamily,
 }
 
 impl Default for FontMetricsMap {
@@ -17,24 +28,73 @@ impl Default for FontMetricsMap {
             to_unicode: HashMap::new(),
             widths_thousandths: HashMap::new(),
             default_width_thousandths: 520.0,
+            family: StandardFontFamily::Other,
         }
     }
+}
+
+fn classify_standard_font(font_dict: &Dictionary) -> StandardFontFamily {
+    let Ok(base) = font_dict.get(b"BaseFont").and_then(Object::as_name) else {
+        return StandardFontFamily::Other;
+    };
+    let name = String::from_utf8_lossy(base).to_ascii_lowercase();
+    if name.contains("courier") || name.contains("mono") {
+        StandardFontFamily::Courier
+    } else if name.contains("times") {
+        StandardFontFamily::Times
+    } else if (name.contains("helvetica") || name.contains("arial")) && (name.contains("bold") || name.contains("-bd")) {
+        StandardFontFamily::HelveticaBold
+    } else if name.contains("helvetica") || name.contains("arial") {
+        StandardFontFamily::Helvetica
+    } else {
+        StandardFontFamily::Other
+    }
+}
+
+fn resolve_dict<'a>(doc: &'a Document, dict: &'a Dictionary, key: &[u8]) -> Option<&'a Dictionary> {
+    dict.get(key)
+        .ok()
+        .and_then(|obj| doc.dereference(obj).ok())
+        .and_then(|(_, o)| o.as_dict().ok())
+}
+
+fn read_number(doc: &Document, obj: &Object) -> Option<f64> {
+    let resolved = match obj {
+        Object::Reference(id) => doc.get_object(*id).ok()?,
+        other => other,
+    };
+    match resolved {
+        Object::Integer(v) => Some(*v as f64),
+        Object::Real(v) => Some(f64::from(*v)),
+        _ => None,
+    }
+}
+
+fn load_font_file2_bytes(doc: &Document, descriptor: &Dictionary) -> Option<Vec<u8>> {
+    let ff_obj = descriptor.get(b"FontFile2").ok()?;
+    let (_, resolved) = doc.dereference(ff_obj).ok()?;
+    let stream = resolved.as_stream().ok()?;
+    stream.decompressed_content().ok().or_else(|| Some(stream.content.clone()))
 }
 
 impl FontMetricsMap {
     /// Extracts glyph character map & advance widths (in 1/1000 em units) from a PDF font dict.
     pub fn from_font_dict(doc: &Document, font_dict: &Dictionary) -> Self {
         let mut map = Self::default();
+        map.family = classify_standard_font(font_dict);
 
         if let Ok(subtype) = font_dict.get(b"Subtype").and_then(Object::as_name) {
             if subtype == b"Type0" {
                 map.is_two_byte = true;
+                // PDF spec 1.7 Section 9.7.4: default DW for CIDFonts is 1000.
+                map.default_width_thousandths = 1000.0;
             }
         }
 
         if let Ok(encoding) = font_dict.get(b"Encoding").and_then(Object::as_name) {
             if encoding.starts_with(b"Identity") {
                 map.is_two_byte = true;
+                map.default_width_thousandths = 1000.0;
             }
         }
 
@@ -50,6 +110,16 @@ impl FontMetricsMap {
             }
         }
 
+        if let Some(desc_dict) = resolve_dict(doc, font_dict, b"FontDescriptor") {
+            if let Ok(mw) = desc_dict.get(b"MissingWidth") {
+                if let Some(v) = read_number(doc, mw) {
+                    if v > 0.0 {
+                        map.default_width_thousandths = v;
+                    }
+                }
+            }
+        }
+
         if let Ok(first_char) = font_dict.get(b"FirstChar").and_then(Object::as_i64) {
             if let Some(widths) = font_dict
                 .get(b"Widths")
@@ -58,13 +128,39 @@ impl FontMetricsMap {
                 .and_then(|(_, o)| o.as_array().ok())
             {
                 for (offset, w_obj) in widths.iter().enumerate() {
-                    let w = match w_obj {
-                        Object::Integer(v) => *v as f64,
-                        Object::Real(v) => f64::from(*v),
-                        _ => 520.0,
+                    let Some(w) = read_number(doc, w_obj) else {
+                        continue;
                     };
                     if let Ok(code) = u16::try_from(first_char + offset as i64) {
                         map.widths_thousandths.insert(code, w);
+                    }
+                }
+            }
+        }
+
+        // Fill simple-font missing widths from embedded FontFile2 if available.
+        if !map.is_two_byte {
+            if let Some(desc_dict) = resolve_dict(doc, font_dict, b"FontDescriptor") {
+                if let Some(ttf_bytes) = load_font_file2_bytes(doc, desc_dict) {
+                    if let Ok(face) = Face::parse(&ttf_bytes, 0) {
+                        let upm = f64::from(face.units_per_em().max(1));
+                        for b in 0u16..=255u16 {
+                            if map.widths_thousandths.contains_key(&b) {
+                                continue;
+                            }
+                            let ch = map
+                                .to_unicode
+                                .get(&b)
+                                .and_then(|s| s.chars().next())
+                                .or_else(|| winansi_byte_to_char(b as u8));
+                            if let Some(c) = ch {
+                                if let Some(gid) = face.glyph_index(c) {
+                                    if let Some(adv) = face.glyph_hor_advance(gid) {
+                                        map.widths_thousandths.insert(b, (f64::from(adv) * 1000.0) / upm);
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -78,12 +174,21 @@ impl FontMetricsMap {
         {
             if let Some(first_desc) = desc_arr.first() {
                 if let Ok((_, Object::Dictionary(desc_dict))) = doc.dereference(first_desc) {
+                    if map.family == StandardFontFamily::Other {
+                        map.family = classify_standard_font(desc_dict);
+                    }
+                    let cid_descriptor = resolve_dict(doc, desc_dict, b"FontDescriptor");
+                    if let Some(fd) = cid_descriptor {
+                        if let Ok(mw) = fd.get(b"MissingWidth") {
+                            if let Some(v) = read_number(doc, mw) {
+                                if v > 0.0 {
+                                    map.default_width_thousandths = v;
+                                }
+                            }
+                        }
+                    }
                     if let Ok(dw) = desc_dict.get(b"DW") {
-                        map.default_width_thousandths = match dw {
-                            Object::Integer(v) => *v as f64,
-                            Object::Real(v) => f64::from(*v),
-                            _ => 1000.0,
-                        };
+                        map.default_width_thousandths = read_number(doc, dw).unwrap_or(1000.0);
                     }
                     if let Some(w_arr) = desc_dict
                         .get(b"W")
@@ -91,7 +196,53 @@ impl FontMetricsMap {
                         .and_then(|obj| doc.dereference(obj).ok())
                         .and_then(|(_, o)| o.as_array().ok())
                     {
-                        parse_cid_widths_array(w_arr, &mut map.widths_thousandths);
+                        parse_cid_widths_array(doc, w_arr, &mut map.widths_thousandths);
+                    }
+
+                    // Fallback to embedded TTF hmtx widths when /W leaves gaps or uses Identity/Stream CIDToGIDMap.
+                    if let Some(fd) = cid_descriptor {
+                        if let Some(ttf_bytes) = load_font_file2_bytes(doc, fd) {
+                            if let Ok(face) = Face::parse(&ttf_bytes, 0) {
+                                let upm = f64::from(face.units_per_em().max(1));
+                                let gid_stream_bytes = desc_dict
+                                    .get(b"CIDToGIDMap")
+                                    .ok()
+                                    .and_then(|obj| doc.dereference(obj).ok())
+                                    .and_then(|(_, o)| o.as_stream().ok().cloned())
+                                    .and_then(|s| s.decompressed_content().ok().or(Some(s.content)));
+                                let is_identity_map = desc_dict
+                                    .get(b"CIDToGIDMap")
+                                    .and_then(Object::as_name)
+                                    .map(|n| n == b"Identity")
+                                    .unwrap_or(gid_stream_bytes.is_none());
+
+                                if is_identity_map || gid_stream_bytes.is_some() {
+                                    let max_cid = face.number_of_glyphs();
+                                    let keys: Vec<u16> = map.to_unicode.keys().copied().collect();
+                                    for code in keys {
+                                        if map.widths_thousandths.contains_key(&code) {
+                                            continue;
+                                        }
+                                        let gid = if let Some(ref table) = gid_stream_bytes {
+                                            let off = (code as usize) * 2;
+                                            if off + 1 < table.len() {
+                                                u16::from_be_bytes([table[off], table[off + 1]])
+                                            } else {
+                                                code
+                                            }
+                                        } else {
+                                            code
+                                        };
+                                        if gid < max_cid {
+                                            if let Some(adv) = face.glyph_hor_advance(GlyphId(gid)) {
+                                                map.widths_thousandths
+                                                    .insert(code, (f64::from(adv) * 1000.0) / upm);
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                 }
             }
@@ -119,7 +270,14 @@ impl FontMetricsMap {
                     .widths_thousandths
                     .get(&code)
                     .copied()
-                    .unwrap_or(self.default_width_thousandths);
+                    .unwrap_or_else(|| {
+                        if let Some(ch) = text.chars().next() {
+                            if let Some(est) = estimate_standard_char_width(self.family, ch) {
+                                return est;
+                            }
+                        }
+                        self.default_width_thousandths
+                    });
                 out.push(DecodedGlyph {
                     raw_bytes: chunk.to_vec(),
                     unicode: text,
@@ -133,12 +291,25 @@ impl FontMetricsMap {
                     .to_unicode
                     .get(&code)
                     .cloned()
-                    .unwrap_or_else(|| (b as char).to_string());
+                    .unwrap_or_else(|| {
+                        winansi_byte_to_char(b)
+                            .unwrap_or(b as char)
+                            .to_string()
+                    });
                 let w = self
                     .widths_thousandths
                     .get(&code)
                     .copied()
-                    .unwrap_or_else(|| estimate_winansi_width_thousandths(b));
+                    .unwrap_or_else(|| {
+                        if self.family != StandardFontFamily::Other {
+                            if let Some(ch) = text.chars().next() {
+                                if let Some(est) = estimate_standard_char_width(self.family, ch) {
+                                    return est;
+                                }
+                            }
+                        }
+                        estimate_winansi_width_thousandths(self.family, b)
+                    });
                 out.push(DecodedGlyph {
                     raw_bytes: vec![b],
                     unicode: text,
@@ -157,32 +328,117 @@ pub struct DecodedGlyph {
     pub width_thousandths: f64,
 }
 
-fn estimate_winansi_width_thousandths(b: u8) -> f64 {
-    match b {
-        b' ' => 278.0,
-        b'i' | b'l' | b'I' | b'.' | b',' | b':' | b';' | b'!' | b'|' => 278.0,
-        b'f' | b'j' | b'r' | b't' | b'-' => 333.0,
-        b'm' | b'w' | b'M' | b'W' => 833.0,
-        b'A'..=b'Z' => 667.0,
-        b'0'..=b'9' => 556.0,
-        _ => 540.0,
-    }
+fn winansi_byte_to_char(b: u8) -> Option<char> {
+    let ch = match b {
+        0x80 => '\u{20AC}',
+        0x85 => '\u{2026}',
+        0x91 => '\u{2018}',
+        0x92 => '\u{2019}',
+        0x93 => '\u{201C}',
+        0x94 => '\u{201D}',
+        0x95 => '\u{2022}',
+        0x96 => '\u{2013}',
+        0x97 => '\u{2014}',
+        0xD0 => 'Ğ',
+        0xDD => 'İ',
+        0xDE => 'Ş',
+        0xF0 => 'ğ',
+        0xFD => 'ı',
+        0xFE => 'ş',
+        _ => return Some(b as char),
+    };
+    Some(ch)
 }
 
-fn parse_cid_widths_array(arr: &[Object], out: &mut HashMap<u16, f64>) {
+fn estimate_standard_char_width(family: StandardFontFamily, ch: char) -> Option<f64> {
+    if family == StandardFontFamily::Courier {
+        return Some(600.0);
+    }
+    if family == StandardFontFamily::Times {
+        let w = match ch {
+            ' ' => 250.0,
+            '!' | '|' | '\'' | '`' | '.' | ',' | ':' | ';' | 'i' | 'l' | 'j' | 'ı' => 278.0,
+            'f' | 'r' | 't' | '-' | '(' | ')' | '[' | ']' | '/' => 333.0,
+            'a' | 'e' | 'c' | 's' | 'z' | 'ç' | 'ş' => 444.0,
+            'b' | 'd' | 'g' | 'h' | 'k' | 'n' | 'o' | 'p' | 'q' | 'u' | 'v' | 'x' | 'y'
+            | 'ğ' | 'ö' | 'ü' | '0'..='9' => 500.0,
+            'w' => 722.0,
+            'm' => 778.0,
+            'I' | 'İ' => 333.0,
+            'J' | 'L' | 'F' | 'E' | 'S' | 'P' | 'T' | 'Z' | 'Ş' => 611.0,
+            'A' | 'B' | 'C' | 'D' | 'G' | 'H' | 'K' | 'N' | 'O' | 'Q' | 'R' | 'U' | 'V' | 'X' | 'Y'
+            | 'Ç' | 'Ğ' | 'Ö' | 'Ü' => 722.0,
+            'M' | 'W' => 944.0,
+            _ => return None,
+        };
+        return Some(w);
+    }
+    let scale = if family == StandardFontFamily::HelveticaBold {
+        1.04
+    } else {
+        1.0
+    };
+    let w = match ch {
+        ' ' | '!' | '|' | '\'' | '`' | '.' | ',' | ':' | ';' => 278.0,
+        'i' | 'l' | 'j' | 'ı' => 222.0,
+        'f' | 't' | '-' | '/' => 278.0,
+        'r' | '(' | ')' | '[' | ']' => 333.0,
+        'c' | 'k' | 's' | 'v' | 'x' | 'z' | 'ç' | 'ş' => 500.0,
+        'a' | 'b' | 'd' | 'e' | 'g' | 'h' | 'n' | 'o' | 'p' | 'q' | 'u' | 'y'
+        | 'ğ' | 'ö' | 'ü' | '0'..='9' => 556.0,
+        'w' => 722.0,
+        'm' => 833.0,
+        'I' | 'İ' => 278.0,
+        'J' => 500.0,
+        'L' => 556.0,
+        'F' | 'T' | 'Z' => 611.0,
+        'B' | 'E' | 'K' | 'P' | 'S' | 'Ş' => 667.0,
+        'A' | 'C' | 'D' | 'H' | 'N' | 'R' | 'U' | 'V' | 'X' | 'Y' | 'Ç' | 'Ü' => 722.0,
+        'G' | 'O' | 'Q' | 'Ğ' | 'Ö' => 778.0,
+        'M' => 833.0,
+        'W' => 944.0,
+        _ => return None,
+    };
+    Some(w * scale)
+}
+
+fn estimate_winansi_width_thousandths(family: StandardFontFamily, b: u8) -> f64 {
+    if let Some(ch) = winansi_byte_to_char(b) {
+        if let Some(w) = estimate_standard_char_width(
+            if family == StandardFontFamily::Other {
+                StandardFontFamily::Helvetica
+            } else {
+                family
+            },
+            ch,
+        ) {
+            return w;
+        }
+    }
+    556.0
+}
+
+fn parse_cid_widths_array(doc: &Document, arr: &[Object], out: &mut HashMap<u16, f64>) {
     let mut i = 0;
     while i + 1 < arr.len() {
-        let Ok(c_start) = arr[i].as_i64() else {
+        let Some(c_start) = doc
+            .dereference(&arr[i])
+            .ok()
+            .and_then(|(_, o)| o.as_i64().ok())
+            .or_else(|| arr[i].as_i64().ok())
+        else {
             i += 1;
             continue;
         };
-        match &arr[i + 1] {
+        let next_resolved = doc
+            .dereference(&arr[i + 1])
+            .map(|(_, o)| o)
+            .unwrap_or(&arr[i + 1]);
+        match next_resolved {
             Object::Array(widths) => {
                 for (offset, w_obj) in widths.iter().enumerate() {
-                    let w = match w_obj {
-                        Object::Integer(v) => *v as f64,
-                        Object::Real(v) => f64::from(*v),
-                        _ => continue,
+                    let Some(w) = read_number(doc, w_obj) else {
+                        continue;
                     };
                     if let Ok(code) = u16::try_from(c_start + offset as i64) {
                         out.insert(code, w);
@@ -191,11 +447,7 @@ fn parse_cid_widths_array(arr: &[Object], out: &mut HashMap<u16, f64>) {
                 i += 2;
             }
             Object::Integer(c_end) if i + 2 < arr.len() => {
-                let w = match &arr[i + 2] {
-                    Object::Integer(v) => *v as f64,
-                    Object::Real(v) => f64::from(*v),
-                    _ => 520.0,
-                };
+                let w = read_number(doc, &arr[i + 2]).unwrap_or(1000.0);
                 for c in c_start..=*c_end {
                     if let Ok(code) = u16::try_from(c) {
                         out.insert(code, w);
@@ -210,7 +462,9 @@ fn parse_cid_widths_array(arr: &[Object], out: &mut HashMap<u16, f64>) {
 
 fn parse_tounicode_cmap(bytes: &[u8], out: &mut HashMap<u16, String>) {
     let text = String::from_utf8_lossy(bytes);
-    let tokens: Vec<&str> = text.split_whitespace().collect();
+    // Split keeping `[` and `]` separated so `beginbfrange` array forms parse cleanly.
+    let normalized = text.replace('[', " [ ").replace(']', " ] ");
+    let tokens: Vec<&str> = normalized.split_whitespace().collect();
     let mut i = 0;
     while i < tokens.len() {
         match tokens[i] {
@@ -231,7 +485,21 @@ fn parse_tounicode_cmap(bytes: &[u8], out: &mut HashMap<u16, String>) {
                     if let (Some(lo), Some(hi)) =
                         (parse_hex_u16(tokens[i]), parse_hex_u16(tokens[i + 1]))
                     {
-                        if let Some(base_str) = parse_hex_utf16_string(tokens[i + 2]) {
+                        if tokens[i + 2] == "[" {
+                            let mut j = i + 3;
+                            let mut offset = 0u16;
+                            while j < tokens.len() && tokens[j] != "]" {
+                                if lo + offset <= hi {
+                                    if let Some(dst) = parse_hex_utf16_string(tokens[j]) {
+                                        out.insert(lo + offset, dst);
+                                    }
+                                }
+                                offset = offset.saturating_add(1);
+                                j += 1;
+                            }
+                            i = if j < tokens.len() { j + 1 } else { j };
+                            continue;
+                        } else if let Some(base_str) = parse_hex_utf16_string(tokens[i + 2]) {
                             let mut base_chars: Vec<u16> = base_str.encode_utf16().collect();
                             if let Some(&start_last) = base_chars.last() {
                                 let last_idx = base_chars.len() - 1;

@@ -744,9 +744,10 @@ export function buildClippingMaskFromElement(
   let openCutSmooth: boolean | undefined;
 
   if (maskEl.kind === 'path' && !maskEl.closed) {
-    openCutPoints = maskEl.points.map((p) =>
-      maskLocalToImgNorm(p.x * maskEl.width, p.y * maskEl.height),
-    );
+    openCutPoints = maskEl.points.map((p) => ({
+      ...maskLocalToImgNorm(p.x * maskEl.width, p.y * maskEl.height),
+      ...(p.smooth !== undefined ? { smooth: p.smooth } : {}),
+    }));
     openCutSmooth = Boolean(maskEl.smooth);
     const built = buildOpenCutClipRegion(openCutPoints, openCutSmooth, openCutSide);
     rawClosedUnitSvgPath = built.fullClosedUnitPath;

@@ -36,8 +36,11 @@
             <intent-filter>
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
-                <data android:scheme="content" android:host="*" android:mimeType="*/*" android:pathPattern=".*\\.pdf"/>
-                <data android:scheme="content" android:host="*" android:mimeType="*/*" android:pathPattern=".*\\.PDF"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="content" android:host="*" android:mimeType="*/*" android:pathSuffix=".pdf"/>
+                <data android:scheme="content" android:host="*" android:mimeType="*/*" android:pathSuffix=".PDF"/>
+                <data android:scheme="file" android:host="*" android:mimeType="*/*" android:pathSuffix=".pdf"/>
+                <data android:scheme="file" android:host="*" android:mimeType="*/*" android:pathSuffix=".PDF"/>
             </intent-filter>
 
             <!-- Share single PDF directly to gullacpdf -->

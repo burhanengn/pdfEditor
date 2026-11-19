@@ -1,4 +1,5 @@
 import {
+  BoxSelect,
   FileSignature,
   Highlighter,
   Layers,
@@ -16,7 +17,9 @@ export function MobileBottomDock() {
   const appMode = useEditorStore((s) => s.appMode);
   const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
   const toolMode = useEditorStore((s) => s.toolMode);
+  const marqueeSelectMode = useEditorStore((s) => s.marqueeSelectMode);
   const setToolMode = useEditorStore((s) => s.setToolMode);
+  const setMarqueeSelectMode = useEditorStore((s) => s.setMarqueeSelectMode);
   const setSignatureModalOpen = useEditorStore((s) => s.setSignatureModalOpen);
   const mobileSheet = useEditorStore((s) => s.mobileSheet);
   const setMobileSheet = useEditorStore((s) => s.setMobileSheet);
@@ -51,13 +54,37 @@ export function MobileBottomDock() {
           data-testid="mobile-tool-select"
           onClick={() => setToolMode('select')}
           className={`flex min-h-[44px] min-w-[52px] shrink-0 flex-col items-center justify-center gap-0.5 rounded-xl px-2 text-xs font-medium ${
-            toolMode === 'select'
+            toolMode === 'select' && !marqueeSelectMode
               ? 'bg-blue-600 text-white'
-              : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900'
+              : toolMode === 'select'
+                ? 'bg-blue-500/15 text-blue-600 dark:text-blue-400'
+                : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900'
           }`}
         >
           <MousePointer2 className="h-5 w-5" />
           <span>Select</span>
+        </button>
+
+        <button
+          type="button"
+          data-testid="mobile-tool-marquee-select"
+          aria-pressed={toolMode === 'select' && marqueeSelectMode}
+          onClick={() => {
+            if (toolMode !== 'select') {
+              setToolMode('select');
+              setMarqueeSelectMode(true);
+            } else {
+              setMarqueeSelectMode(!marqueeSelectMode);
+            }
+          }}
+          className={`flex min-h-[44px] min-w-[56px] shrink-0 flex-col items-center justify-center gap-0.5 rounded-xl px-2 text-xs font-medium ${
+            toolMode === 'select' && marqueeSelectMode
+              ? 'bg-blue-600 text-white'
+              : 'text-slate-600 hover:bg-slate-100 dark:text-slate-300 dark:hover:bg-slate-900'
+          }`}
+        >
+          <BoxSelect className="h-5 w-5" />
+          <span>Alan Seç</span>
         </button>
 
         <button

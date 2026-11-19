@@ -1,5 +1,6 @@
 import { useRef } from 'react';
 import {
+  BoxSelect,
   FileSignature,
   Hash,
   Highlighter,
@@ -44,6 +45,8 @@ export function MobileToolsSheet() {
   const setOrganizeModalOpen = useEditorStore((s) => s.setOrganizeModalOpen);
   const selectBackgroundMode = useEditorStore((s) => s.selectBackgroundMode);
   const setSelectBackgroundMode = useEditorStore((s) => s.setSelectBackgroundMode);
+  const marqueeSelectMode = useEditorStore((s) => s.marqueeSelectMode);
+  const setMarqueeSelectMode = useEditorStore((s) => s.setMarqueeSelectMode);
 
   const imageInputRef = useRef<HTMLInputElement | null>(null);
   const hasPages = pages.length > 0;
@@ -274,6 +277,35 @@ export function MobileToolsSheet() {
               >
                 <Highlighter className="h-4 w-4 shrink-0" />
                 <span>Vurgula / Kutu / Kalıcı Sansür</span>
+              </button>
+
+              <button
+                type="button"
+                disabled={!hasPages}
+                data-testid="mobile-toggle-marquee-select"
+                aria-pressed={toolMode === 'select' && marqueeSelectMode}
+                onClick={() => {
+                  if (toolMode !== 'select') {
+                    setToolMode('select');
+                    setMarqueeSelectMode(true);
+                  } else {
+                    setMarqueeSelectMode(!marqueeSelectMode);
+                  }
+                  setMobileSheet('none');
+                }}
+                className={`col-span-2 flex min-h-[48px] items-center justify-between gap-2.5 rounded-xl border px-3 py-2 text-left font-medium transition disabled:opacity-40 ${
+                  toolMode === 'select' && marqueeSelectMode
+                    ? 'border-blue-500 bg-blue-500/20 text-blue-600 dark:text-blue-400'
+                    : 'border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-800 dark:bg-slate-900 dark:text-slate-200'
+                }`}
+              >
+                <span className="flex items-center gap-2.5">
+                  <BoxSelect className="h-4 w-4 shrink-0" />
+                  <span>Alan Seç (Çoklu Kutu Seçimi)</span>
+                </span>
+                <span className="rounded-full bg-black/10 px-2 py-0.5 text-xs font-semibold dark:bg-white/10">
+                  {toolMode === 'select' && marqueeSelectMode ? 'Açık' : 'Kapalı'}
+                </span>
               </button>
 
               <button

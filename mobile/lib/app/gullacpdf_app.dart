@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:io';
 import 'dart:math' as math;
+import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -11,7 +12,10 @@ import 'package:path_provider/path_provider.dart';
 import '../engine/session_bridge.dart';
 import '../engine/tile_cache.dart';
 import '../features/editor/editor_chrome.dart';
+import '../features/editor/element_inspector_sheet.dart';
+import '../features/editor/page_organizer_sheet.dart';
 import '../features/library/library_screen.dart';
+import '../features/signature/signature_studio_sheet.dart';
 import '../features/viewer/viewer_chrome.dart';
 import '../l10n/gp_l10n.g.dart';
 import '../platform/file_bridge.dart';
@@ -39,6 +43,8 @@ class GullacpdfApp extends ConsumerStatefulWidget {
 class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
   final GpViewportController _viewportCtrl = GpViewportController();
   final GpTileCache _tileCache = GpTileCache();
+  final Set<String> _analyzingPageKeys = <String>{};
+  final Set<int> _extractedLinkPages = <int>{};
   StreamSubscription<GpOpenRequest>? _incomingSub;
   StreamSubscription<GpSearchBatch>? _searchSub;
 
@@ -131,6 +137,8 @@ class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
         _tileCache.invalidateDoc(prevDocId);
         unawaited(_bridge.closeDocument(prevDocId));
       }
+      _analyzingPageKeys.clear();
+      _extractedLinkPages.clear();
 
       notifier.setLoadedDocument(
         docId: docId,
@@ -142,6 +150,9 @@ class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
         sourceUri: sourceUri,
         workFilePath: path,
       );
+      if (outcome.pages.isNotEmpty) {
+        unawaited(_ensurePageAnalyzedAndLinks(0));
+      }
     } catch (err) {
       notifier.setLoading(false);
       notifier.setError(err.toString());
@@ -149,9 +160,13 @@ class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
   }
 
   Future<void> _openFromPicker() async {
-    final req = await _fileBridge.openDocumentPicker(allowMultiple: false);
-    if (req != null) {
-      await _handleIncomingOpenRequest(req);
+    try {
+      final req = await _fileBridge.openDocumentPicker(allowMultiple: false);
+      if (req != null) {
+        await _handleIncomingOpenRequest(req);
+      }
+    } catch (err) {
+      ref.read(gpSessionProvider.notifier).setError(err.toString());
     }
   }
 
@@ -192,10 +207,330 @@ class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
     final appState = ref.read(gpSessionProvider);
     final anchor = _viewportCtrl.captureAnchor(appState.pages);
     ref.read(gpSessionProvider.notifier).setMode(nextMode);
+    if (nextMode == GpAppMode.edit && appState.pages.isNotEmpty) {
+      unawaited(_ensurePageAnalyzedAndLinks(appState.activePageIndex));
+    }
     if (anchor != null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         _viewportCtrl.restoreAnchor(anchor, ref.read(gpSessionProvider).pages);
       });
+    }
+  }
+
+  Future<void> _ensurePageAnalyzedAndLinks(int pageIndex) async {
+    final state = ref.read(gpSessionProvider);
+    if (state.docId == null ||
+        pageIndex < 0 ||
+        pageIndex >= state.pages.length) {
+      return;
+    }
+    final page = state.pages[pageIndex];
+    if (page.sourceDocId == 'blank') return;
+
+    final key = '${page.sourceDocId}:${page.sourcePageIndex}:${page.id}';
+    if (!state.pageAnalyses.containsKey(page.id) &&
+        _analyzingPageKeys.add(key)) {
+      try {
+        final raw = await _bridge.analyzePageObjectsJson(
+          docId: page.sourceDocId,
+          pageIndex: page.sourcePageIndex,
+          pageId: page.id,
+        );
+        if (!mounted || ref.read(gpSessionProvider).docId != state.docId) return;
+        if (raw.trim().isNotEmpty && raw.trim() != '{}') {
+          final parsed = GpPageAnalysis.fromJsonString(raw);
+          ref.read(gpSessionProvider.notifier).setPageAnalysis(page.id, parsed);
+        }
+      } catch (_) {}
+    }
+
+    if (!state.pageLinks.containsKey(page.sourcePageIndex) &&
+        _extractedLinkPages.add(page.sourcePageIndex)) {
+      try {
+        final links = await _bridge.extractPageLinks(
+          docId: page.sourceDocId,
+          pageIndex: page.sourcePageIndex,
+        );
+        if (!mounted || ref.read(gpSessionProvider).docId != state.docId) return;
+        if (links.isNotEmpty) {
+          ref
+              .read(gpSessionProvider.notifier)
+              .setPageLinks(page.sourcePageIndex, links);
+        }
+      } catch (_) {}
+    }
+  }
+
+  Future<void> _rebuildCleanPreviewForPage(GpPageMeta page) async {
+    if (page.sourceDocId == 'blank') return;
+    final state = ref.read(gpSessionProvider);
+    final notifier = ref.read(gpSessionProvider.notifier);
+    final relevant = state.elements
+        .where(
+          (e) =>
+              e.pageId == page.id &&
+              (e.kind == 'textEdit' ||
+                  e.kind == 'imageReplacement' ||
+                  e.kind == 'shapeReplacement'),
+        )
+        .toList();
+
+    final prevClean = state.cleanPreviewDocIds[page.id];
+    if (relevant.isEmpty) {
+      if (prevClean != null) {
+        notifier.setCleanPreviewDocId(page.id, null);
+        _tileCache.invalidateDoc(prevClean);
+        unawaited(_bridge.closeDocument(prevClean));
+      }
+      return;
+    }
+
+    try {
+      final cleanBytes = await _bridge.prepareCleanPagePreview(
+        docId: page.sourceDocId,
+        pageIndex: page.sourcePageIndex,
+        elements: relevant,
+      );
+      if (!mounted || cleanBytes.isEmpty) return;
+      final nextCleanId =
+          'clean_${page.id}_${DateTime.now().microsecondsSinceEpoch}';
+      await _bridge.openDocumentBytes(docId: nextCleanId, bytes: cleanBytes);
+      if (!mounted) return;
+      notifier.setCleanPreviewDocId(page.id, nextCleanId);
+      if (prevClean != null) {
+        _tileCache.invalidateDoc(prevClean);
+        unawaited(_bridge.closeDocument(prevClean));
+      }
+    } catch (_) {}
+  }
+
+  void _editPdfTextBlock(int pageIndex, GpDetectedTextBlock block) {
+    final state = ref.read(gpSessionProvider);
+    if (pageIndex < 0 || pageIndex >= state.pages.length) return;
+    final page = state.pages[pageIndex];
+    final notifier = ref.read(gpSessionProvider.notifier);
+
+    final existing = state.elements
+        .where(
+          (e) =>
+              e.pageId == page.id &&
+              !e.deleted &&
+              e.kind == 'textEdit' &&
+              e.sourceBlockId == block.id,
+        )
+        .firstOrNull;
+    if (existing != null) {
+      notifier.selectElement(existing.id);
+      return;
+    }
+
+    final el = GpOverlayElement(
+      id: 'te_${DateTime.now().microsecondsSinceEpoch}',
+      pageId: page.id,
+      kind: 'textEdit',
+      x: block.x,
+      y: block.y,
+      width: math.max(96.0, block.width),
+      height: math.max(18.0, block.height),
+      text: block.text,
+      originalText: block.text,
+      sourceBlockId: block.id,
+      fontSize: block.fontSize,
+      fontFamily: block.fontFamily,
+      bold: block.bold,
+      italic: block.italic,
+      colorValue: block.colorValue,
+      lineHeight: block.lineHeight,
+    );
+    notifier.addElement(el);
+    unawaited(_rebuildCleanPreviewForPage(page));
+  }
+
+  Future<void> _insertImageFromPicker(BuildContext modalCtx) async {
+    final notifier = ref.read(gpSessionProvider.notifier);
+    try {
+      final req = await _fileBridge.pickImage(allowMultiple: false);
+      if (req == null || req.uris.isEmpty) return;
+      final work = await _fileBridge.copyToWorkFile(
+        sourceUri: req.uris.first,
+        displayName: req.displayName,
+      );
+      final bytes = await File(work.workPath).readAsBytes();
+      if (bytes.isEmpty) return;
+
+      var drawW = 180.0;
+      var drawH = 120.0;
+      try {
+        if (bytes.length >= 24 &&
+            bytes[0] == 0x89 &&
+            bytes[1] == 0x50 &&
+            bytes[2] == 0x4E &&
+            bytes[3] == 0x47) {
+          final pw = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+          final ph = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
+          if (pw > 0 && ph > 0) {
+            final aspect = pw / ph;
+            drawW = math.min(240.0, math.max(64.0, pw.toDouble()));
+            drawH = math.max(36.0, drawW / aspect);
+          }
+        } else {
+          final codec = await ui.instantiateImageCodec(bytes).timeout(
+                const Duration(milliseconds: 500),
+              );
+          final frame = await codec.getNextFrame().timeout(
+                const Duration(milliseconds: 500),
+              );
+          final img = frame.image;
+          if (img.width > 0 && img.height > 0) {
+            final aspect = img.width / img.height;
+            drawW = math.min(240.0, math.max(64.0, img.width.toDouble()));
+            drawH = math.max(36.0, drawW / aspect);
+          }
+          img.dispose();
+          codec.dispose();
+        }
+      } catch (_) {}
+
+      final st = ref.read(gpSessionProvider);
+      if (st.pages.isEmpty) return;
+      final page =
+          st.pages[st.activePageIndex.clamp(0, st.pages.length - 1)];
+      final x = ((page.displayWidth - drawW) * 0.5).clamp(12.0, page.displayWidth - 24.0);
+      final y = ((page.displayHeight - drawH) * 0.5).clamp(12.0, page.displayHeight - 24.0);
+      final lower = work.displayName.toLowerCase();
+      final mime = lower.endsWith('.jpg') || lower.endsWith('.jpeg')
+          ? 'image/jpeg'
+          : (lower.endsWith('.webp') ? 'image/webp' : 'image/png');
+
+      notifier.addElement(
+        GpOverlayElement(
+          id: 'img_${DateTime.now().microsecondsSinceEpoch}',
+          pageId: page.id,
+          kind: 'image',
+          x: x,
+          y: y,
+          width: drawW,
+          height: drawH,
+          imageName: work.displayName,
+          mimeType: mime,
+          imageBytes: bytes,
+        ),
+      );
+    } catch (err) {
+      notifier.setError(err.toString());
+    }
+  }
+
+  Future<void> _mergeExternalPdf() async {
+    final notifier = ref.read(gpSessionProvider.notifier);
+    try {
+      final req = await _fileBridge.openDocumentPicker(allowMultiple: false);
+      if (req == null || req.uris.isEmpty) return;
+      final work = await _fileBridge.copyToWorkFile(
+        sourceUri: req.uris.first,
+        displayName: req.displayName,
+      );
+      final mergeDocId = 'merge_${DateTime.now().millisecondsSinceEpoch}';
+      final outcome = await _bridge.openDocumentFile(
+        docId: mergeDocId,
+        path: work.workPath,
+      );
+      if (outcome.status == 'needs-password' ||
+          outcome.status == 'invalid-password') {
+        notifier.setError('Password-protected PDF cannot be merged directly.');
+        return;
+      }
+      final remapped = [
+        for (var i = 0; i < outcome.pages.length; i++)
+          GpPageMeta(
+            id: '${mergeDocId}_p$i',
+            sourceDocId: mergeDocId,
+            sourcePageIndex: outcome.pages[i].sourcePageIndex,
+            baseWidth: outcome.pages[i].baseWidth,
+            baseHeight: outcome.pages[i].baseHeight,
+            intrinsicRotation: outcome.pages[i].intrinsicRotation,
+            userRotation: outcome.pages[i].userRotation,
+          ),
+      ];
+      notifier.mergeExternalPages(remapped);
+    } catch (err) {
+      notifier.setError(err.toString());
+    }
+  }
+
+  Future<void> _splitExtractPages(
+    BuildContext modalCtx,
+    Set<int> indices,
+    GpL10n l10n,
+  ) async {
+    final state = ref.read(gpSessionProvider);
+    final notifier = ref.read(gpSessionProvider.notifier);
+    final sorted = indices
+        .where((i) => i >= 0 && i < state.pages.length)
+        .toList()
+      ..sort();
+    if (sorted.isEmpty) return;
+
+    notifier.setLoading(true);
+    try {
+      final selectedPages = [for (final i in sorted) state.pages[i]];
+      final selectedIds = {for (final p in selectedPages) p.id};
+      final selectedElements =
+          state.elements.where((e) => selectedIds.contains(e.pageId)).toList();
+      final dir = await getTemporaryDirectory();
+      final outPath =
+          '${dir.path}/extracted_${DateTime.now().millisecondsSinceEpoch}.pdf';
+      await _bridge.compileAndSaveVerified(
+        pages: selectedPages,
+        elements: selectedElements,
+        redactionsPage0: const [],
+        outputPath: outPath,
+        pageNumbering: state.pageNumbering,
+        customTtfBytes: state.customTtfBytes,
+      );
+      final base = state.displayName
+          .replaceAll(RegExp(r'\.pdf$', caseSensitive: false), '');
+      await _fileBridge.createDocument(
+        suggestedName: '$base-extracted.pdf',
+        sourceWorkPath: outPath,
+      );
+      if (modalCtx.mounted) {
+        ScaffoldMessenger.of(modalCtx).showSnackBar(
+          SnackBar(content: Text('${l10n.t('mobile.splitPdf')} (${sorted.length})')),
+        );
+      }
+    } catch (err) {
+      notifier.setError(err.toString());
+    } finally {
+      notifier.setLoading(false);
+    }
+  }
+
+  void _handleTapPdfLink(BuildContext modalCtx, GpPageLink link, GpL10n l10n) {
+    final state = ref.read(gpSessionProvider);
+    if (link.kind == 'goto' && link.destPageIndex != null) {
+      _viewportCtrl.scrollToPage(link.destPageIndex!, state.pages);
+      return;
+    }
+    final uri = link.uri;
+    if (uri == null || uri.isEmpty) return;
+    ScaffoldMessenger.of(modalCtx).showSnackBar(
+      SnackBar(
+        content: Text(uri),
+        action: SnackBarAction(
+          label: 'Copy',
+          onPressed: () => Clipboard.setData(ClipboardData(text: uri)),
+        ),
+      ),
+    );
+  }
+
+  void _refreshCleanPreviewIfNeeded(String? pageId) {
+    if (pageId == null) return;
+    final state = ref.read(gpSessionProvider);
+    final page = state.pages.where((p) => p.id == pageId).firstOrNull;
+    if (page != null) {
+      unawaited(_rebuildCleanPreviewForPage(page));
     }
   }
 
@@ -246,6 +581,8 @@ class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
       elements: state.elements,
       redactionsPage0: const [],
       outputPath: outPath,
+      pageNumbering: state.pageNumbering,
+      customTtfBytes: state.customTtfBytes,
     );
     return outPath;
   }
@@ -410,55 +747,91 @@ class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
     );
   }
 
-  Future<void> _openSignatureGhostFlow(GpL10n l10n) async {
-    final strokes = await showGpSignaturePadSheet(context, l10n);
-    if (strokes == null || strokes.isEmpty) return;
+  Future<void> _openSignatureGhostFlow(
+    BuildContext modalCtx,
+    GpL10n l10n,
+  ) async {
+    final notifier = ref.read(gpSessionProvider.notifier);
+    final ghost = await showGpSignatureStudioSheet(
+      context: modalCtx,
+      appState: ref.read(gpSessionProvider),
+      l10n: l10n,
+      fileBridge: _fileBridge,
+      onSaveToVault: notifier.saveSignatureToVault,
+      onDeleteFromVault: notifier.deleteSignatureFromVault,
+    );
+    if (ghost == null) return;
 
     final state = ref.read(gpSessionProvider);
     final idx =
         state.activePageIndex.clamp(0, math.max(0, state.pages.length - 1)).toInt();
     final page = state.pages[idx];
-    ref.read(gpSessionProvider.notifier).setGhostSignature(
-          GpGhostSignature(
-            label: l10n.t('mobile.tool.signature'),
-            strokes: strokes,
-            centerPdf: Offset(page.displayWidth * 0.5, page.displayHeight * 0.5),
-            sizePdf: const Size(160, 72),
-          ),
-        );
+    notifier.setGhostSignature(
+      ghost.copyWith(
+        centerPdf: Offset(page.displayWidth * 0.5, page.displayHeight * 0.5),
+      ),
+    );
   }
 
-  void _commitGhostSignature() {
+  void _commitGhostSignature({int? targetPageIdx, Offset? targetCenterPdf}) {
     final state = ref.read(gpSessionProvider);
     final ghost = state.ghostSignature;
     if (ghost == null || state.pages.isEmpty) return;
-    final page = state.pages[state.activePageIndex.clamp(0, state.pages.length - 1)];
+    final pIdx =
+        (targetPageIdx ?? state.activePageIndex).clamp(0, state.pages.length - 1);
+    final page = state.pages[pIdx];
+    final center = targetCenterPdf ?? ghost.centerPdf;
+    final vbW = ghost.viewBoxSize.width <= 0 ? 300.0 : ghost.viewBoxSize.width;
+    final vbH = ghost.viewBoxSize.height <= 0 ? 180.0 : ghost.viewBoxSize.height;
+    final left = center.dx - ghost.sizePdf.width * 0.5;
+    final top = center.dy - ghost.sizePdf.height * 0.5;
 
-    // Normalize pad coordinates (300x180) into ghost PDF bounds cleanly.
     final scaledPts = <Offset>[];
     for (final stroke in ghost.strokes) {
       for (final pt in stroke) {
         scaledPts.add(
           Offset(
-            ghost.centerPdf.dx - ghost.sizePdf.width * 0.5 + (pt.dx / 300.0) * ghost.sizePdf.width,
-            ghost.centerPdf.dy - ghost.sizePdf.height * 0.5 + (pt.dy / 180.0) * ghost.sizePdf.height,
+            left + (pt.dx / vbW) * ghost.sizePdf.width,
+            top + (pt.dy / vbH) * ghost.sizePdf.height,
           ),
         );
       }
+    }
+
+    var svgPaths = ghost.svgPaths;
+    if (svgPaths.isEmpty && ghost.imageBytes == null && ghost.strokes.isNotEmpty) {
+      final hex = '#${(ghost.colorValue & 0xFFFFFF).toRadixString(16).padLeft(6, '0')}';
+      svgPaths = [
+        for (final s in ghost.strokes)
+          if (s.length >= 2)
+            GpSignatureSvgPath(
+              d: 'M ${s.first.dx.toStringAsFixed(1)} ${s.first.dy.toStringAsFixed(1)} '
+                  '${s.skip(1).map((p) => 'L ${p.dx.toStringAsFixed(1)} ${p.dy.toStringAsFixed(1)}').join(' ')}',
+              fill: 'none',
+              stroke: hex,
+              strokeWidth: 2.2,
+            ),
+      ];
     }
 
     ref.read(gpSessionProvider.notifier).addElement(
           GpOverlayElement(
             id: 'sig_${DateTime.now().microsecondsSinceEpoch}',
             pageId: page.id,
-            kind: 'ink',
-            x: ghost.centerPdf.dx - ghost.sizePdf.width * 0.5,
-            y: ghost.centerPdf.dy - ghost.sizePdf.height * 0.5,
+            kind: 'signature',
+            x: left,
+            y: top,
             width: ghost.sizePdf.width,
             height: ghost.sizePdf.height,
-            colorValue: 0xFF1D4ED8,
+            colorValue: ghost.colorValue,
             strokeWidth: 2.2,
             points: scaledPts,
+            svgPaths: svgPaths,
+            imageBytes: ghost.imageBytes,
+            viewBoxWidth: vbW,
+            viewBoxHeight: vbH,
+            signatureId: ghost.signatureId,
+            realisticInk: ghost.realisticInk,
           ),
         );
     ref.read(gpSessionProvider.notifier).setGhostSignature(null);
@@ -545,6 +918,23 @@ class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
                                 );
                                 return;
                               }
+                            } else if (doc.sourceId.startsWith('content://') ||
+                                doc.sourceId.startsWith('file://')) {
+                              try {
+                                final work = await _fileBridge.copyToWorkFile(
+                                  sourceUri: doc.sourceId,
+                                  displayName: doc.displayName,
+                                );
+                                await _openWorkFile(
+                                  path: work.workPath,
+                                  displayName: work.displayName,
+                                  sourceUri: doc.sourceId,
+                                  writable: doc.writable,
+                                );
+                                return;
+                              } catch (_) {
+                                // Persistable permission revoked or moved; fall back to SAF picker.
+                              }
                             }
                             await _openFromPicker();
                           },
@@ -610,23 +1000,33 @@ class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
             bridge: _bridge,
             tileCache: _tileCache,
             controller: _viewportCtrl,
-            onPositionChanged: notifier.updateViewportPosition,
+            onPositionChanged: (pageIdx, zoom) {
+              notifier.updateViewportPosition(pageIdx, zoom);
+              unawaited(_ensurePageAnalyzedAndLinks(pageIdx));
+            },
             onToggleImmersive: notifier.toggleImmersive,
             onAddOverlayElement: notifier.addElement,
             onSelectElement: notifier.selectElement,
+            onUpdateOverlayElement: notifier.updateElement,
+            onRequestEditPdfTextBlock: _editPdfTextBlock,
+            onPlaceGhostAt: (pageIdx, pdfPt) => _commitGhostSignature(
+              targetPageIdx: pageIdx,
+              targetCenterPdf: pdfPt,
+            ),
+            onTapLink: (link) => _handleTapPdfLink(ctx, link, l10n),
             onEraseStrokeAt: (pt, pageIdx) {
               final p = appState.pages[pageIdx];
               final hitEl = appState.elements
                   .where((e) =>
                       e.pageId == p.id &&
-                      e.kind == 'ink' &&
+                      !e.deleted &&
+                      (e.kind == 'ink' || e.kind == 'path' || e.kind == 'highlight' || e.kind == 'shape' || e.kind == 'signature') &&
                       Rect.fromLTWH(e.x, e.y, e.width, e.height)
                           .inflate(10)
                           .contains(pt))
                   .firstOrNull;
               if (hitEl != null) {
-                notifier.selectElement(hitEl.id);
-                notifier.deleteSelectedElement();
+                notifier.deleteElement(hitEl.id);
               }
             },
           ),
@@ -649,15 +1049,47 @@ class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
             ),
 
           if (selectedEl != null &&
-              selectedEl.kind == 'textAdd' &&
-              appState.mode == GpAppMode.edit)
+              !selectedEl.deleted &&
+              appState.mode == GpAppMode.edit &&
+              appState.ghostSignature == null)
             Positioned(
               left: 0,
               right: 0,
               bottom: 4,
-              child: GpInlineTextInspectorBar(
+              child: GpInlineSelectionBar(
                 element: selectedEl,
-                onUpdate: (u) => notifier.updateElement(u, recordHistory: false),
+                l10n: l10n,
+                onUpdate: (u, {recordHistory = true}) =>
+                    notifier.updateElement(u, recordHistory: recordHistory),
+                onOpenFullInspector: () => unawaited(
+                  showGpElementInspectorSheet(
+                    context: ctx,
+                    initialElement: selectedEl,
+                    appState: ref.read(gpSessionProvider),
+                    l10n: l10n,
+                    fileBridge: _fileBridge,
+                    onUpdate: (u) => notifier.updateElement(u, recordHistory: true),
+                    onLoadCustomFont: (bytes, label) =>
+                        notifier.setCustomFont(bytes, label),
+                    onBringForward: () => notifier.bringForward(selectedEl.id),
+                    onSendBackward: () => notifier.sendBackward(selectedEl.id),
+                    onDuplicate: () => notifier.duplicateElement(selectedEl.id),
+                    onToggleLock: () => notifier.toggleLockElement(selectedEl.id),
+                    onApplyAcrossPages: (scope) =>
+                        notifier.applyElementAcrossPages(selectedEl.id, scope: scope),
+                    onDelete: () {
+                      final pid = selectedEl.pageId;
+                      notifier.deleteElement(selectedEl.id);
+                      _refreshCleanPreviewIfNeeded(pid);
+                    },
+                  ),
+                ),
+                onDuplicate: () => notifier.duplicateElement(selectedEl.id),
+                onDelete: () {
+                  final pid = selectedEl.pageId;
+                  notifier.deleteElement(selectedEl.id);
+                  _refreshCleanPreviewIfNeeded(pid);
+                },
                 onClose: () => notifier.selectElement(null),
               ),
             ),
@@ -680,9 +1112,19 @@ class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
                     Icon(Icons.gesture, color: palette.accent),
                     const SizedBox(width: GpSpacing.s2),
                     Expanded(
-                      child: Text(
-                        l10n.t('mobile.tool.signature'),
-                        style: GpTypography.body.copyWith(color: palette.textPrimary),
+                      child: Column(
+                        mainAxisSize: MainAxisSize.min,
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            appState.ghostSignature!.label,
+                            style: GpTypography.label.copyWith(color: palette.textPrimary),
+                          ),
+                          Text(
+                            l10n.t('mobile.tapToPlaceSig'),
+                            style: GpTypography.caption.copyWith(color: palette.textSecondary),
+                          ),
+                        ],
                       ),
                     ),
                     TextButton(
@@ -691,7 +1133,7 @@ class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
                     ),
                     FilledButton(
                       key: const Key('ghost-place-btn'),
-                      onPressed: _commitGhostSignature,
+                      onPressed: () => _commitGhostSignature(),
                       style: FilledButton.styleFrom(
                         backgroundColor: palette.accent,
                         minimumSize: const Size(108, GpComponents.touchTargetMin),
@@ -707,6 +1149,8 @@ class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
             GpNavigatorSheet(
               appState: appState,
               l10n: l10n,
+              bridge: _bridge,
+              tileCache: _tileCache,
               onSelectPage: (idx) => _viewportCtrl.scrollToPage(idx, appState.pages),
               onClose: notifier.closeSheet,
             ),
@@ -754,6 +1198,18 @@ class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
                     ),
                     onShare: _shareCurrentPdf,
                     onPrint: _printCurrentPdf,
+                    onCopyPageText: () async {
+                      final docId = appState.docId;
+                      if (docId == null || appState.pages.isEmpty) return;
+                      final page = appState.pages[appState.activePageIndex];
+                      final text = await _bridge.extractPageText(docId, page.sourcePageIndex);
+                      if (!ctx.mounted) return;
+                      await showGpPageTextSheet(
+                        context: ctx,
+                        appState: appState,
+                        pageText: text,
+                      );
+                    },
                     onOpenSettings: () => unawaited(_openSettingsSheet(ctx, l10n)),
                     onSwitchToEdit: () => _switchModePreservingAnchor(GpAppMode.edit),
                   )
@@ -762,9 +1218,25 @@ class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
                     layoutSpec: layoutSpec,
                     l10n: l10n,
                     onDoneToViewer: () => _switchModePreservingAnchor(GpAppMode.view),
-                    onUndo: notifier.undo,
-                    onRedo: notifier.redo,
-                    onDeleteSelected: notifier.deleteSelectedElement,
+                    onUndo: () {
+                      final activePgId = appState.pages.isEmpty
+                          ? null
+                          : appState.pages[appState.activePageIndex].id;
+                      notifier.undo();
+                      _refreshCleanPreviewIfNeeded(activePgId);
+                    },
+                    onRedo: () {
+                      final activePgId = appState.pages.isEmpty
+                          ? null
+                          : appState.pages[appState.activePageIndex].id;
+                      notifier.redo();
+                      _refreshCleanPreviewIfNeeded(activePgId);
+                    },
+                    onDeleteSelected: () {
+                      final activePgId = selectedEl?.pageId;
+                      notifier.deleteSelectedElement();
+                      _refreshCleanPreviewIfNeeded(activePgId);
+                    },
                     onSave: () => unawaited(
                       showGpSaveWorkflowSheet(
                         context: ctx,
@@ -824,9 +1296,27 @@ class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
                       itemCount: appState.pages.length,
                       itemBuilder: (_, idx) {
                         final active = idx == appState.activePageIndex;
+                        final pg = appState.pages[idx];
                         return ListTile(
                           selected: active,
                           selectedTileColor: palette.accent.withValues(alpha: 0.14),
+                          leading: SizedBox(
+                            width: 34,
+                            height: 46,
+                            child: ClipRRect(
+                              borderRadius: BorderRadius.circular(4),
+                              child: appState.docId == null
+                                  ? null
+                                  : GpPageThumbnailPreview(
+                                      docId: appState.docId!,
+                                      page: pg,
+                                      themeName: appState.theme.name,
+                                      darkPaperInvert: appState.darkPaperInvert,
+                                      bridge: _bridge,
+                                      tileCache: _tileCache,
+                                    ),
+                            ),
+                          ),
                           title: Text(
                             '${l10n.t('nav.pages')} ${idx + 1}',
                             style: GpTypography.body.copyWith(color: palette.textPrimary),
@@ -841,21 +1331,43 @@ class _GullacpdfAppState extends ConsumerState<GullacpdfApp> {
             ),
           ),
 
+          if (appState.mode == GpAppMode.edit &&
+              appState.tool == GpEditorTool.shape)
+            GpShapeVariantStrip(
+              activeShapeType: appState.activeShapeType,
+              activeStrokeColorValue: appState.activeStrokeColorValue,
+              onSelectShape: (s) => notifier.setActiveShapeStyle(shapeType: s),
+              onSelectColor: (c) =>
+                  notifier.setActiveShapeStyle(strokeColorValue: c),
+            ),
+
           if (appState.mode == GpAppMode.edit)
             GpEditorToolDock(
               activeTool: appState.tool,
               l10n: l10n,
               onSelectTool: notifier.setTool,
-              onOpenSignaturePad: () => unawaited(_openSignatureGhostFlow(l10n)),
+              onOpenSignaturePad: () => unawaited(_openSignatureGhostFlow(ctx, l10n)),
+              onInsertImage: () => unawaited(_insertImageFromPicker(ctx)),
               onOpenOrganizeSheet: () => unawaited(
-                showGpPageOrganizeSheet(
+                showGpRichPageOrganizerSheet(
                   context: ctx,
-                  appState: appState,
+                  appState: ref.read(gpSessionProvider),
                   l10n: l10n,
-                  onRotatePage: notifier.rotatePageClockwise,
+                  bridge: _bridge,
+                  tileCache: _tileCache,
+                  onRotatePageBy: notifier.rotatePageBy,
                   onMovePage: notifier.movePage,
+                  onDuplicatePage: notifier.duplicatePageAt,
+                  onInsertBlankAfter: (idx) => notifier.insertBlankPageAfter(idx),
                   onDeletePage: notifier.deletePageAt,
-                  onMergePdf: _openFromPicker,
+                  onBatchRotate: notifier.batchRotatePages,
+                  onBatchDelete: notifier.batchDeletePages,
+                  onSplitExtractPages: (indices) =>
+                      _splitExtractPages(ctx, indices, l10n),
+                  onMergePdf: _mergeExternalPdf,
+                  onSavePageNumbering: notifier.setPageNumbering,
+                  onJumpToPage: (idx) =>
+                      _viewportCtrl.scrollToPage(idx, ref.read(gpSessionProvider).pages),
                 ),
               ),
             ),

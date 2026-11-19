@@ -1,4 +1,12 @@
 import {
+  AlignCenterHorizontal,
+  AlignCenterVertical,
+  AlignEndHorizontal,
+  AlignEndVertical,
+  AlignHorizontalDistributeCenter,
+  AlignStartHorizontal,
+  AlignStartVertical,
+  AlignVerticalDistributeCenter,
   ArrowUpToLine,
   ChevronDown,
   ChevronUp,
@@ -7,16 +15,21 @@ import {
   Minus,
   Plus,
   SlidersHorizontal,
+  Spline,
   Trash2,
   Unlock,
   X,
 } from 'lucide-react';
+import { pointIsSmooth } from '@/engine/vectorShapes';
 import { useEditorStore } from '@/store/useEditorStore';
+import type { AlignAction } from '@/utils/alignment';
 import { RightInspector } from '../inspector/RightInspector';
 
 export function MobileInspectorSheet() {
   const elements = useEditorStore((s) => s.elements);
   const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
+  const editingPathElementId = useEditorStore((s) => s.editingPathElementId);
+  const selectedPathVertexIndices = useEditorStore((s) => s.selectedPathVertexIndices);
   const editingTextElementId = useEditorStore((s) => s.editingTextElementId);
   const mobileInspectorSnap = useEditorStore((s) => s.mobileInspectorSnap);
   const setMobileSheet = useEditorStore((s) => s.setMobileSheet);
@@ -24,6 +37,9 @@ export function MobileInspectorSheet() {
   const updateElements = useEditorStore((s) => s.updateElements);
   const deleteElements = useEditorStore((s) => s.deleteElements);
   const bringToFront = useEditorStore((s) => s.bringToFront);
+  const alignSelectedElements = useEditorStore((s) => s.alignSelectedElements);
+  const togglePathVerticesSmooth = useEditorStore((s) => s.togglePathVerticesSmooth);
+  const deletePathVertices = useEditorStore((s) => s.deletePathVertices);
 
   if (editingTextElementId !== null && mobileInspectorSnap === 'collapsed') {
     return null;
@@ -181,6 +197,93 @@ export function MobileInspectorSheet() {
               </button>
             </>
           )}
+
+          {selectedElementIds.length >= 2 && (
+            <div className="flex shrink-0 items-center gap-1 border-r border-slate-200 pr-1.5 dark:border-slate-700">
+              {(
+                [
+                  ['left', AlignStartVertical, 'Sola Hizala'],
+                  ['center-h', AlignCenterVertical, 'Yatay Ortala'],
+                  ['right', AlignEndVertical, 'Sağa Hizala'],
+                  ['top', AlignStartHorizontal, 'Üste Hizala'],
+                  ['center-v', AlignCenterHorizontal, 'Dikey Ortala'],
+                  ['bottom', AlignEndHorizontal, 'Alta Hizala'],
+                ] as Array<[AlignAction, typeof AlignStartVertical, string]>
+              ).map(([action, Icon, title]) => (
+                <button
+                  key={action}
+                  type="button"
+                  aria-label={title}
+                  data-testid={`mobile-inspector-align-${action}`}
+                  onClick={() => alignSelectedElements(action)}
+                  className="flex min-h-[38px] min-w-[34px] items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                </button>
+              ))}
+              {selectedElementIds.length >= 3 && (
+                <>
+                  <button
+                    type="button"
+                    aria-label="Yatay Eşit Dağıt"
+                    data-testid="mobile-inspector-align-distribute-h"
+                    onClick={() => alignSelectedElements('distribute-h')}
+                    className="flex min-h-[38px] min-w-[34px] items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  >
+                    <AlignHorizontalDistributeCenter className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label="Dikey Eşit Dağıt"
+                    data-testid="mobile-inspector-align-distribute-v"
+                    onClick={() => alignSelectedElements('distribute-v')}
+                    className="flex min-h-[38px] min-w-[34px] items-center justify-center rounded-lg border border-slate-200 bg-slate-50 text-slate-700 dark:border-slate-700 dark:bg-slate-900 dark:text-slate-200"
+                  >
+                    <AlignVerticalDistributeCenter className="h-3.5 w-3.5" />
+                  </button>
+                </>
+              )}
+            </div>
+          )}
+
+          {selectedEl.kind === 'path' &&
+            editingPathElementId === selectedEl.id &&
+            selectedPathVertexIndices.length > 0 && (() => {
+              const allVertsSmooth = selectedPathVertexIndices.every((idx) =>
+                selectedEl.points[idx]
+                  ? pointIsSmooth(selectedEl.points[idx], Boolean(selectedEl.smooth))
+                  : false,
+              );
+              return (
+                <div className="flex shrink-0 items-center gap-1 border-r border-slate-200 pr-1.5 dark:border-slate-700">
+                  <button
+                    type="button"
+                    data-testid="mobile-inspector-vertex-smooth"
+                    onClick={() =>
+                      togglePathVerticesSmooth(
+                        selectedEl.id,
+                        selectedPathVertexIndices,
+                        !allVertsSmooth,
+                      )
+                    }
+                    className="inline-flex min-h-[38px] items-center gap-1 rounded-lg bg-emerald-600 px-2 text-xs font-semibold text-white"
+                  >
+                    <Spline className="h-3.5 w-3.5" />
+                    <span>{allVertsSmooth ? 'Keskin' : 'Eğri'}</span>
+                  </button>
+                  {selectedEl.points.length - selectedPathVertexIndices.length >= 2 && (
+                    <button
+                      type="button"
+                      data-testid="mobile-inspector-vertex-delete"
+                      onClick={() => deletePathVertices(selectedEl.id, selectedPathVertexIndices)}
+                      className="flex min-h-[38px] min-w-[34px] items-center justify-center rounded-lg border border-red-300 bg-red-50 text-red-600 dark:border-red-900/60 dark:bg-red-950/50 dark:text-red-300"
+                    >
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </button>
+                  )}
+                </div>
+              );
+            })()}
 
           <button
             type="button"

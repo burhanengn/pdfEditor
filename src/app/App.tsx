@@ -274,7 +274,24 @@ export default function App() {
         }
         if ((e.key === 'Delete' || e.key === 'Backspace') && state.selectedElementIds.length > 0) {
           e.preventDefault();
+          if (state.editingPathElementId && state.selectedPathVertexIndices.length > 0) {
+            state.deletePathVertices(state.editingPathElementId, state.selectedPathVertexIndices);
+            return;
+          }
           state.deleteElements(state.selectedElementIds);
+          return;
+        }
+        if (
+          !mod &&
+          e.key.toLowerCase() === 's' &&
+          state.editingPathElementId &&
+          state.selectedPathVertexIndices.length > 0
+        ) {
+          e.preventDefault();
+          state.togglePathVerticesSmooth(
+            state.editingPathElementId,
+            state.selectedPathVertexIndices,
+          );
           return;
         }
       }

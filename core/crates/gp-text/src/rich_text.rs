@@ -9,6 +9,10 @@ pub struct RunPiece {
     pub text: String,
     pub bold: bool,
     pub italic: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub underline: bool,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub strikethrough: bool,
     pub script: TextScriptMode,
     pub is_space: bool,
 }
@@ -60,11 +64,15 @@ pub fn normalize_text_runs(runs: &[TextRun], base_bold: bool, base_italic: bool)
         }
         let bold = run.bold.unwrap_or(base_bold);
         let italic = run.italic.unwrap_or(base_italic);
+        let underline = run.underline.unwrap_or(false);
+        let strikethrough = run.strikethrough.unwrap_or(false);
         let script = run.script.unwrap_or(TextScriptMode::Normal);
 
         if let Some(prev) = result.last_mut() {
             if prev.bold.unwrap_or(base_bold) == bold
                 && prev.italic.unwrap_or(base_italic) == italic
+                && prev.underline.unwrap_or(false) == underline
+                && prev.strikethrough.unwrap_or(false) == strikethrough
                 && prev.script.unwrap_or(TextScriptMode::Normal) == script
             {
                 prev.text.push_str(&text);
@@ -75,6 +83,8 @@ pub fn normalize_text_runs(runs: &[TextRun], base_bold: bool, base_italic: bool)
             text,
             bold: Some(bold),
             italic: Some(italic),
+            underline: if underline { Some(true) } else { None },
+            strikethrough: if strikethrough { Some(true) } else { None },
             script: Some(script),
         });
     }
@@ -109,6 +119,8 @@ pub fn ensure_runs_from_element(
             text: normalized_text,
             bold: Some(base_bold),
             italic: Some(base_italic),
+            underline: None,
+            strikethrough: None,
             script: Some(TextScriptMode::Normal),
         }],
         base_bold,
@@ -127,6 +139,8 @@ struct ParaSeg {
     text: String,
     bold: bool,
     italic: bool,
+    underline: bool,
+    strikethrough: bool,
     script: TextScriptMode,
 }
 
@@ -186,6 +200,8 @@ fn split_paragraph_runs_to_atomic_units(para_pieces: &[ParaSeg]) -> Vec<AtomicUn
                         text: part.to_string(),
                         bold: seg.bold,
                         italic: seg.italic,
+                        underline: seg.underline,
+                        strikethrough: seg.strikethrough,
                         script: seg.script,
                         is_space: true,
                     }],
@@ -195,6 +211,8 @@ fn split_paragraph_runs_to_atomic_units(para_pieces: &[ParaSeg]) -> Vec<AtomicUn
                     text: part.to_string(),
                     bold: seg.bold,
                     italic: seg.italic,
+                    underline: seg.underline,
+                    strikethrough: seg.strikethrough,
                     script: seg.script,
                     is_space: false,
                 });
@@ -237,6 +255,8 @@ where
                         text: (*part).to_string(),
                         bold: run.bold.unwrap_or(base_bold),
                         italic: run.italic.unwrap_or(base_italic),
+                        underline: run.underline.unwrap_or(false),
+                        strikethrough: run.strikethrough.unwrap_or(false),
                         script: run.script.unwrap_or(TextScriptMode::Normal),
                     });
                 }
@@ -360,6 +380,8 @@ where
                                     text: ch_str.to_string(),
                                     bold: piece.bold,
                                     italic: piece.italic,
+                                    underline: piece.underline,
+                                    strikethrough: piece.strikethrough,
                                     script: piece.script,
                                     is_space: false,
                                 }];
@@ -368,6 +390,8 @@ where
                                 if let Some(last) = chunk_pieces.last_mut() {
                                     if last.bold == piece.bold
                                         && last.italic == piece.italic
+                                        && last.underline == piece.underline
+                                        && last.strikethrough == piece.strikethrough
                                         && last.script == piece.script
                                     {
                                         last.text.push(ch);
@@ -376,6 +400,8 @@ where
                                             text: ch_str.to_string(),
                                             bold: piece.bold,
                                             italic: piece.italic,
+                                            underline: piece.underline,
+                                            strikethrough: piece.strikethrough,
                                             script: piece.script,
                                             is_space: false,
                                         });
@@ -385,6 +411,8 @@ where
                                         text: ch_str.to_string(),
                                         bold: piece.bold,
                                         italic: piece.italic,
+                                        underline: piece.underline,
+                                        strikethrough: piece.strikethrough,
                                         script: piece.script,
                                         is_space: false,
                                     });

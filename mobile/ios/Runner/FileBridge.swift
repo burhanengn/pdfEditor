@@ -140,8 +140,9 @@ final class FileBridgePlugin: NSObject, UIDocumentPickerDelegate {
 
     case "openDocumentPicker":
       let allowMultiple = (args["allowMultiple"] as? Bool) ?? false
+      let mimeTypes = (args["mimeTypes"] as? [String]) ?? ["application/pdf"]
       DispatchQueue.main.async {
-        self.presentOpenPicker(allowMultiple: allowMultiple, result: result)
+        self.presentOpenPicker(allowMultiple: allowMultiple, mimeTypes: mimeTypes, result: result)
       }
 
     case "createDocument":
@@ -367,14 +368,31 @@ final class FileBridgePlugin: NSObject, UIDocumentPickerDelegate {
     return url
   }
 
-  private func presentOpenPicker(allowMultiple: Bool, result: @escaping FlutterResult) {
+  private func presentOpenPicker(allowMultiple: Bool, mimeTypes: [String], result: @escaping FlutterResult) {
     guard let vc = rootViewController else {
       result(FlutterError(code: "NO_VC", message: "Root view controller unavailable", details: nil))
       return
     }
     activePickerResult = result
     activePickerMode = "open"
-    let picker = UIDocumentPickerViewController(forOpeningContentTypes: [.pdf], asCopy: false)
+    var contentTypes: [UTType] = []
+    for m in mimeTypes {
+      if m.contains("pdf") {
+        contentTypes.append(.pdf)
+      } else if m == "image/png" {
+        contentTypes.append(.png)
+      } else if m == "image/jpeg" || m == "image/jpg" {
+        contentTypes.append(.jpeg)
+      } else if m.starts(with: "image/") {
+        contentTypes.append(.image)
+      } else if m.contains("ttf") || m.contains("otf") {
+        contentTypes.append(.font)
+      }
+    }
+    if contentTypes.isEmpty {
+      contentTypes = [.pdf]
+    }
+    let picker = UIDocumentPickerViewController(forOpeningContentTypes: contentTypes, asCopy: false)
     picker.allowsMultipleSelection = allowMultiple
     picker.delegate = self
     vc.present(picker, animated: true)
@@ -486,11 +504,16 @@ final class FileBridgePlugin: NSObject, UIDocumentPickerDelegate {
     res?(nil)
   }
 
-  private func sanitizeFileName(_ raw: String) -> String {
+  private func sanitizeFileName(_ raw: String, fallbackExt: String = ".pdf") -> String {
     let invalid = CharacterSet(charactersIn: "/\\:*?\"<>|\0")
     let cleaned = raw.components(separatedBy: invalid).joined(separator: "_").trimmingCharacters(in: .whitespacesAndNewlines)
-    let nonEmpty = cleaned.isEmpty ? "document.pdf" : cleaned
-    return nonEmpty.lowercased().hasSuffix(".pdf") ? nonEmpty : "\(nonEmpty).pdf"
+    let nonEmpty = cleaned.isEmpty ? "document\(fallbackExt)" : cleaned
+    let lower = nonEmpty.lowercased()
+    let known = [".pdf", ".png", ".jpg", ".jpeg", ".webp", ".ttf", ".otf"]
+    if known.contains(where: { lower.hasSuffix($0) }) {
+      return nonEmpty
+    }
+    return "\(nonEmpty)\(fallbackExt)"
   }
 }
 

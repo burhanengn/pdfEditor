@@ -119,6 +119,15 @@ describe('Rust Core (gp-wasm) F2 parity & session verification', () => {
     expect(wasm.path_points_to_svg_path(normPts, 200, 100, true, false)).toBe(
       pathPointsToSvgPath(normPts, 200, 100, true, false),
     );
+    const mixedNormPts = [
+      { x: 0, y: 0 },
+      { x: 1, y: 0, smooth: true },
+      { x: 1, y: 1 },
+      { x: 0, y: 1 },
+    ];
+    expect(wasm.path_points_to_svg_path(mixedNormPts, 100, 100, true, false)).toBe(
+      pathPointsToSvgPath(mixedNormPts, 100, 100, true, false),
+    );
 
     const abs = [
       { x: 40, y: 50 },

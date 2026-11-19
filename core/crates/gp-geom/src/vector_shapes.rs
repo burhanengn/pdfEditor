@@ -65,6 +65,10 @@ pub fn shape_to_svg_path(shape_type: VectorShapeType, width: f64, height: f64, b
     }
 }
 
+pub fn point_is_smooth(pt: &NormalizedPoint, global_smooth: bool) -> bool {
+    pt.smooth.unwrap_or(global_smooth)
+}
+
 pub fn path_points_to_svg_path(
     points: &[NormalizedPoint],
     width: f64,
@@ -95,8 +99,17 @@ pub fn path_points_to_svg_path(
         );
     }
 
-    if !smooth || abs.len() < 3 {
-        let mut segs = Vec::with_capacity(abs.len() + 1);
+    let n = abs.len();
+    let has_any_smooth = if n < 3 {
+        false
+    } else if closed {
+        (0..n).any(|i| point_is_smooth(&points[i], smooth))
+    } else {
+        (1..(n - 1)).any(|i| point_is_smooth(&points[i], smooth))
+    };
+
+    if !has_any_smooth {
+        let mut segs = Vec::with_capacity(n + 1);
         segs.push(format!("M {:.2} {:.2}", abs[0].x, abs[0].y));
         for pt in &abs[1..] {
             segs.push(format!("L {:.2} {:.2}", pt.x, pt.y));
@@ -107,33 +120,100 @@ pub fn path_points_to_svg_path(
         return segs.join(" ");
     }
 
+    let pts_close = |a: Point, b: Point| -> bool {
+        (a.x - b.x).abs() < 1e-4 && (a.y - b.y).abs() < 1e-4
+    };
+
     if !closed {
         let mut d = format!("M {:.2} {:.2}", abs[0].x, abs[0].y);
-        for i in 1..(abs.len() - 1) {
-            let mid_x = (abs[i].x + abs[i + 1].x) / 2.0;
-            let mid_y = (abs[i].y + abs[i + 1].y) / 2.0;
-            d.push_str(&format!(
-                " Q {:.2} {:.2} {:.2} {:.2}",
-                abs[i].x, abs[i].y, mid_x, mid_y
-            ));
+        let mut cursor = abs[0];
+        let first_smooth = point_is_smooth(&points[0], smooth);
+        for i in 1..(n - 1) {
+            if point_is_smooth(&points[i], smooth) {
+                let enter = if i == 1 && first_smooth {
+                    abs[0]
+                } else {
+                    Point {
+                        x: (abs[i - 1].x + abs[i].x) / 2.0,
+                        y: (abs[i - 1].y + abs[i].y) / 2.0,
+                    }
+                };
+                let exit = Point {
+                    x: (abs[i].x + abs[i + 1].x) / 2.0,
+                    y: (abs[i].y + abs[i + 1].y) / 2.0,
+                };
+                if !pts_close(cursor, enter) {
+                    d.push_str(&format!(" L {:.2} {:.2}", enter.x, enter.y));
+                }
+                d.push_str(&format!(
+                    " Q {:.2} {:.2} {:.2} {:.2}",
+                    abs[i].x, abs[i].y, exit.x, exit.y
+                ));
+                cursor = exit;
+            } else {
+                if !pts_close(cursor, abs[i]) {
+                    d.push_str(&format!(" L {:.2} {:.2}", abs[i].x, abs[i].y));
+                }
+                cursor = abs[i];
+            }
         }
-        let last = abs[abs.len() - 1];
-        d.push_str(&format!(" L {:.2} {:.2}", last.x, last.y));
+        let last = abs[n - 1];
+        if !pts_close(cursor, last) {
+            d.push_str(&format!(" L {:.2} {:.2}", last.x, last.y));
+        }
         return d;
     }
 
-    let last = abs[abs.len() - 1];
-    let mid0_x = (last.x + abs[0].x) / 2.0;
-    let mid0_y = (last.y + abs[0].y) / 2.0;
-    let mut d = format!("M {:.2} {:.2}", mid0_x, mid0_y);
-    for i in 0..abs.len() {
-        let next = abs[(i + 1) % abs.len()];
-        let mid_x = (abs[i].x + next.x) / 2.0;
-        let mid_y = (abs[i].y + next.y) / 2.0;
-        d.push_str(&format!(
-            " Q {:.2} {:.2} {:.2} {:.2}",
-            abs[i].x, abs[i].y, mid_x, mid_y
-        ));
+    let mut enter = Vec::with_capacity(n);
+    let mut exit = Vec::with_capacity(n);
+    let mut smooth_flags = Vec::with_capacity(n);
+    for i in 0..n {
+        let prev = abs[(i + n - 1) % n];
+        let curr = abs[i];
+        let next = abs[(i + 1) % n];
+        let is_sm = point_is_smooth(&points[i], smooth);
+        smooth_flags.push(is_sm);
+        if is_sm {
+            enter.push(Point {
+                x: (prev.x + curr.x) / 2.0,
+                y: (prev.y + curr.y) / 2.0,
+            });
+            exit.push(Point {
+                x: (curr.x + next.x) / 2.0,
+                y: (curr.y + next.y) / 2.0,
+            });
+        } else {
+            enter.push(curr);
+            exit.push(curr);
+        }
+    }
+
+    let mut d = format!("M {:.2} {:.2}", enter[0].x, enter[0].y);
+    let mut cursor = enter[0];
+    for i in 0..n {
+        if smooth_flags[i] {
+            if !pts_close(cursor, enter[i]) {
+                d.push_str(&format!(" L {:.2} {:.2}", enter[i].x, enter[i].y));
+            }
+            d.push_str(&format!(
+                " Q {:.2} {:.2} {:.2} {:.2}",
+                abs[i].x, abs[i].y, exit[i].x, exit[i].y
+            ));
+            cursor = exit[i];
+        } else {
+            if !pts_close(cursor, abs[i]) {
+                d.push_str(&format!(" L {:.2} {:.2}", abs[i].x, abs[i].y));
+            }
+            cursor = abs[i];
+        }
+        let next_i = (i + 1) % n;
+        if next_i != 0 && !pts_close(cursor, enter[next_i]) {
+            d.push_str(&format!(" L {:.2} {:.2}", enter[next_i].x, enter[next_i].y));
+            cursor = enter[next_i];
+        }
+    }
+    if !pts_close(cursor, enter[0]) {
+        d.push_str(&format!(" L {:.2} {:.2}", enter[0].x, enter[0].y));
     }
     d.push_str(" Z");
     d
@@ -194,6 +274,7 @@ pub fn normalize_absolute_points(abs_points: &[Point]) -> NormalizedPathResult {
             x: (p.x - x) / width,
             y: (p.y - y) / height,
             pressure: None,
+            smooth: None,
         })
         .collect();
 

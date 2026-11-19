@@ -51,6 +51,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
   FrbCompileSaveResult dco_decode_frb_compile_save_result(dynamic raw);
 
   @protected
+  FrbEmbeddedImage dco_decode_frb_embedded_image(dynamic raw);
+
+  @protected
+  FrbLinkAnnotation dco_decode_frb_link_annotation(dynamic raw);
+
+  @protected
   FrbOpenDocResult dco_decode_frb_open_doc_result(dynamic raw);
 
   @protected
@@ -94,6 +100,12 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int dco_decode_i_32(dynamic raw);
+
+  @protected
+  List<FrbEmbeddedImage> dco_decode_list_frb_embedded_image(dynamic raw);
+
+  @protected
+  List<FrbLinkAnnotation> dco_decode_list_frb_link_annotation(dynamic raw);
 
   @protected
   List<FrbOutlineItem> dco_decode_list_frb_outline_item(dynamic raw);
@@ -177,6 +189,13 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       SseDeserializer deserializer);
 
   @protected
+  FrbEmbeddedImage sse_decode_frb_embedded_image(SseDeserializer deserializer);
+
+  @protected
+  FrbLinkAnnotation sse_decode_frb_link_annotation(
+      SseDeserializer deserializer);
+
+  @protected
   FrbOpenDocResult sse_decode_frb_open_doc_result(SseDeserializer deserializer);
 
   @protected
@@ -222,6 +241,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   int sse_decode_i_32(SseDeserializer deserializer);
+
+  @protected
+  List<FrbEmbeddedImage> sse_decode_list_frb_embedded_image(
+      SseDeserializer deserializer);
+
+  @protected
+  List<FrbLinkAnnotation> sse_decode_list_frb_link_annotation(
+      SseDeserializer deserializer);
 
   @protected
   List<FrbOutlineItem> sse_decode_list_frb_outline_item(
@@ -310,6 +337,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
       FrbCompileSaveResult self, SseSerializer serializer);
 
   @protected
+  void sse_encode_frb_embedded_image(
+      FrbEmbeddedImage self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_frb_link_annotation(
+      FrbLinkAnnotation self, SseSerializer serializer);
+
+  @protected
   void sse_encode_frb_open_doc_result(
       FrbOpenDocResult self, SseSerializer serializer);
 
@@ -360,6 +395,14 @@ abstract class RustLibApiImplPlatform extends BaseApiImpl<RustLibWire> {
 
   @protected
   void sse_encode_i_32(int self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_frb_embedded_image(
+      List<FrbEmbeddedImage> self, SseSerializer serializer);
+
+  @protected
+  void sse_encode_list_frb_link_annotation(
+      List<FrbLinkAnnotation> self, SseSerializer serializer);
 
   @protected
   void sse_encode_list_frb_outline_item(

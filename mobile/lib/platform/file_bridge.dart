@@ -129,16 +129,42 @@ class GpFileBridge {
     );
   }
 
-  Future<GpOpenRequest?> openDocumentPicker({bool allowMultiple = false}) async {
+  Future<GpOpenRequest?> openDocumentPicker({
+    bool allowMultiple = false,
+    List<String> mimeTypes = const ['application/pdf'],
+  }) async {
     try {
       final raw = await _method.invokeMapMethod<dynamic, dynamic>(
         'openDocumentPicker',
-        {'allowMultiple': allowMultiple},
+        {
+          'allowMultiple': allowMultiple,
+          'mimeTypes': mimeTypes,
+        },
       );
       return raw == null ? null : GpOpenRequest.fromMap(raw);
     } on MissingPluginException {
       return null;
     }
+  }
+
+  Future<GpOpenRequest?> pickImage({bool allowMultiple = false}) {
+    return openDocumentPicker(
+      allowMultiple: allowMultiple,
+      mimeTypes: const ['image/png', 'image/jpeg', 'image/webp'],
+    );
+  }
+
+  Future<GpOpenRequest?> pickFont() {
+    return openDocumentPicker(
+      allowMultiple: false,
+      mimeTypes: const [
+        'font/ttf',
+        'font/otf',
+        'application/x-font-ttf',
+        'application/x-font-opentype',
+        'application/octet-stream',
+      ],
+    );
   }
 
   Future<String?> createDocument({

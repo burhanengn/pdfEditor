@@ -1,14 +1,15 @@
 import JSZip from 'jszip';
-import type {
-  CanvasElement,
-  HighlightElement,
-  ImageAddElement,
-  ImageReplacementElement,
-  ShapeReplacementElement,
-  SignatureElement,
-  StrokeElement,
-  TextAddElement,
-  TextEditElement,
+import {
+  isUnmodifiedTextEdit,
+  type CanvasElement,
+  type HighlightElement,
+  type ImageAddElement,
+  type ImageReplacementElement,
+  type ShapeReplacementElement,
+  type SignatureElement,
+  type StrokeElement,
+  type TextAddElement,
+  type TextEditElement,
 } from '@/types/elements';
 import type {
   BuiltinFontFamilyOption,
@@ -21,6 +22,7 @@ import type {
 } from '@/types/pdf';
 import type { FontAssetPayload } from '@/types/worker';
 import {
+  getRotatedBoundingBox,
   normalizeRotation,
   pointBaseVisualToPdfUserSpace,
   rectBaseVisualToPdfUserSpace,
@@ -346,6 +348,278 @@ export async function inspectPdfDocument(
   }
 }
 
+function stripLeftoverObjectsWithPdfiumWasm(
+  mod: PdfiumRuntimeModule,
+  pdfBytes: Uint8Array,
+  imageTargets: RedactionEntry[],
+  textTargets: RedactionEntry[],
+): Uint8Array {
+  if (imageTargets.length === 0 && textTargets.length === 0) {
+    return pdfBytes;
+  }
+
+  const imgByPage = new Map<number, RedactionEntry[]>();
+  for (const r of imageTargets) {
+    if (r.width <= 0 || r.height <= 0) continue;
+    const list = imgByPage.get(r.pageIndex) ?? [];
+    list.push(r);
+    imgByPage.set(r.pageIndex, list);
+  }
+  const txtByPage = new Map<number, RedactionEntry[]>();
+  for (const r of textTargets) {
+    if (r.width <= 0 || r.height <= 0) continue;
+    const list = txtByPage.get(r.pageIndex) ?? [];
+    list.push(r);
+    txtByPage.set(r.pageIndex, list);
+  }
+  const pageIndices = new Set<number>([...imgByPage.keys(), ...txtByPage.keys()]);
+  if (pageIndices.size === 0) return pdfBytes;
+
+  const { docPtr, freeData } = loadPdfiumMemDoc(mod, pdfBytes);
+  if (!docPtr) return pdfBytes;
+
+  const FPDF_OBJ_TEXT = 1;
+  const FPDF_OBJ_IMAGE = 3;
+  const FPDF_OBJ_FORM = 5;
+
+  const boundsPtr = mod.pdfium.wasmExports.malloc(16);
+  const matrixPtr = mod.pdfium.wasmExports.malloc(24);
+  const charBoxPtr = mod.pdfium.wasmExports.malloc(32);
+  if (!boundsPtr || !matrixPtr || !charBoxPtr) {
+    if (boundsPtr) mod.pdfium.wasmExports.free(boundsPtr);
+    if (matrixPtr) mod.pdfium.wasmExports.free(matrixPtr);
+    if (charBoxPtr) mod.pdfium.wasmExports.free(charBoxPtr);
+    mod.FPDF_CloseDocument(docPtr);
+    freeData();
+    return pdfBytes;
+  }
+
+  type PdfMat = [number, number, number, number, number, number];
+  const mulMat = (parent: PdfMat, local: PdfMat): PdfMat => [
+    local[0] * parent[0] + local[1] * parent[2],
+    local[0] * parent[1] + local[1] * parent[3],
+    local[2] * parent[0] + local[3] * parent[2],
+    local[2] * parent[1] + local[3] * parent[3],
+    local[4] * parent[0] + local[5] * parent[2] + parent[4],
+    local[4] * parent[1] + local[5] * parent[3] + parent[5],
+  ];
+  const transformBounds = (
+    l: number,
+    b: number,
+    r: number,
+    t: number,
+    m: PdfMat | null,
+  ): [number, number, number, number] => {
+    if (!m) {
+      return [Math.min(l, r), Math.min(b, t), Math.max(l, r), Math.max(b, t)];
+    }
+    const pts = [
+      [l, b],
+      [r, b],
+      [l, t],
+      [r, t],
+    ].map(([px, py]) => [m[0] * px + m[2] * py + m[4], m[1] * px + m[3] * py + m[5]]);
+    return [
+      Math.min(...pts.map((p) => p[0])),
+      Math.min(...pts.map((p) => p[1])),
+      Math.max(...pts.map((p) => p[0])),
+      Math.max(...pts.map((p) => p[1])),
+    ];
+  };
+
+  let anyRemoved = false;
+  try {
+    const pageCount = mod.FPDF_GetPageCount(docPtr);
+    for (const pageIdx of pageIndices) {
+      if (pageIdx < 0 || pageIdx >= pageCount) continue;
+      const pagePtr = mod.FPDF_LoadPage(docPtr, pageIdx);
+      if (!pagePtr) continue;
+      let removedOnPage = false;
+
+      try {
+        const pageH = mod.FPDF_GetPageHeightF(pagePtr) || 842;
+        const imgTargets = (imgByPage.get(pageIdx) ?? []).map((r) => ({
+          l: r.x,
+          b: pageH - (r.y + r.height),
+          r: r.x + r.width,
+          t: pageH - r.y,
+        }));
+        const txtTargets = (txtByPage.get(pageIdx) ?? []).map((r) => ({
+          l: r.x,
+          b: pageH - (r.y + r.height),
+          r: r.x + r.width,
+          t: pageH - r.y,
+        }));
+
+        const shortCharBoxes: Array<[number, number, number, number]> = [];
+        if (txtTargets.length > 0) {
+          const tp = mod.FPDFText_LoadPage(pagePtr);
+          if (tp) {
+            try {
+              const cc = mod.FPDFText_CountChars(tp);
+              for (let ci = 0; ci < cc; ci++) {
+                const uc = mod.FPDFText_GetUnicode(tp, ci);
+                if (!uc || uc <= 0x20) continue;
+                if (
+                  mod.FPDFText_GetCharBox(
+                    tp,
+                    ci,
+                    charBoxPtr,
+                    charBoxPtr + 8,
+                    charBoxPtr + 16,
+                    charBoxPtr + 24,
+                  )
+                ) {
+                  const cl = mod.pdfium.getValue(charBoxPtr, 'double');
+                  const cr = mod.pdfium.getValue(charBoxPtr + 8, 'double');
+                  const cb = mod.pdfium.getValue(charBoxPtr + 16, 'double');
+                  const ct = mod.pdfium.getValue(charBoxPtr + 24, 'double');
+                  shortCharBoxes.push([
+                    Math.min(cl, cr),
+                    Math.min(cb, ct),
+                    Math.max(cl, cr),
+                    Math.max(cb, ct),
+                  ]);
+                }
+              }
+            } finally {
+              mod.FPDFText_ClosePage(tp);
+            }
+          }
+        }
+
+        const countNonSpaceChars = (ol: number, ob: number, or: number, ot: number): number => {
+          let n = 0;
+          for (const [cl, cb, cr, ct] of shortCharBoxes) {
+            if (cr > ol - 0.5 && cl < or + 0.5 && ct > ob - 0.5 && cb < ot + 0.5) {
+              n++;
+              if (n > 4) break;
+            }
+          }
+          return n;
+        };
+
+        const walkAndStrip = (containerPtr: number, isForm: boolean, parentMat: PdfMat | null) => {
+          const count = isForm
+            ? mod.FPDFFormObj_CountObjects(containerPtr)
+            : mod.FPDFPage_CountObjects(containerPtr);
+          for (let i = count - 1; i >= 0; i--) {
+            const objPtr = isForm
+              ? mod.FPDFFormObj_GetObject(containerPtr, i)
+              : mod.FPDFPage_GetObject(containerPtr, i);
+            if (!objPtr) continue;
+            const objType = mod.FPDFPageObj_GetType(objPtr);
+
+            if (objType === FPDF_OBJ_FORM) {
+              let nextMat = parentMat;
+              if (mod.FPDFPageObj_GetMatrix(objPtr, matrixPtr)) {
+                const local: PdfMat = [
+                  mod.pdfium.getValue(matrixPtr, 'float'),
+                  mod.pdfium.getValue(matrixPtr + 4, 'float'),
+                  mod.pdfium.getValue(matrixPtr + 8, 'float'),
+                  mod.pdfium.getValue(matrixPtr + 12, 'float'),
+                  mod.pdfium.getValue(matrixPtr + 16, 'float'),
+                  mod.pdfium.getValue(matrixPtr + 20, 'float'),
+                ];
+                nextMat = parentMat ? mulMat(parentMat, local) : local;
+              }
+              walkAndStrip(objPtr, true, nextMat);
+              continue;
+            }
+
+            if (
+              !mod.FPDFPageObj_GetBounds(
+                objPtr,
+                boundsPtr,
+                boundsPtr + 4,
+                boundsPtr + 8,
+                boundsPtr + 12,
+              )
+            ) {
+              continue;
+            }
+            const [ol, ob, or, ot] = transformBounds(
+              mod.pdfium.getValue(boundsPtr, 'float'),
+              mod.pdfium.getValue(boundsPtr + 4, 'float'),
+              mod.pdfium.getValue(boundsPtr + 8, 'float'),
+              mod.pdfium.getValue(boundsPtr + 12, 'float'),
+              parentMat,
+            );
+
+            let shouldRemove = false;
+            if (objType === FPDF_OBJ_IMAGE && imgTargets.length > 0) {
+              for (const t of imgTargets) {
+                const tolX = Math.max(3.5, 0.08 * Math.max(Math.abs(or - ol), Math.abs(t.r - t.l)));
+                const tolY = Math.max(3.5, 0.08 * Math.max(Math.abs(ot - ob), Math.abs(t.t - t.b)));
+                const edgeMatch =
+                  Math.abs(ol - t.l) <= tolX &&
+                  Math.abs(or - t.r) <= tolX &&
+                  Math.abs(ob - t.b) <= tolY &&
+                  Math.abs(ot - t.t) <= tolY;
+                const contained =
+                  ol >= t.l - 2.5 && or <= t.r + 2.5 && ob >= t.b - 2.5 && ot <= t.t + 2.5;
+                if (edgeMatch || contained) {
+                  shouldRemove = true;
+                  break;
+                }
+              }
+            } else if (objType === FPDF_OBJ_TEXT && txtTargets.length > 0) {
+              for (const t of txtTargets) {
+                const contained =
+                  ol >= t.l - 2.5 && or <= t.r + 2.5 && ob >= t.b - 2.5 && ot <= t.t + 2.5;
+                if (contained) {
+                  shouldRemove = true;
+                  break;
+                }
+                const vertOverlap = Math.min(ot, t.t) - Math.max(ob, t.b);
+                const tgtH = Math.max(4, Math.abs(t.t - t.b));
+                if (
+                  vertOverlap >= tgtH * 0.3 &&
+                  ol >= t.l - 2.5 &&
+                  ol <= t.r + 14 &&
+                  or <= t.r + 16 &&
+                  or - ol <= 24 &&
+                  countNonSpaceChars(ol, ob, or, ot) <= 4
+                ) {
+                  shouldRemove = true;
+                  break;
+                }
+              }
+            }
+
+            if (shouldRemove) {
+              const ok = isForm
+                ? mod.FPDFFormObj_RemoveObject(containerPtr, objPtr)
+                : mod.FPDFPage_RemoveObject(pagePtr, objPtr);
+              if (ok) {
+                mod.FPDFPageObj_Destroy(objPtr);
+                removedOnPage = true;
+              }
+            }
+          }
+        };
+
+        walkAndStrip(pagePtr, false, null);
+        if (removedOnPage) {
+          mod.FPDFPage_GenerateContent(pagePtr);
+          anyRemoved = true;
+        }
+      } finally {
+        mod.FPDF_ClosePage(pagePtr);
+      }
+    }
+
+    if (!anyRemoved) return pdfBytes;
+    return savePdfiumDocToBytes(mod, docPtr);
+  } finally {
+    mod.pdfium.wasmExports.free(boundsPtr);
+    mod.pdfium.wasmExports.free(matrixPtr);
+    mod.pdfium.wasmExports.free(charBoxPtr);
+    mod.FPDF_CloseDocument(docPtr);
+    freeData();
+  }
+}
+
 /**
  * Produces a clean 1-page preview PDF with edited text / deleted or moved image XObject /
  * deleted vector shape stream operators removed via Rust `gp-wasm`, preserving tables/lines.
@@ -365,7 +639,18 @@ export async function prepareCleanPreviewPagePdf(
     imageRects,
     shapeRects,
   );
-  return out instanceof Uint8Array ? out : new Uint8Array(out);
+  let bytes = out instanceof Uint8Array ? out : new Uint8Array(out);
+  if (imageRects.length > 0 || textRects.length > 0) {
+    try {
+      const mod = await getSharedPdfium();
+      const imgP0: RedactionEntry[] = imageRects.map((r) => ({ pageIndex: 0, ...r }));
+      const txtP0: RedactionEntry[] = textRects.map((r) => ({ pageIndex: 0, ...r }));
+      bytes = stripLeftoverObjectsWithPdfiumWasm(mod, bytes, imgP0, txtP0);
+    } catch {
+      // Fall back to lopdf output if PDFium isn't ready yet.
+    }
+  }
+  return bytes;
 }
 
 interface RedactionEntry {
@@ -521,7 +806,15 @@ function measureFontWidth(
       } else {
         const ok = mod.FPDFFont_GetGlyphWidth(entry.fontPtr, cp, fontSize, ptr);
         const measured = ok ? Number(mod.pdfium.getValue(ptr, 'float') || 0) : 0;
-        const nextW = measured > 0 ? measured : ch === ' ' ? fontSize * 0.28 : fontSize * 0.52;
+        let nextW: number;
+        if (ch === ' ') {
+          nextW =
+            measured >= fontSize * 0.14 && measured <= fontSize * 0.75
+              ? measured
+              : fontSize * 0.28;
+        } else {
+          nextW = measured > 0 ? measured : fontSize * 0.52;
+        }
         entry.glyphWidthCache.set(cacheKey, nextW);
         total += nextW;
       }
@@ -549,7 +842,8 @@ function splitTextByGlyphSupport(
   const segments: Array<{ entry: PdfiumLoadedFont; text: string }> = [];
   for (const ch of text) {
     const cp = ch.codePointAt(0);
-    const usePrimary = cp === undefined || ch === ' ' || supported.has(cp);
+    const usePrimary =
+      cp === undefined || (ch === ' ' ? supported.has(0x20) : supported.has(cp));
     const targetEntry = usePrimary ? pair.primary : pair.fallback;
     const safeChar = filterTextForPdfFont(ch, targetEntry.supportedCodePoints);
     const prev = segments[segments.length - 1];
@@ -1180,6 +1474,7 @@ export async function compilePdfDocument(payload: CompilePdfPayload): Promise<Ui
 
     for (const el of els) {
       if (el.kind === 'text-edit') {
+        if (isUnmodifiedTextEdit(el)) continue;
         const padX = Math.min(0.5, el.originalRect.width * 0.05);
         const padY = Math.min(0.5, el.originalRect.height * 0.05);
         textRemovalRects.push({
@@ -1190,14 +1485,13 @@ export async function compilePdfDocument(payload: CompilePdfPayload): Promise<Ui
           height: Math.max(1, el.originalRect.height - padY * 2),
         });
       } else if (el.kind === 'image-replacement') {
-        const padX = Math.min(0.5, el.originalRect.width * 0.02);
-        const padY = Math.min(0.5, el.originalRect.height * 0.02);
+        const bbox = getRotatedBoundingBox(el.originalRect, el.originalRotation ?? 0);
         imageRemovalRects.push({
           pageIndex: i,
-          x: el.originalRect.x + padX,
-          y: el.originalRect.y + padY,
-          width: Math.max(1, el.originalRect.width - padX * 2),
-          height: Math.max(1, el.originalRect.height - padY * 2),
+          x: bbox.x,
+          y: bbox.y,
+          width: Math.max(1, bbox.width),
+          height: Math.max(1, bbox.height),
         });
       } else if (el.kind === 'shape-replacement') {
         shapeRemovalRects.push({
@@ -1232,6 +1526,14 @@ export async function compilePdfDocument(payload: CompilePdfPayload): Promise<Ui
       shapeRemovalRects,
     );
     redactedBytes = res instanceof Uint8Array ? res : new Uint8Array(res);
+    if (imageRemovalRects.length > 0 || textRemovalRects.length > 0) {
+      redactedBytes = stripLeftoverObjectsWithPdfiumWasm(
+        mod,
+        redactedBytes,
+        imageRemovalRects,
+        textRemovalRects,
+      );
+    }
   }
   if (blackRedactRects.length > 0) {
     const res = wasm.redact_pdf_bytes(redactedBytes, blackRedactRects, [], true);
@@ -1751,8 +2053,14 @@ export async function compilePdfDocument(payload: CompilePdfPayload): Promise<Ui
           const behindIndex = isBehind ? behindCounter : null;
 
           switch (el.kind) {
-            case 'text-edit':
+            case 'text-edit': {
+              if (el.deleted || isUnmodifiedTextEdit(el) || el.text.length === 0) break;
+              await drawTextElementOnPage(pagePtr, pageMeta, el, behindIndex);
+              modified = true;
+              break;
+            }
             case 'text-add': {
+              if (el.text.length === 0) break;
               await drawTextElementOnPage(pagePtr, pageMeta, el, behindIndex);
               modified = true;
               break;

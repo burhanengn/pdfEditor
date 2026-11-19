@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 
 use flutter_rust_bridge::frb;
@@ -5,12 +6,15 @@ use gp_geom::{
     compute_rotated_resize_rect as geom_compute_rotated_resize_rect, compute_snap_position,
     ResizeHandle, RotatedResizeParams,
 };
-use gp_model::{CanvasElement, PageMeta, RectBox, RotationAngle};
+use gp_model::{CanvasElement, PageMeta, PageNumberingConfig, RectBox, RotationAngle};
 use gp_pdf::{
-    CancellationFlag, PdfBackend, PdfOpenStatus, PdfOutlineNode, ReadingTheme, RedactionRect,
-    TileRenderRequest,
+    CancellationFlag, PdfBackend, PdfLinkKind, PdfOpenStatus, PdfOutlineNode, ReadingTheme,
+    RedactionRect, TileRenderRequest,
 };
-use gp_pdf_pdfium::redaction::redact_document_verified;
+use gp_pdf_pdfium::{
+    compile::{CompilePdfOptions, CompiledFontBundle, PreDecodedImage},
+    redaction::redact_document_verified,
+};
 use gp_redact::extract_embedded_fonts_with_lopdf;
 
 use crate::{
@@ -153,12 +157,41 @@ pub struct FrbRedactionVerifyResult {
 }
 
 #[derive(Debug, Clone)]
+pub struct FrbEmbeddedImage {
+    pub id: String,
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
+#[derive(Debug, Clone)]
+pub struct FrbLinkAnnotation {
+    pub id: String,
+    pub page_index: u32,
+    pub x: f64,
+    pub y: f64,
+    pub width: f64,
+    pub height: f64,
+    /// `"uri"` | `"goto"`
+    pub kind: String,
+    pub uri: Option<String>,
+    pub dest_page_index: Option<u32>,
+}
+
+#[derive(Debug, Clone)]
 pub struct FrbCompileSaveRequest {
     pub pages_json: String,
     pub elements_json: String,
+    pub page_numbering_json: Option<String>,
     pub redactions: Vec<FrbRedactionRect>,
     pub output_path: String,
     pub custom_ttf_bytes: Option<Vec<u8>>,
+    pub font_regular_ttf: Option<Vec<u8>>,
+    pub font_bold_ttf: Option<Vec<u8>>,
+    pub font_italic_ttf: Option<Vec<u8>>,
+    pub font_serif_ttf: Option<Vec<u8>>,
+    pub font_mono_ttf: Option<Vec<u8>>,
+    pub embedded_images: Vec<FrbEmbeddedImage>,
 }
 
 #[derive(Debug, Clone)]
@@ -428,6 +461,77 @@ pub fn analyze_page_objects_json(
         .map_err(|e| e.to_string())
 }
 
+pub fn extract_page_links(
+    doc_id: String,
+    page_index: u32,
+) -> Result<Vec<FrbLinkAnnotation>, String> {
+    let cancel = CancellationFlag::new();
+    engine_actor()
+        .dispatch(ActorPriority::CommandOrHit, None, cancel, move |state, _| {
+            let backend = state.ensure_backend(None)?;
+            let links = backend.extract_links(&doc_id, page_index as usize)?;
+            Ok(links
+                .into_iter()
+                .map(|l| FrbLinkAnnotation {
+                    id: l.id,
+                    page_index: l.page_index as u32,
+                    x: l.x,
+                    y: l.y,
+                    width: l.width,
+                    height: l.height,
+                    kind: match l.kind {
+                        PdfLinkKind::Uri => "uri".to_string(),
+                        PdfLinkKind::Goto => "goto".to_string(),
+                    },
+                    uri: l.uri,
+                    dest_page_index: l.dest_page_index.map(|p| p as u32),
+                })
+                .collect())
+        })
+        .map_err(|e| e.to_string())
+}
+
+pub fn prepare_clean_page_preview(
+    doc_id: String,
+    page_index: u32,
+    elements_json: String,
+) -> Result<Vec<u8>, String> {
+    let elements: Vec<CanvasElement> =
+        serde_json::from_str(&elements_json).map_err(|e| format!("invalid elements_json: {e}"))?;
+    let mut text_rects = Vec::new();
+    let mut image_rects = Vec::new();
+    let mut shape_rects = Vec::new();
+    for el in elements {
+        let b = el.base();
+        let box_rect = RectBox {
+            x: b.x,
+            y: b.y,
+            width: b.width,
+            height: b.height,
+        };
+        match el {
+            CanvasElement::TextEdit { .. } => text_rects.push(box_rect),
+            CanvasElement::ImageReplacement { .. } => image_rects.push(box_rect),
+            CanvasElement::ShapeReplacement { .. } => shape_rects.push(box_rect),
+            _ => {}
+        }
+    }
+
+    let cancel = CancellationFlag::new();
+    engine_actor()
+        .dispatch(ActorPriority::CommandOrHit, None, cancel, move |state, _| {
+            let backend = state.ensure_backend(None)?;
+            backend.prepare_clean_page_preview(
+                &doc_id,
+                page_index as usize,
+                &text_rects,
+                &image_rects,
+                &shape_rects,
+            )
+        })
+        .map_err(|e| e.to_string())
+}
+
 /// Sliced Turkish/Unicode-folded search executing page by page via the D2 actor so
 /// visible viewport tiles always preempt search work (04 §4.3).
 pub fn search_document_stream(
@@ -631,6 +735,13 @@ pub fn compile_and_save_verified(req: FrbCompileSaveRequest) -> Result<FrbCompil
         .map_err(|e| format!("invalid pages_json: {e}"))?;
     let elements: Vec<CanvasElement> = serde_json::from_str(&req.elements_json)
         .map_err(|e| format!("invalid elements_json: {e}"))?;
+    let page_numbering: Option<PageNumberingConfig> = match &req.page_numbering_json {
+        Some(raw) if !raw.trim().is_empty() => Some(
+            serde_json::from_str(raw)
+                .map_err(|e| format!("invalid page_numbering_json: {e}"))?,
+        ),
+        _ => None,
+    };
     let redactions: Vec<RedactionRect> = req
         .redactions
         .into_iter()
@@ -642,16 +753,40 @@ pub fn compile_and_save_verified(req: FrbCompileSaveRequest) -> Result<FrbCompil
             height: r.height,
         })
         .collect();
+    let mut img_map: HashMap<String, PreDecodedImage> = HashMap::new();
+    for img in req.embedded_images {
+        img_map.insert(
+            img.id,
+            PreDecodedImage {
+                width: img.width,
+                height: img.height,
+                rgba: img.rgba,
+            },
+        );
+    }
 
     let cancel = CancellationFlag::new();
     engine_actor()
         .dispatch(ActorPriority::Compile, None, cancel, move |state, _| {
             let backend = state.ensure_backend(None)?;
-            let out_bytes = backend.compile_native_pdf(
+            let options = CompilePdfOptions {
+                fonts: CompiledFontBundle {
+                    custom_ttf_bytes: req.custom_ttf_bytes.as_deref(),
+                    regular_ttf_bytes: req.font_regular_ttf.as_deref(),
+                    bold_ttf_bytes: req.font_bold_ttf.as_deref(),
+                    italic_ttf_bytes: req.font_italic_ttf.as_deref(),
+                    serif_ttf_bytes: req.font_serif_ttf.as_deref(),
+                    mono_ttf_bytes: req.font_mono_ttf.as_deref(),
+                },
+                page_numbering: page_numbering.as_ref(),
+                embedded_images: Some(&img_map),
+                ..Default::default()
+            };
+            let out_bytes = backend.compile_native_pdf_with_options(
                 &pages,
                 &elements,
                 &redactions,
-                req.custom_ttf_bytes.as_deref(),
+                options,
             )?;
             let out_path = PathBuf::from(&req.output_path);
             let (verified_pages, byte_size) =

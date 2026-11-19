@@ -1,0 +1,288 @@
+1<?xml version="1.0" encoding="utf-8"?>
+2<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+3    package="dev.gullacpdf.android"
+4    android:versionCode="1"
+5    android:versionName="1.0.0" >
+6
+7    <uses-sdk
+7-->INJECTED
+8        android:minSdkVersion="26"
+8-->INJECTED
+9        android:targetSdkVersion="35" />
+9-->INJECTED
+10
+11    <queries>
+11-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:74:5-79:15
+12        <intent>
+12-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:75:9-78:18
+13            <action android:name="android.intent.action.VIEW" />
+13-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:30:17-69
+13-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:30:25-66
+14
+15            <data android:mimeType="application/pdf" />
+15-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:17-85
+15-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:48-82
+16        </intent>
+17    </queries>
+18
+19    <permission
+19-->[androidx.core:core:1.16.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\d1cd094ab68c207cd27876917bcce2ab\transformed\core-1.16.0\AndroidManifest.xml:22:5-24:47
+20        android:name="dev.gullacpdf.android.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION"
+20-->[androidx.core:core:1.16.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\d1cd094ab68c207cd27876917bcce2ab\transformed\core-1.16.0\AndroidManifest.xml:23:9-81
+21        android:protectionLevel="signature" />
+21-->[androidx.core:core:1.16.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\d1cd094ab68c207cd27876917bcce2ab\transformed\core-1.16.0\AndroidManifest.xml:24:9-44
+22
+23    <uses-permission android:name="dev.gullacpdf.android.DYNAMIC_RECEIVER_NOT_EXPORTED_PERMISSION" /> <!-- Offline-first & Scoped Storage compliant: zero external storage or internet permissions -->
+23-->[androidx.core:core:1.16.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\d1cd094ab68c207cd27876917bcce2ab\transformed\core-1.16.0\AndroidManifest.xml:26:5-97
+23-->[androidx.core:core:1.16.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\d1cd094ab68c207cd27876917bcce2ab\transformed\core-1.16.0\AndroidManifest.xml:26:22-94
+24    <application
+24-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:4:5-72:19
+25        android:name="dev.gullacpdf.android.GullacApplication"
+25-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:5:9-42
+26        android:allowBackup="true"
+26-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:6:9-35
+27        android:appComponentFactory="androidx.core.app.CoreComponentFactory"
+27-->[androidx.core:core:1.16.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\d1cd094ab68c207cd27876917bcce2ab\transformed\core-1.16.0\AndroidManifest.xml:28:18-86
+28        android:extractNativeLibs="false"
+28-->INJECTED
+29        android:icon="@mipmap/ic_launcher"
+29-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:7:9-43
+30        android:label="@string/app_name"
+30-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:9:9-41
+31        android:roundIcon="@mipmap/ic_launcher_round"
+31-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:8:9-54
+32        android:supportsRtl="true"
+32-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:10:9-35
+33        android:theme="@style/Theme.GullacPdf" >
+33-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:11:9-47
+34        <activity
+34-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:13:9-61:20
+35            android:name="dev.gullacpdf.android.MainActivity"
+35-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:14:13-41
+36            android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|locale|layoutDirection|fontScale|screenLayout|density|uiMode"
+36-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:19:13-163
+37            android:exported="true"
+37-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:15:13-36
+38            android:hardwareAccelerated="true"
+38-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:20:13-47
+39            android:launchMode="singleTask"
+39-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:16:13-44
+40            android:resizeableActivity="true"
+40-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:17:13-46
+41            android:theme="@style/Theme.GullacPdf.Splash"
+41-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:18:13-58
+42            android:windowSoftInputMode="adjustResize" >
+42-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:21:13-55
+43            <intent-filter>
+43-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:23:13-26:29
+44                <action android:name="android.intent.action.MAIN" />
+44-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:24:17-69
+44-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:24:25-66
+45
+46                <category android:name="android.intent.category.LAUNCHER" />
+46-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:25:17-77
+46-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:25:27-74
+47            </intent-filter>
+48
+49            <!-- File managers, email attachments, messaging & downloads -->
+50            <intent-filter>
+50-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:29:13-35:29
+51                <action android:name="android.intent.action.VIEW" />
+51-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:30:17-69
+51-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:30:25-66
+52
+53                <category android:name="android.intent.category.DEFAULT" />
+53-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:31:17-76
+53-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:31:27-73
+54                <category android:name="android.intent.category.BROWSABLE" />
+54-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:32:17-78
+54-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:32:27-75
+55
+56                <data
+56-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:17-85
+57                    android:mimeType="application/pdf"
+57-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:48-82
+58                    android:scheme="content" />
+58-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:23-47
+59                <data
+59-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:17-85
+60                    android:mimeType="application/pdf"
+60-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:48-82
+61                    android:scheme="file" />
+61-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:23-47
+62            </intent-filter>
+63
+64            <!-- Sources that misreport MIME as application/octet-stream -->
+65            <intent-filter>
+65-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:38:13-46:29
+66                <action android:name="android.intent.action.VIEW" />
+66-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:30:17-69
+66-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:30:25-66
+67
+68                <category android:name="android.intent.category.DEFAULT" />
+68-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:31:17-76
+68-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:31:27-73
+69                <category android:name="android.intent.category.BROWSABLE" />
+69-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:32:17-78
+69-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:32:27-75
+70
+71                <data
+71-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:17-85
+72                    android:host="*"
+72-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:42:48-64
+73                    android:mimeType="*/*"
+73-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:48-82
+74                    android:pathSuffix=".pdf"
+74-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:42:88-113
+75                    android:scheme="content" />
+75-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:23-47
+76                <data
+76-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:17-85
+77                    android:host="*"
+77-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:42:48-64
+78                    android:mimeType="*/*"
+78-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:48-82
+79                    android:pathSuffix=".PDF"
+79-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:42:88-113
+80                    android:scheme="content" />
+80-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:23-47
+81                <data
+81-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:17-85
+82                    android:host="*"
+82-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:42:48-64
+83                    android:mimeType="*/*"
+83-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:48-82
+84                    android:pathSuffix=".pdf"
+84-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:42:88-113
+85                    android:scheme="file" />
+85-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:23-47
+86                <data
+86-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:17-85
+87                    android:host="*"
+87-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:42:48-64
+88                    android:mimeType="*/*"
+88-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:48-82
+89                    android:pathSuffix=".PDF"
+89-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:42:88-113
+90                    android:scheme="file" />
+90-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:23-47
+91            </intent-filter>
+92
+93            <!-- Share single PDF directly to gullacpdf -->
+94            <intent-filter>
+94-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:49:13-53:29
+95                <action android:name="android.intent.action.SEND" />
+95-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:50:17-69
+95-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:50:25-66
+96
+97                <category android:name="android.intent.category.DEFAULT" />
+97-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:31:17-76
+97-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:31:27-73
+98
+99                <data android:mimeType="application/pdf" />
+99-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:17-85
+99-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:48-82
+100            </intent-filter>
+101
+102            <!-- Share multiple PDFs (merge workflow) -->
+103            <intent-filter>
+103-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:56:13-60:29
+104                <action android:name="android.intent.action.SEND_MULTIPLE" />
+104-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:57:17-78
+104-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:57:25-75
+105
+106                <category android:name="android.intent.category.DEFAULT" />
+106-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:31:17-76
+106-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:31:27-73
+107
+108                <data android:mimeType="application/pdf" />
+108-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:17-85
+108-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:33:48-82
+109            </intent-filter>
+110        </activity>
+111
+112        <provider
+112-->INJECTED
+113            android:name="androidx.core.content.FileProvider"
+113-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:64:13-62
+114            android:authorities="dev.gullacpdf.android.fileprovider"
+114-->INJECTED
+115            android:exported="false"
+115-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:66:13-37
+116            android:grantUriPermissions="true" >
+116-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:67:13-47
+117            <meta-data
+117-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:68:13-70:54
+118                android:name="android.support.FILE_PROVIDER_PATHS"
+118-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:69:17-67
+119                android:resource="@xml/file_paths" />
+119-->C:\Users\pcbur\project\pdfEditor\android\app\src\main\AndroidManifest.xml:70:17-51
+120        </provider>
+121        <provider
+121-->[androidx.emoji2:emoji2:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\e0a08f78d9476f076af64ae837ae304d\transformed\emoji2-1.4.0\AndroidManifest.xml:24:9-32:20
+122            android:name="androidx.startup.InitializationProvider"
+122-->[androidx.emoji2:emoji2:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\e0a08f78d9476f076af64ae837ae304d\transformed\emoji2-1.4.0\AndroidManifest.xml:25:13-67
+123            android:authorities="dev.gullacpdf.android.androidx-startup"
+123-->[androidx.emoji2:emoji2:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\e0a08f78d9476f076af64ae837ae304d\transformed\emoji2-1.4.0\AndroidManifest.xml:26:13-68
+124            android:exported="false" >
+124-->[androidx.emoji2:emoji2:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\e0a08f78d9476f076af64ae837ae304d\transformed\emoji2-1.4.0\AndroidManifest.xml:27:13-37
+125            <meta-data
+125-->[androidx.emoji2:emoji2:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\e0a08f78d9476f076af64ae837ae304d\transformed\emoji2-1.4.0\AndroidManifest.xml:29:13-31:52
+126                android:name="androidx.emoji2.text.EmojiCompatInitializer"
+126-->[androidx.emoji2:emoji2:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\e0a08f78d9476f076af64ae837ae304d\transformed\emoji2-1.4.0\AndroidManifest.xml:30:17-75
+127                android:value="androidx.startup" />
+127-->[androidx.emoji2:emoji2:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\e0a08f78d9476f076af64ae837ae304d\transformed\emoji2-1.4.0\AndroidManifest.xml:31:17-49
+128            <meta-data
+128-->[androidx.lifecycle:lifecycle-process:2.9.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\e15c62b5ec39bd882e642c0d1dc92dbd\transformed\lifecycle-process-2.9.0\AndroidManifest.xml:29:13-31:52
+129                android:name="androidx.lifecycle.ProcessLifecycleInitializer"
+129-->[androidx.lifecycle:lifecycle-process:2.9.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\e15c62b5ec39bd882e642c0d1dc92dbd\transformed\lifecycle-process-2.9.0\AndroidManifest.xml:30:17-78
+130                android:value="androidx.startup" />
+130-->[androidx.lifecycle:lifecycle-process:2.9.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\e15c62b5ec39bd882e642c0d1dc92dbd\transformed\lifecycle-process-2.9.0\AndroidManifest.xml:31:17-49
+131            <meta-data
+131-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:29:13-31:52
+132                android:name="androidx.profileinstaller.ProfileInstallerInitializer"
+132-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:30:17-85
+133                android:value="androidx.startup" />
+133-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:31:17-49
+134        </provider>
+135
+136        <receiver
+136-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:34:9-52:20
+137            android:name="androidx.profileinstaller.ProfileInstallReceiver"
+137-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:35:13-76
+138            android:directBootAware="false"
+138-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:36:13-44
+139            android:enabled="true"
+139-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:37:13-35
+140            android:exported="true"
+140-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:38:13-36
+141            android:permission="android.permission.DUMP" >
+141-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:39:13-57
+142            <intent-filter>
+142-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:40:13-42:29
+143                <action android:name="androidx.profileinstaller.action.INSTALL_PROFILE" />
+143-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:41:17-91
+143-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:41:25-88
+144            </intent-filter>
+145            <intent-filter>
+145-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:43:13-45:29
+146                <action android:name="androidx.profileinstaller.action.SKIP_FILE" />
+146-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:44:17-85
+146-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:44:25-82
+147            </intent-filter>
+148            <intent-filter>
+148-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:46:13-48:29
+149                <action android:name="androidx.profileinstaller.action.SAVE_PROFILE" />
+149-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:47:17-88
+149-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:47:25-85
+150            </intent-filter>
+151            <intent-filter>
+151-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:49:13-51:29
+152                <action android:name="androidx.profileinstaller.action.BENCHMARK_OPERATION" />
+152-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:50:17-95
+152-->[androidx.profileinstaller:profileinstaller:1.4.0] C:\Users\pcbur\.gradle\caches\9.5.0\transforms\43d2924300005b35d824d32936578166\transformed\profileinstaller-1.4.0\AndroidManifest.xml:50:25-92
+153            </intent-filter>
+154        </receiver>
+155    </application>
+156
+157</manifest>

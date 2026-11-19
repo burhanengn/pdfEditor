@@ -1,6 +1,12 @@
+import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../app/session_state.dart';
+import '../../engine/session_bridge.dart';
+import '../../engine/tile_cache.dart';
 import '../../l10n/gp_l10n.g.dart';
 import '../../theme/gp_tokens.g.dart';
 
@@ -19,6 +25,7 @@ class GpViewerTopBar extends StatelessWidget {
     required this.onPrint,
     required this.onOpenSettings,
     required this.onSwitchToEdit,
+    this.onCopyPageText,
   });
 
   final GpAppState appState;
@@ -32,6 +39,7 @@ class GpViewerTopBar extends StatelessWidget {
   final VoidCallback onPrint;
   final VoidCallback onOpenSettings;
   final VoidCallback onSwitchToEdit;
+  final VoidCallback? onCopyPageText;
 
   @override
   Widget build(BuildContext context) {
@@ -133,12 +141,18 @@ class GpViewerTopBar extends StatelessWidget {
               if (action == 'save') onOpenSaveSheet();
               if (action == 'share') onShare();
               if (action == 'print') onPrint();
+              if (action == 'copyText') onCopyPageText?.call();
               if (action == 'settings') onOpenSettings();
             },
             itemBuilder: (_) => [
               PopupMenuItem(value: 'save', child: Text(l10n.t('action.save'))),
               PopupMenuItem(value: 'share', child: Text(l10n.t('action.share'))),
               PopupMenuItem(value: 'print', child: Text(l10n.t('action.print'))),
+              if (onCopyPageText != null)
+                PopupMenuItem(
+                  value: 'copyText',
+                  child: Text(appState.locale == GpLocale.tr ? 'Sayfa Metnini Kopyala' : 'Copy Page Text'),
+                ),
               PopupMenuItem(value: 'settings', child: Text('${l10n.t('settings.language')} / Theme')),
             ],
           ),
@@ -263,12 +277,16 @@ class GpNavigatorSheet extends StatelessWidget {
     required this.l10n,
     required this.onSelectPage,
     required this.onClose,
+    this.bridge,
+    this.tileCache,
   });
 
   final GpAppState appState;
   final GpL10n l10n;
   final void Function(int pageIndex) onSelectPage;
   final VoidCallback onClose;
+  final GpSessionBridge? bridge;
+  final GpTileCache? tileCache;
 
   @override
   Widget build(BuildContext context) {
@@ -326,6 +344,7 @@ class GpNavigatorSheet extends StatelessWidget {
                         itemCount: appState.pages.length,
                         itemBuilder: (_, idx) {
                           final active = idx == appState.activePageIndex;
+                          final page = appState.pages[idx];
                           return InkWell(
                             onTap: () {
                               onSelectPage(idx);
@@ -341,12 +360,49 @@ class GpNavigatorSheet extends StatelessWidget {
                                   width: active ? 2 : 1,
                                 ),
                               ),
-                              alignment: Alignment.center,
-                              child: Text(
-                                '${idx + 1}',
-                                style: GpTypography.titleM.copyWith(
-                                  color: active ? palette.accent : palette.textPrimary,
-                                ),
+                              clipBehavior: Clip.antiAlias,
+                              child: Stack(
+                                fit: StackFit.expand,
+                                children: [
+                                  if (bridge != null && tileCache != null && appState.docId != null)
+                                    GpPageThumbnailPreview(
+                                      docId: appState.docId!,
+                                      page: page,
+                                      themeName: appState.theme.name,
+                                      darkPaperInvert: appState.darkPaperInvert,
+                                      bridge: bridge!,
+                                      tileCache: tileCache!,
+                                    )
+                                  else
+                                    Center(
+                                      child: Text(
+                                        '${idx + 1}',
+                                        style: GpTypography.titleM.copyWith(
+                                          color: active ? palette.accent : palette.textPrimary,
+                                        ),
+                                      ),
+                                    ),
+                                  Positioned(
+                                    right: 6,
+                                    bottom: 6,
+                                    child: Container(
+                                      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+                                      decoration: BoxDecoration(
+                                        color: active
+                                            ? palette.accent
+                                            : const Color(0xCC0F172A),
+                                        borderRadius: BorderRadius.circular(10),
+                                      ),
+                                      child: Text(
+                                        '${idx + 1}',
+                                        style: GpTypography.caption.copyWith(
+                                          color: active ? palette.accentForeground : Colors.white,
+                                          fontWeight: FontWeight.w600,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
                             ),
                           );
@@ -543,5 +599,197 @@ Future<void> showGpSaveWorkflowSheet({
         },
       );
     },
+  );
+}
+
+class GpPageThumbnailPreview extends StatefulWidget {
+  const GpPageThumbnailPreview({
+    super.key,
+    required this.docId,
+    required this.page,
+    required this.themeName,
+    required this.darkPaperInvert,
+    required this.bridge,
+    required this.tileCache,
+  });
+
+  final String docId;
+  final GpPageMeta page;
+  final String themeName;
+  final bool darkPaperInvert;
+  final GpSessionBridge bridge;
+  final GpTileCache tileCache;
+
+  @override
+  State<GpPageThumbnailPreview> createState() => _GpPageThumbnailPreviewState();
+}
+
+class _GpPageThumbnailPreviewState extends State<GpPageThumbnailPreview> {
+  static final Set<GpTileKey> _loading = {};
+
+  GpTileKey get _key => GpTileKey(
+        docId: widget.docId,
+        pageIndex: widget.page.sourcePageIndex,
+        tileX: 0,
+        tileY: 0,
+        scaleBucket: 'preview',
+        rotation: widget.page.userRotation,
+        themeKey: widget.themeName,
+        isPreview: true,
+      );
+
+  @override
+  void initState() {
+    super.initState();
+    _ensureLoaded();
+  }
+
+  @override
+  void didUpdateWidget(covariant GpPageThumbnailPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.docId != widget.docId ||
+        oldWidget.page.sourcePageIndex != widget.page.sourcePageIndex ||
+        oldWidget.page.userRotation != widget.page.userRotation ||
+        oldWidget.themeName != widget.themeName) {
+      _ensureLoaded();
+    }
+  }
+
+  Future<void> _ensureLoaded() async {
+    final key = _key;
+    if (widget.tileCache.contains(key) || _loading.contains(key)) return;
+    _loading.add(key);
+    try {
+      final pw = math.max(120, (widget.page.displayWidth * 0.35).round());
+      final ph = math.max(160, (widget.page.displayHeight * 0.35).round());
+      final px = await widget.bridge.renderTile(
+        docId: widget.docId,
+        pageIndex: widget.page.sourcePageIndex,
+        tileX: 0,
+        tileY: 0,
+        tileWidthPx: pw,
+        tileHeightPx: ph,
+        scale: 0.35,
+        userRotation: widget.page.userRotation,
+        theme: widget.themeName,
+        darkPaperInvert: widget.darkPaperInvert,
+        priorityTier: 2,
+        scope: 'thumb:${widget.docId}',
+      );
+      final img = await decodePremultipliedRgbaImage(
+        rgba: px.rgba,
+        width: px.width,
+        height: px.height,
+      );
+      if (!mounted) {
+        img.dispose();
+        return;
+      }
+      widget.tileCache.put(key, img, width: px.width, height: px.height);
+      if (mounted) setState(() {});
+    } catch (_) {
+      // Ignored on close/cancel.
+    } finally {
+      _loading.remove(key);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final cached = widget.tileCache.get(_key);
+    if (cached == null) {
+      return Container(
+        color: Colors.white,
+        alignment: Alignment.center,
+        child: const Icon(
+          Icons.description_outlined,
+          size: 18,
+          color: Color(0xFF94A3B8),
+        ),
+      );
+    }
+    return Container(
+      color: Colors.white,
+      child: RawImage(
+        image: cached.image,
+        fit: BoxFit.contain,
+      ),
+    );
+  }
+}
+
+Future<void> showGpPageTextSheet({
+  required BuildContext context,
+  required GpAppState appState,
+  required String pageText,
+}) async {
+  final palette = Theme.of(context).extension<GpPalette>() ?? GpPalette.dark;
+  final isTr = appState.locale == GpLocale.tr;
+  await showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: palette.surfaceRaised,
+    isScrollControlled: true,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(GpComponents.sheetRadius)),
+    ),
+    builder: (ctx) => SafeArea(
+      child: ConstrainedBox(
+        constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(ctx).height * 0.72),
+        child: Padding(
+          padding: const EdgeInsets.all(GpSpacing.s4),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      isTr
+                          ? 'Sayfa ${appState.activePageIndex + 1} Metni'
+                          : 'Page ${appState.activePageIndex + 1} Text',
+                      style: GpTypography.titleM.copyWith(color: palette.textPrimary),
+                    ),
+                  ),
+                  FilledButton.icon(
+                    onPressed: pageText.trim().isEmpty
+                        ? null
+                        : () {
+                            Clipboard.setData(ClipboardData(text: pageText));
+                            Navigator.pop(ctx);
+                            ScaffoldMessenger.of(context).showSnackBar(
+                              SnackBar(
+                                content: Text(isTr ? 'Metin kopyalandı' : 'Text copied to clipboard'),
+                              ),
+                            );
+                          },
+                    icon: const Icon(Icons.copy_all, size: 18),
+                    label: Text(isTr ? 'Kopyala' : 'Copy All'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: GpSpacing.s3),
+              Expanded(
+                child: Container(
+                  padding: const EdgeInsets.all(GpSpacing.s3),
+                  decoration: BoxDecoration(
+                    color: palette.surfaceOverlay,
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: palette.border),
+                  ),
+                  child: SingleChildScrollView(
+                    child: SelectableText(
+                      pageText.trim().isEmpty
+                          ? (isTr ? 'Bu sayfada seçilebilir metin bulunamadı.' : 'No selectable text on this page.')
+                          : pageText,
+                      style: GpTypography.body.copyWith(color: palette.textPrimary),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    ),
   );
 }

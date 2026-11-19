@@ -142,6 +142,20 @@ describe('vectorShapes geometry & path joining engine', () => {
     );
     expect(smoothPath).toContain('Q ');
 
+    const mixedOpen = pathPointsToSvgPath(
+      [
+        { x: 0, y: 0 },
+        { x: 0.3, y: 1, smooth: false },
+        { x: 0.7, y: 1, smooth: true },
+        { x: 1, y: 0 },
+      ],
+      100,
+      100,
+      false,
+      false,
+    );
+    expect(mixedOpen).toContain('L 30.00 100.00 L 50.00 100.00 Q 70.00 100.00 85.00 50.00 L 100.00 0.00');
+
     expect(strokeDashToArray('solid', 2)).toBeUndefined();
     expect(strokeDashToArray('dashed', 2)).toEqual([6, 4]);
     expect(strokeDashToArray('dotted', 2)).toEqual([2, 4]);

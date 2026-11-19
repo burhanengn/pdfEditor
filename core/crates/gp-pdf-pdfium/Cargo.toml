@@ -5,13 +5,15 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
+gp-geom = { path = "../gp-geom" }
 gp-model = { path = "../gp-model" }
 gp-pdf = { path = "../gp-pdf" }
 gp-redact = { path = "../gp-redact" }
 gp-text = { path = "../gp-text" }
 pdfium-render = { workspace = true }
+lopdf = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 
 [dev-dependencies]
-lopdf = { workspace = true }
+serde_json = { workspace = true }

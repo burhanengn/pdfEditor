@@ -167,6 +167,55 @@ function isBulletLineStart(text: string): boolean {
   return /^([•●◦▪■\-*–—]|\d+[.)]|\([a-zA-Z0-9]\))\s+/.test(text.trimStart());
 }
 
+function isListOrSectionItemStart(text: string): boolean {
+  if (isBulletLineStart(text)) return true;
+  const trimmed = text.trimStart();
+  if (!trimmed) return false;
+  const firstToken = trimmed.split(/\s+/)[0] ?? '';
+  const tokNoDot = firstToken.replace(/[.)]+$/, '');
+  if (tokNoDot.includes('.')) {
+    const parts = tokNoDot.split('.');
+    if (
+      parts.length >= 2 &&
+      parts.every((p) => p.length > 0 && p.length <= 4 && /^[a-zA-Z0-9]+$/.test(p)) &&
+      parts.some((p) => /\d/.test(p))
+    ) {
+      return true;
+    }
+  }
+  if (/^[a-zA-Z]\)\s+/.test(trimmed)) return true;
+  const lower = trimmed.toLowerCase();
+  if (
+    /^(şekil|tablo|ek|bölüm|madde|kısım|grafik|harita|resim|çizelge|figure|table|section|chapter|appendix)[\s\-:.]+\d/.test(
+      lower,
+    )
+  ) {
+    return true;
+  }
+  return false;
+}
+
+function hasTocDottedLeader(text: string): boolean {
+  const t = text.trim();
+  if (t.includes('...') || t.includes('. . .') || t.includes('…')) {
+    return true;
+  }
+  if (t.includes('..')) {
+    const parts = t.split(/\s+/);
+    const last = parts[parts.length - 1] ?? '';
+    if (last.length <= 5 && /^[0-9ivxlIVXL]+$/.test(last)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isShortNumericOrPageToken(text: string): boolean {
+  const t = text.trim().replace(/\.+$/, '');
+  if (!t || t.length > 6 || /\s/.test(t)) return false;
+  return /^[0-9]+$/.test(t) || /^[ivxlIVXL]+$/.test(t);
+}
+
 function detectParagraphAlignment(
   group: RawMuLine[],
   softWrappedFlags: boolean[],
@@ -333,10 +382,20 @@ export function buildDetectedTextBlocksFromMuLines(
       return false;
     }
 
+    if (isListOrSectionItemStart(candidate.text)) {
+      return false;
+    }
+    if (hasTocDottedLeader(prev.text) || hasTocDottedLeader(candidate.text)) {
+      return false;
+    }
+    if (isShortNumericOrPageToken(prev.text) && isShortNumericOrPageToken(candidate.text)) {
+      return false;
+    }
+
     const colCenter = (colLeft + colRight) / 2;
     const candCenter = (candidate.x0 + candidate.x1) / 2;
-    const leftAligned = Math.abs(candidate.x0 - colLeft) <= maxFs * 1.8;
-    const prevLeftAligned = Math.abs(candidate.x0 - prev.x0) <= maxFs * 1.8;
+    const leftAligned = Math.abs(candidate.x0 - colLeft) <= maxFs * 0.55;
+    const prevLeftAligned = Math.abs(candidate.x0 - prev.x0) <= maxFs * 0.55;
     const firstLineIndented =
       group.length === 1 &&
       prev.x0 > candidate.x0 &&
@@ -350,7 +409,11 @@ export function buildDetectedTextBlocksFromMuLines(
         Math.abs(candidate.x1 - prev.x1) <= maxFs * 2.5 ||
         prev.x1 - prev.x0 >= maxFs * 8);
     const centerAligned = Math.abs(candCenter - colCenter) <= maxFs * 1.25;
-    const rightAligned = Math.abs(candidate.x1 - colRight) <= maxFs * 1.25;
+    const rightAligned =
+      Math.abs(candidate.x1 - colRight) <= maxFs * 1.25 &&
+      prev.x1 - colLeft >= maxFs * 6 &&
+      candidate.x1 - candidate.x0 >= maxFs * 4 &&
+      prev.text.trim().split(/\s+/).length >= 2;
 
     if (
       !leftAligned &&
@@ -363,14 +426,25 @@ export function buildDetectedTextBlocksFromMuLines(
       return false;
     }
 
-    // Protect short bold headings above regular body paragraphs from merging into the body,
-    // while allowing bold lead-in first lines whose wrap stopped because candidate's first word overflowed.
-    if (group.length === 1 && prev.bold && !candidate.bold) {
-      const expectedRight = Math.max(colRight, candidate.x1);
-      const wordCouldFitOnPrev =
-        prev.x1 + prev.fontSize * 0.35 + candidate.firstWordWidth < expectedRight - prev.fontSize * 1.2;
-      const prevShortHeading = prev.x1 + prev.fontSize * 1.5 < candidate.x1 && wordCouldFitOnPrev;
-      if (prevShortHeading) {
+    if (candidate.bold !== prev.bold) {
+      if (!prev.bold && candidate.bold) {
+        return false;
+      }
+      if (group.length === 1) {
+        const expectedRight = Math.max(colRight, candidate.x1);
+        const wordCouldFitOnPrev =
+          prev.x1 + prev.fontSize * 0.35 + candidate.firstWordWidth <
+          expectedRight - prev.fontSize * 1.2;
+        const prevShortHeading =
+          prev.x1 + prev.fontSize * 1.5 < expectedRight && wordCouldFitOnPrev;
+        const prevAllUpperHeading =
+          prev.text.trim().length > 2 &&
+          prev.text.trim() === prev.text.trim().toUpperCase() &&
+          (prev.text.match(/[a-zçğıöşü]/g)?.length ?? 0) === 0;
+        if (prevShortHeading || prevAllUpperHeading) {
+          return false;
+        }
+      } else {
         return false;
       }
     }
@@ -465,7 +539,7 @@ export function buildDetectedTextBlocksFromMuLines(
         diffs.push(group[i].baselineY - group[i - 1].baselineY);
       }
       const avgDiff = diffs.reduce((a, b) => a + b, 0) / diffs.length;
-      lineHeight = Math.max(1.0, Math.min(2.1, Number((avgDiff / first.fontSize).toFixed(2))));
+      lineHeight = Math.max(0.95, Math.min(3.0, Number((avgDiff / first.fontSize).toFixed(2))));
     }
 
     // Pick dominant font styles weighted across lines

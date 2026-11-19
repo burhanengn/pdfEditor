@@ -9,6 +9,7 @@ import {
 import { Check, Layers, X } from 'lucide-react';
 import {
   getElementLayerTier,
+  isUnmodifiedTextEdit,
   type CanvasElement,
   type HighlightElement,
   type StrokeElement,
@@ -27,6 +28,7 @@ import type {
 import {
   axisAlignedRectBaseToDisplay,
   getDisplayDimensions,
+  getRotatedBoundingBox,
   pointBaseToDisplay,
   pointDisplayToBase,
   pointInRotatedRect,
@@ -41,6 +43,7 @@ import { pdfiumScheduler } from '@/engine/pdfium/renderScheduler';
 import { viewerTileCache } from '@/engine/pdfium/tileCache';
 import {
   constrainSegmentAngle45,
+  denormalizePathPoints,
   findNearestOpenPathEndpoint,
   pathPointsToSvgPath,
   pointsToSmoothSvgPath,
@@ -151,6 +154,9 @@ export function PageCanvas({
 
   const setActivePage = useEditorStore((s) => s.setActivePage);
   const selectElements = useEditorStore((s) => s.selectElements);
+  const selectElementsInRect = useEditorStore((s) => s.selectElementsInRect);
+  const setSelectedPathVertexIndices = useEditorStore((s) => s.setSelectedPathVertexIndices);
+  const marqueeSelectMode = useEditorStore((s) => s.marqueeSelectMode);
   const setEditingTextElementId = useEditorStore((s) => s.setEditingTextElementId);
   const setEditingPathElementId = useEditorStore((s) => s.setEditingPathElementId);
   const setCroppingImageElementId = useEditorStore((s) => s.setCroppingImageElementId);
@@ -211,6 +217,9 @@ export function PageCanvas({
     null,
   );
   const [draftRect, setDraftRect] = useState<RectBox | null>(null);
+  const [draftMarqueeRect, setDraftMarqueeRect] = useState<
+    (RectBox & { mode: 'objects' | 'vertices' }) | null
+  >(null);
   const [draftShapeRect, setDraftShapeRect] = useState<RectBox | null>(null);
   const [draftLineSegment, setDraftLineSegment] = useState<{
     start: Point;
@@ -320,12 +329,13 @@ export function PageCanvas({
     const shapeRects: RectBox[] = [];
     for (const el of pageElements) {
       if (el.kind === 'text-edit') {
+        if (isUnmodifiedTextEdit(el)) continue;
         textRects.push(el.originalRect);
       } else if (el.kind === 'image-replacement') {
         // Merely selecting a behind-content watermark without moving/resizing/deleting it
         // keeps it rendered cleanly in the PDF base canvas behind text and table borders.
         if (isUnmodifiedBehindImage(el, extraction?.images)) continue;
-        imageRects.push(el.originalRect);
+        imageRects.push(getRotatedBoundingBox(el.originalRect, el.originalRotation ?? 0));
       } else if (el.kind === 'shape-replacement') {
         if (isUnmodifiedBehindShape(el, extraction?.shapes)) continue;
         const pad = Math.max(0.5, (el.originalStrokeWidth ?? 0) / 2 + 0.5);
@@ -532,20 +542,25 @@ export function PageCanvas({
     const masks: Array<{ id: string; rect: RectBox; color: string }> = [];
     for (const el of pageElements) {
       if (el.kind === 'text-edit') {
+        if (isUnmodifiedTextEdit(el) && editingTextElementId !== el.id) continue;
         masks.push({ id: `mask-${el.id}`, rect: el.originalRect, color: el.maskColor ?? '#ffffff' });
       }
     }
     return masks;
-  }, [pageElements, isBaseStripped]);
+  }, [pageElements, isBaseStripped, editingTextElementId]);
 
   const editedBlockIds = useMemo(
     () =>
       new Set(
         pageElements
-          .filter((el) => el.kind === 'text-edit')
+          .filter(
+            (el): el is Extract<CanvasElement, { kind: 'text-edit' }> =>
+              el.kind === 'text-edit' &&
+              (!isUnmodifiedTextEdit(el) || editingTextElementId === el.id),
+          )
           .map((el) => el.originalBlockId),
       ),
-    [pageElements],
+    [pageElements, editingTextElementId],
   );
 
   const promotedImageIds = useMemo(
@@ -939,86 +954,207 @@ export function PageCanvas({
         replacedShapeIds: promotedShapeIds,
       });
 
-      if (!hit) {
-        selectElements([]);
-        setEditingTextElementId(null);
-        return;
-      }
+      const editingPath = editingPathElementId
+        ? pagePaths.find((p) => p.id === editingPathElementId)
+        : undefined;
+      const singleSelectedPath =
+        selectedElementIds.length === 1
+          ? pagePaths.find((p) => p.id === selectedElementIds[0])
+          : undefined;
+      const vertexTargetPath = editingPath ?? (e.altKey ? singleSelectedPath : undefined);
+
+      const isBgHit =
+        hit?.kind === 'background-detected-image' || hit?.kind === 'background-detected-shape';
+      const bgTarget =
+        hit?.kind === 'background-detected-image'
+          ? hit.image
+          : hit?.kind === 'background-detected-shape'
+            ? hit.shape
+            : null;
+      const bgAreaRatio = bgTarget
+        ? (bgTarget.width * bgTarget.height) / Math.max(1, page.baseWidth * page.baseHeight)
+        : 0;
+      const isCoarse = isCoarsePointerEvent(e.pointerType);
+      const allowDirectPromote = bgTarget
+        ? selectBackgroundMode ||
+          e.altKey ||
+          (hit?.kind === 'background-detected-shape'
+            ? bgAreaRatio < (isCoarse ? 0.35 : 0.65)
+            : bgAreaRatio < 0.65 && !isCoarse)
+        : false;
 
       if (
-        hit.kind === 'element' ||
-        hit.kind === 'detected-text' ||
-        hit.kind === 'detected-image' ||
-        hit.kind === 'detected-shape'
+        !marqueeSelectMode &&
+        !vertexTargetPath &&
+        hit &&
+        (!isBgHit || allowDirectPromote)
       ) {
+        if (hit.kind === 'background-element') {
+          if (!dispatchSmartHit(hit, e.altKey || !hit.element.locked)) {
+            selectElements([]);
+            setEditingTextElementId(null);
+          }
+          return;
+        }
         dispatchSmartHit(hit, e.altKey);
         return;
       }
 
-      if (hit.kind === 'background-element') {
-        if (!dispatchSmartHit(hit, e.altKey || !hit.element.locked)) {
-          selectElements([]);
-          setEditingTextElementId(null);
-        }
-        return;
-      }
-
-      // hit.kind === 'background-detected-image' or 'background-detected-shape'
-      const bgTarget = hit.kind === 'background-detected-image' ? hit.image : hit.shape;
-      const bgAreaRatio =
-        (bgTarget.width * bgTarget.height) / Math.max(1, page.baseWidth * page.baseHeight);
-      const isCoarse = isCoarsePointerEvent(e.pointerType);
-      const allowDirectPromote =
-        selectBackgroundMode ||
-        e.altKey ||
-        (hit.kind === 'background-detected-shape'
-          ? bgAreaRatio < (isCoarse ? 0.35 : 0.65)
-          : bgAreaRatio < 0.65 && !isCoarse);
-      if (allowDirectPromote) {
-        dispatchSmartHit(hit, true);
-        return;
-      }
-
-      // Open empty area over an unpromoted full background: deselect immediately and allow 500ms hold to reveal "Arka Planı Seç"
-      selectElements([]);
-      setEditingTextElementId(null);
-      const startX = e.clientX;
-      const startY = e.clientY;
+      const startPt = pt;
+      const startClientX = e.clientX;
+      const startClientY = e.clientY;
       const rect = layerRef.current?.getBoundingClientRect();
       const dispX = rect ? e.clientX - rect.left : 40;
       const dispY = rect ? e.clientY - rect.top : 40;
+      const shouldEnableTouchHold =
+        !marqueeSelectMode && !vertexTargetPath && isBgHit && !allowDirectPromote && isCoarse;
       const bgPromptTarget =
-        hit.kind === 'background-detected-image'
+        hit?.kind === 'background-detected-image'
           ? { image: hit.image }
-          : { shape: hit.shape };
+          : hit?.kind === 'background-detected-shape'
+            ? { shape: hit.shape }
+            : null;
 
       const cancelHold = () => {
         if (longPressTimerRef.current !== null) {
           window.clearTimeout(longPressTimerRef.current);
           longPressTimerRef.current = null;
         }
-        window.removeEventListener('pointermove', onHoldMove);
-        window.removeEventListener('pointerup', cancelHold);
-        window.removeEventListener('pointercancel', cancelHold);
-        window.removeEventListener('gullac:multitouch-start', cancelHold);
       };
 
-      const onHoldMove = (me: PointerEvent) => {
-        if (Math.hypot(me.clientX - startX, me.clientY - startY) > 8) {
-          cancelHold();
+      if (shouldEnableTouchHold && bgPromptTarget) {
+        longPressTimerRef.current = window.setTimeout(() => {
+          longPressTimerRef.current = null;
+          const s = useEditorStore.getState();
+          if (s.isPinching || s.activeTouchCount >= 2) return;
+          setBgLongPressPrompt({ x: dispX, y: dispY, ...bgPromptTarget });
+        }, 500);
+      }
+
+      // On touch with marqueeSelectMode OFF & non-vertex drag, keep panning smooth unless user just taps
+      const captureMarquee =
+        e.pointerType !== 'touch' || marqueeSelectMode || Boolean(vertexTargetPath);
+      const targetEl = e.currentTarget;
+      if (captureMarquee) {
+        try {
+          targetEl.setPointerCapture(e.pointerId);
+        } catch {
+          // ignore
+        }
+      }
+
+      let didDrag = false;
+      let aborted = false;
+      let latestMarquee: (RectBox & { mode: 'objects' | 'vertices' }) | null = null;
+      const marqueeMode: 'objects' | 'vertices' = vertexTargetPath ? 'vertices' : 'objects';
+
+      const cleanup = () => {
+        cancelHold();
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        window.removeEventListener('pointercancel', abortGesture);
+        window.removeEventListener('gullac:multitouch-start', abortGesture);
+        try {
+          if (captureMarquee && targetEl.hasPointerCapture(e.pointerId)) {
+            targetEl.releasePointerCapture(e.pointerId);
+          }
+        } catch {
+          // ignore
         }
       };
 
-      window.addEventListener('pointermove', onHoldMove);
-      window.addEventListener('pointerup', cancelHold);
-      window.addEventListener('pointercancel', cancelHold);
-      window.addEventListener('gullac:multitouch-start', cancelHold);
-      longPressTimerRef.current = window.setTimeout(() => {
-        cancelHold();
-        const s = useEditorStore.getState();
-        if (s.isPinching || s.activeTouchCount >= 2) return;
-        setBgLongPressPrompt({ x: dispX, y: dispY, ...bgPromptTarget });
-      }, 500);
+      const abortGesture = () => {
+        if (aborted) return;
+        aborted = true;
+        cleanup();
+        setDraftMarqueeRect(null);
+      };
+
+      const onMove = (me: PointerEvent) => {
+        const store = useEditorStore.getState();
+        if (aborted || store.isPinching || store.activeTouchCount >= 2) {
+          abortGesture();
+          return;
+        }
+        const pxDist = Math.hypot(me.clientX - startClientX, me.clientY - startClientY);
+        if (pxDist > 6) {
+          cancelHold();
+        }
+        if (!captureMarquee) return;
+        if (pxDist >= 5) {
+          didDrag = true;
+          const curPt = getBasePointFromEvent(me.clientX, me.clientY);
+          latestMarquee = {
+            x: Math.min(startPt.x, curPt.x),
+            y: Math.min(startPt.y, curPt.y),
+            width: Math.max(1, Math.abs(curPt.x - startPt.x)),
+            height: Math.max(1, Math.abs(curPt.y - startPt.y)),
+            mode: marqueeMode,
+          };
+          setDraftMarqueeRect(latestMarquee);
+        }
+      };
+
+      const onUp = (ue: PointerEvent) => {
+        if (aborted) return;
+        cleanup();
+        setDraftMarqueeRect(null);
+
+        if (didDrag && latestMarquee) {
+          if (vertexTargetPath && latestMarquee.mode === 'vertices') {
+            const rx0 = latestMarquee.x;
+            const ry0 = latestMarquee.y;
+            const rx1 = latestMarquee.x + latestMarquee.width;
+            const ry1 = latestMarquee.y + latestMarquee.height;
+            const absPts = denormalizePathPoints(vertexTargetPath);
+            const hitIndices: number[] = [];
+            for (let idx = 0; idx < absPts.length; idx++) {
+              const vp = absPts[idx];
+              if (vp.x >= rx0 && vp.x <= rx1 && vp.y >= ry0 && vp.y <= ry1) {
+                hitIndices.push(idx);
+              }
+            }
+            const baseSelected = ue.shiftKey
+              ? Array.from(new Set([...storeState.selectedPathVertexIndices, ...hitIndices]))
+              : hitIndices;
+            selectElements([vertexTargetPath.id]);
+            setEditingPathElementId(vertexTargetPath.id);
+            setSelectedPathVertexIndices(baseSelected);
+            return;
+          }
+
+          selectElementsInRect(page.id, latestMarquee, ue.shiftKey);
+          return;
+        }
+
+        // Plain click / tap (no drag)
+        if (marqueeSelectMode && hit) {
+          if (!isBgHit || allowDirectPromote) {
+            if (hit.kind === 'background-element') {
+              if (!dispatchSmartHit(hit, ue.altKey || !hit.element.locked)) {
+                selectElements([]);
+                setEditingTextElementId(null);
+              }
+            } else {
+              dispatchSmartHit(hit, ue.altKey);
+            }
+            return;
+          }
+        }
+        if (vertexTargetPath && ue.altKey && !hit) {
+          handleAltCycleAtClientPoint(ue.clientX, ue.clientY);
+          return;
+        }
+        if (!hit || (isBgHit && !allowDirectPromote)) {
+          selectElements([]);
+          setEditingTextElementId(null);
+        }
+      };
+
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+      window.addEventListener('pointercancel', abortGesture);
+      window.addEventListener('gullac:multitouch-start', abortGesture);
       return;
     }
 
@@ -1474,6 +1610,8 @@ export function PageCanvas({
     const handleSelect = (e: ReactPointerEvent<HTMLDivElement>) => {
       if (pendingSignaturePlacement) return;
       if (toolMode !== 'select') return;
+      if (useEditorStore.getState().marqueeSelectMode) return;
+      if (e.altKey && el.kind === 'path' && selectedElementIds.includes(el.id)) return;
       e.stopPropagation();
       setActivePage(page.id);
       if (e.altKey) {
@@ -1509,6 +1647,9 @@ export function PageCanvas({
     };
 
     if (el.kind === 'text-add' || el.kind === 'text-edit') {
+      if (el.kind === 'text-edit' && isUnmodifiedTextEdit(el) && editingTextElementId !== el.id) {
+        return null;
+      }
       const fontStatus = resolveFontDisplayStatus({
         fontFamily: el.fontFamily,
         fallbackFontFamily: el.fallbackFontFamily,
@@ -2462,6 +2603,33 @@ export function PageCanvas({
       );
     }
 
+    if (draftMarqueeRect) {
+      const disp = axisAlignedRectBaseToDisplay(
+        draftMarqueeRect,
+        page.baseWidth,
+        page.baseHeight,
+        page.userRotation,
+        zoom,
+      );
+      const isVertices = draftMarqueeRect.mode === 'vertices';
+      return (
+        <div
+          data-testid="marquee-selection-box"
+          className="pointer-events-none absolute"
+          style={{
+            left: `${disp.x}px`,
+            top: `${disp.y}px`,
+            width: `${disp.width}px`,
+            height: `${disp.height}px`,
+            backgroundColor: isVertices ? 'rgba(16, 185, 129, 0.14)' : 'rgba(37, 99, 235, 0.12)',
+            border: isVertices ? '1.5px dashed #10b981' : '1.5px dashed #2563eb',
+            borderRadius: '2px',
+            zIndex: 545,
+          }}
+        />
+      );
+    }
+
     if (draftRect) {
       const disp = axisAlignedRectBaseToDisplay(
         draftRect,
@@ -2627,7 +2795,8 @@ export function PageCanvas({
             toolMode === 'draw' ||
             toolMode === 'highlight' ||
             toolMode === 'shape' ||
-            toolMode === 'path'
+            toolMode === 'path' ||
+            (toolMode === 'select' && marqueeSelectMode)
               ? 'none'
               : undefined,
         }}

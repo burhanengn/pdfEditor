@@ -1,9 +1,17 @@
 import { useRef, useState, type ChangeEvent } from 'react';
 import {
   AlignCenter,
+  AlignCenterHorizontal,
+  AlignCenterVertical,
+  AlignEndHorizontal,
+  AlignEndVertical,
+  AlignHorizontalDistributeCenter,
   AlignJustify,
   AlignLeft,
   AlignRight,
+  AlignStartHorizontal,
+  AlignStartVertical,
+  AlignVerticalDistributeCenter,
   ArrowDown,
   ArrowDownToLine,
   ArrowUp,
@@ -52,8 +60,9 @@ import {
   isImageMaskTarget,
   isVectorMaskCandidate,
 } from '@/engine/imageMask';
-import { denormalizePathPoints } from '@/engine/vectorShapes';
+import { denormalizePathPoints, pointIsSmooth } from '@/engine/vectorShapes';
 import { useEditorStore, type SignatureBatchScope } from '@/store/useEditorStore';
+import type { AlignAction } from '@/utils/alignment';
 import {
   getElementLayerTier,
   type CanvasElement,
@@ -77,6 +86,7 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
   const selectedElementIds = useEditorStore((s) => s.selectedElementIds);
   const editingTextElementId = useEditorStore((s) => s.editingTextElementId);
   const editingPathElementId = useEditorStore((s) => s.editingPathElementId);
+  const selectedPathVertexIndices = useEditorStore((s) => s.selectedPathVertexIndices);
   const pageExtractions = useEditorStore((s) => s.pageExtractions);
 
   const updateElements = useEditorStore((s) => s.updateElements);
@@ -95,6 +105,9 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
   const flipImageClipMaskSide = useEditorStore((s) => s.flipImageClipMaskSide);
   const releaseImageCropAndMask = useEditorStore((s) => s.releaseImageCropAndMask);
   const joinVectorPaths = useEditorStore((s) => s.joinVectorPaths);
+  const alignSelectedElements = useEditorStore((s) => s.alignSelectedElements);
+  const togglePathVerticesSmooth = useEditorStore((s) => s.togglePathVerticesSmooth);
+  const deletePathVertices = useEditorStore((s) => s.deletePathVertices);
 
   const rotatePages = useEditorStore((s) => s.rotatePages);
   const duplicatePages = useEditorStore((s) => s.duplicatePages);
@@ -557,6 +570,60 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
       </div>
 
       <div className="space-y-5 p-4 text-xs">
+        {/* Multi-selection Align & Distribute Card */}
+        {selectedElementIds.length >= 2 && (
+          <div className="space-y-2 rounded-xl border border-slate-200 bg-slate-50/70 p-2.5 dark:border-slate-800 dark:bg-slate-900/60">
+            <div className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+              Hizala &amp; Dağıt ({selectedElementIds.length} Öğe)
+            </div>
+            <div className="grid grid-cols-3 gap-1">
+              {(
+                [
+                  ['left', AlignStartVertical, 'Sola'],
+                  ['center-h', AlignCenterVertical, 'Yatay Ort.'],
+                  ['right', AlignEndVertical, 'Sağa'],
+                  ['top', AlignStartHorizontal, 'Üste'],
+                  ['center-v', AlignCenterHorizontal, 'Dikey Ort.'],
+                  ['bottom', AlignEndHorizontal, 'Alta'],
+                ] as Array<[AlignAction, typeof AlignStartVertical, string]>
+              ).map(([action, Icon, label]) => (
+                <button
+                  key={action}
+                  type="button"
+                  data-testid={`inspector-align-${action}`}
+                  onClick={() => alignSelectedElements(action)}
+                  className="inline-flex items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-1.5 py-1.5 text-xs font-medium text-slate-700 hover:border-blue-400 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                >
+                  <Icon className="h-3.5 w-3.5 shrink-0" />
+                  <span>{label}</span>
+                </button>
+              ))}
+            </div>
+            {selectedElementIds.length >= 3 && (
+              <div className="grid grid-cols-2 gap-1.5">
+                <button
+                  type="button"
+                  data-testid="inspector-align-distribute-h"
+                  onClick={() => alignSelectedElements('distribute-h')}
+                  className="inline-flex items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-700 hover:border-blue-400 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                >
+                  <AlignHorizontalDistributeCenter className="h-3.5 w-3.5" />
+                  <span>Yatay Dağıt</span>
+                </button>
+                <button
+                  type="button"
+                  data-testid="inspector-align-distribute-v"
+                  onClick={() => alignSelectedElements('distribute-v')}
+                  className="inline-flex items-center justify-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1.5 text-xs font-medium text-slate-700 hover:border-blue-400 hover:text-blue-600 dark:border-slate-700 dark:bg-slate-950 dark:text-slate-200"
+                >
+                  <AlignVerticalDistributeCenter className="h-3.5 w-3.5" />
+                  <span>Dikey Dağıt</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
         {/* Multi-selection Image + Shape Clipping Mask Bar */}
         {selectedElementIds.length >= 2 &&
           (() => {
@@ -1598,8 +1665,53 @@ export function RightInspector({ variant = 'desktop' }: RightInspectorProps = {}
                       : 'border-slate-200 text-slate-600 hover:bg-slate-100 dark:border-slate-700 dark:text-slate-300 dark:hover:bg-slate-900'
                   }`}
                 >
-                  {selectedEl.smooth ? 'Yumuşak Eğri (Smooth) ✓' : 'Keskin Köşeler (Polyline)'}
+                  {selectedEl.smooth ? 'Tümünü Yumuşat (Smooth) ✓' : 'Tüm Köşeler Keskin'}
                 </button>
+
+                {editingPathElementId === selectedEl.id && selectedPathVertexIndices.length > 0 && (() => {
+                  const allVertsSmooth = selectedPathVertexIndices.every((idx) =>
+                    selectedEl.points[idx]
+                      ? pointIsSmooth(selectedEl.points[idx], Boolean(selectedEl.smooth))
+                      : false,
+                  );
+                  return (
+                    <div className="space-y-1.5 rounded-lg border border-blue-500/30 bg-blue-500/10 p-2">
+                      <div className="text-xs font-semibold text-blue-700 dark:text-blue-300">
+                        Seçili {selectedPathVertexIndices.length} Nokta
+                      </div>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        <button
+                          type="button"
+                          data-testid="inspector-vertex-smooth-btn"
+                          onClick={() =>
+                            togglePathVerticesSmooth(
+                              selectedEl.id,
+                              selectedPathVertexIndices,
+                              !allVertsSmooth,
+                            )
+                          }
+                          className="inline-flex items-center justify-center gap-1 rounded-md bg-blue-600 px-2 py-1 text-xs font-semibold text-white hover:bg-blue-500"
+                        >
+                          <Spline className="h-3 w-3" />
+                          <span>{allVertsSmooth ? 'Keskinleştir' : 'Eğri Yap'}</span>
+                        </button>
+                        {selectedEl.points.length - selectedPathVertexIndices.length >= 2 && (
+                          <button
+                            type="button"
+                            data-testid="inspector-vertex-delete-btn"
+                            onClick={() =>
+                              deletePathVertices(selectedEl.id, selectedPathVertexIndices)
+                            }
+                            className="inline-flex items-center justify-center gap-1 rounded-md bg-rose-600 px-2 py-1 text-xs font-semibold text-white hover:bg-rose-500"
+                          >
+                            <Trash2 className="h-3 w-3" />
+                            <span>Noktaları Sil</span>
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })()}
 
                 <div>
                   <div className="mb-1 flex items-center justify-between text-xs text-slate-500 dark:text-slate-400">

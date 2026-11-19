@@ -108,7 +108,66 @@ class PdfiumAnalyzerService {
     const segPtPtr = mod.pdfium.wasmExports.malloc(8);
     const pxSizePtr = mod.pdfium.wasmExports.malloc(8);
 
-    const inspectList = (containerPtr: number, isForm: boolean) => {
+    type PdfMat = [number, number, number, number, number, number];
+    const mulMat = (parent: PdfMat, local: PdfMat): PdfMat => [
+      local[0] * parent[0] + local[1] * parent[2],
+      local[0] * parent[1] + local[1] * parent[3],
+      local[2] * parent[0] + local[3] * parent[2],
+      local[2] * parent[1] + local[3] * parent[3],
+      local[4] * parent[0] + local[5] * parent[2] + parent[4],
+      local[4] * parent[1] + local[5] * parent[3] + parent[5],
+    ];
+    const readMat = (objPtr: number): PdfMat | null => {
+      if (!mod.FPDFPageObj_GetMatrix(objPtr, matrixPtr)) return null;
+      return [
+        mod.pdfium.getValue(matrixPtr, 'float'),
+        mod.pdfium.getValue(matrixPtr + 4, 'float'),
+        mod.pdfium.getValue(matrixPtr + 8, 'float'),
+        mod.pdfium.getValue(matrixPtr + 12, 'float'),
+        mod.pdfium.getValue(matrixPtr + 16, 'float'),
+        mod.pdfium.getValue(matrixPtr + 20, 'float'),
+      ];
+    };
+    const boundsToVisual = (
+      l: number,
+      b: number,
+      r: number,
+      t: number,
+      parentMat: PdfMat | null,
+    ): RectBox => {
+      if (!parentMat) {
+        return {
+          x: Math.min(l, r),
+          y: Math.max(0, pageHeight - Math.max(t, b)),
+          width: Math.abs(r - l),
+          height: Math.abs(t - b),
+        };
+      }
+      const [ma, mb, mc, md, me, mf] = parentMat;
+      const pts = [
+        [l, b],
+        [r, b],
+        [l, t],
+        [r, t],
+      ].map(([px, py]) => ({
+        x: ma * px + mc * py + me,
+        y: mb * px + md * py + mf,
+      }));
+      const xs = pts.map((p) => p.x);
+      const ys = pts.map((p) => p.y);
+      const minX = Math.min(...xs);
+      const maxX = Math.max(...xs);
+      const minY = Math.min(...ys);
+      const maxY = Math.max(...ys);
+      return {
+        x: minX,
+        y: Math.max(0, pageHeight - maxY),
+        width: maxX - minX,
+        height: maxY - minY,
+      };
+    };
+
+    const inspectList = (containerPtr: number, isForm: boolean, parentMat: PdfMat | null) => {
       const count = isForm
         ? mod.FPDFFormObj_CountObjects(containerPtr)
         : mod.FPDFPage_CountObjects(containerPtr);
@@ -122,7 +181,9 @@ class PdfiumAnalyzerService {
         const objType = mod.FPDFPageObj_GetType(objPtr);
 
         if (objType === FPDF_PAGEOBJ_FORM) {
-          inspectList(objPtr, true);
+          const localMat = readMat(objPtr);
+          const nextMat = localMat ? (parentMat ? mulMat(parentMat, localMat) : localMat) : parentMat;
+          inspectList(objPtr, true, nextMat);
           continue;
         }
 
@@ -142,12 +203,7 @@ class PdfiumAnalyzerService {
             const t = mod.pdfium.getValue(boundsPtr + 12, 'float');
             textObjectBounds.push({
               opIdx: myOpIdx,
-              rect: {
-                x: Math.min(l, r),
-                y: Math.max(0, pageHeight - Math.max(t, b)),
-                width: Math.abs(r - l),
-                height: Math.abs(t - b),
-              },
+              rect: boundsToVisual(l, b, r, t, parentMat),
             });
           }
           continue;
@@ -163,13 +219,9 @@ class PdfiumAnalyzerService {
             flipX: false,
             flipY: false,
           };
-          if (mod.FPDFPageObj_GetMatrix(objPtr, matrixPtr)) {
-            const a = mod.pdfium.getValue(matrixPtr, 'float');
-            const b = mod.pdfium.getValue(matrixPtr + 4, 'float');
-            const c = mod.pdfium.getValue(matrixPtr + 8, 'float');
-            const d = mod.pdfium.getValue(matrixPtr + 12, 'float');
-            const e = mod.pdfium.getValue(matrixPtr + 16, 'float');
-            const f = mod.pdfium.getValue(matrixPtr + 20, 'float');
+          const localMat = readMat(objPtr);
+          if (localMat) {
+            const [a, b, c, d, e, f] = parentMat ? mulMat(parentMat, localMat) : localMat;
             geom = decomposeImageCtm([a, -b, c, -d, e, pageHeight - f]);
           } else if (
             mod.FPDFPageObj_GetBounds(
@@ -185,10 +237,7 @@ class PdfiumAnalyzerService {
             const r = mod.pdfium.getValue(boundsPtr + 8, 'float');
             const t = mod.pdfium.getValue(boundsPtr + 12, 'float');
             geom = {
-              x: Math.min(l, r),
-              y: Math.max(0, pageHeight - Math.max(t, b)),
-              width: Math.abs(r - l),
-              height: Math.abs(t - b),
+              ...boundsToVisual(l, b, r, t, parentMat),
               rotation: 0,
               flipX: false,
               flipY: false,
@@ -272,10 +321,11 @@ class PdfiumAnalyzerService {
           const b = mod.pdfium.getValue(boundsPtr + 4, 'float');
           const r = mod.pdfium.getValue(boundsPtr + 8, 'float');
           const t = mod.pdfium.getValue(boundsPtr + 12, 'float');
-          const bx = Math.min(l, r);
-          const by = Math.max(0, pageHeight - Math.max(t, b));
-          const bw = Math.abs(r - l);
-          const bh = Math.abs(t - b);
+          const visBox = boundsToVisual(l, b, r, t, parentMat);
+          const bx = visBox.x;
+          const by = visBox.y;
+          const bw = visBox.width;
+          const bh = visBox.height;
 
           let fillColor: string | null = null;
           let fillAlpha = 1;
@@ -322,13 +372,11 @@ class PdfiumAnalyzerService {
 
           // Inspect line segments to classify horizontal/vertical table rules & cell boxes
           const segCount = mod.FPDFPath_CountSegments(objPtr);
-          const hasMat = mod.FPDFPageObj_GetMatrix(objPtr, matrixPtr);
-          const ma = hasMat ? mod.pdfium.getValue(matrixPtr, 'float') : 1;
-          const mb = hasMat ? mod.pdfium.getValue(matrixPtr + 4, 'float') : 0;
-          const mc = hasMat ? mod.pdfium.getValue(matrixPtr + 8, 'float') : 0;
-          const md = hasMat ? mod.pdfium.getValue(matrixPtr + 12, 'float') : 1;
-          const me = hasMat ? mod.pdfium.getValue(matrixPtr + 16, 'float') : 0;
-          const mf = hasMat ? mod.pdfium.getValue(matrixPtr + 20, 'float') : 0;
+          const localPathMat = readMat(objPtr);
+          const effPathMat: PdfMat = localPathMat
+            ? (parentMat ? mulMat(parentMat, localPathMat) : localPathMat)
+            : (parentMat ?? [1, 0, 0, 1, 0, 0]);
+          const [ma, mb, mc, md, me, mf] = effPathMat;
 
           let lastVis: { x: number; y: number } | null = null;
           for (let sIdx = 0; sIdx < segCount; sIdx++) {
@@ -397,7 +445,7 @@ class PdfiumAnalyzerService {
     };
 
     try {
-      inspectList(pagePtr, false);
+      inspectList(pagePtr, false, null);
 
       // Classify behindContent & isBackgroundLayer by paint order against overlapping text
       const overlapsTextBefore = (box: RectBox, myOp: number): boolean =>

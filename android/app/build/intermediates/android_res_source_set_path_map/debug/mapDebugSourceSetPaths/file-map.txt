@@ -1,0 +1,8 @@
+dev.gullacpdf.android.app-pngs-0 C:\Users\pcbur\project\pdfEditor\android\app\build\generated\res\pngs\debug
+dev.gullacpdf.android.app-updated_navigation_xml-1 C:\Users\pcbur\project\pdfEditor\android\app\build\generated\updated_navigation_xml\debug
+dev.gullacpdf.android.app-packageDebugResources-2 C:\Users\pcbur\project\pdfEditor\android\app\build\intermediates\incremental\debug\packageDebugResources\merged.dir
+dev.gullacpdf.android.app-packageDebugResources-3 C:\Users\pcbur\project\pdfEditor\android\app\build\intermediates\incremental\debug\packageDebugResources\stripped.dir
+dev.gullacpdf.android.app-debug-4 C:\Users\pcbur\project\pdfEditor\android\app\build\intermediates\merged_res\debug\mergeDebugResources
+dev.gullacpdf.android.app-debug-5 C:\Users\pcbur\project\pdfEditor\android\app\src\debug\res
+dev.gullacpdf.android.app-main-6 C:\Users\pcbur\project\pdfEditor\android\app\src\main\res
+gradleHome-0 C:\Users\pcbur\.gradle

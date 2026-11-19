@@ -59,6 +59,8 @@ pub struct RawExtractedLine {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub is_custom_font: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub font_source: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub horizontal_scale: Option<f64>,
     pub bold: bool,
     pub italic: bool,
@@ -104,6 +106,24 @@ pub struct DetectedTextBlock {
     pub color: String,
     pub line_height: f64,
     pub baseline_offset: f64,
+    /// Original typeset lines in reading order (visual page coordinates). Lets the editor keep
+    /// untouched lines exactly where the PDF put them and reflow only what actually changed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lines: Option<Vec<DetectedTextLine>>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedTextLine {
+    pub text: String,
+    pub x0: f64,
+    pub x1: f64,
+    pub y0: f64,
+    pub y1: f64,
+    pub baseline_y: f64,
+    pub font_size: f64,
+    /// True when the next line continues this one (soft wrap, joined with a space).
+    pub soft_wrap_after: bool,
 }
 
 fn round_to(v: f64, decimals: u32) -> f64 {
@@ -223,6 +243,93 @@ fn is_bullet_line_start(text: &str) -> bool {
         }
     }
     false
+}
+
+fn is_list_or_section_item_start(text: &str) -> bool {
+    if is_bullet_line_start(text) {
+        return true;
+    }
+    let trimmed = text.trim_start();
+    if trimmed.is_empty() {
+        return false;
+    }
+    // Hierarchical section numbers like "1.1", "1.1.", "2.2.1 ", "1.1.2. Başlık"
+    let token = trimmed.split_whitespace().next().unwrap_or("");
+    let tok_no_dot = token.strip_suffix('.').or_else(|| token.strip_suffix(')')).unwrap_or(token);
+    if tok_no_dot.contains('.') {
+        let parts: Vec<&str> = tok_no_dot.split('.').collect();
+        if parts.len() >= 2
+            && parts
+                .iter()
+                .all(|p| !p.is_empty() && p.len() <= 4 && p.chars().all(|c| c.is_ascii_alphanumeric()))
+            && parts.iter().any(|p| p.chars().any(|c| c.is_ascii_digit()))
+        {
+            return true;
+        }
+    }
+    // Single letter list item like "a)" or "a." (careful with single-letter initials: require closing paren or multi-char)
+    if let Some(rest) = trimmed.chars().next().filter(|c| c.is_ascii_alphabetic()).map(|_| &trimmed[1..]) {
+        if let Some(after) = rest.strip_prefix(')') {
+            if after.chars().next().map(|c| c.is_whitespace()).unwrap_or(false) {
+                return true;
+            }
+        }
+    }
+    // Structural captions / outline prefixes ("Şekil 1", "Tablo 2.", "Ek-1", "Bölüm 3", etc.)
+    let lower = trimmed.to_lowercase();
+    for prefix in [
+        "şekil",
+        "tablo",
+        "ek",
+        "bölüm",
+        "madde",
+        "kısım",
+        "grafik",
+        "harita",
+        "resim",
+        "çizelge",
+        "figure",
+        "table",
+        "section",
+        "chapter",
+        "appendix",
+    ] {
+        if let Some(rest) = lower.strip_prefix(prefix) {
+            let after = rest.trim_start_matches(|c: char| c == '-' || c == ':' || c == '.' || c.is_whitespace());
+            if rest.starts_with(|c: char| c.is_whitespace() || c == '-' || c == ':' || c == '.')
+                && after.chars().next().map(|c| c.is_ascii_digit()).unwrap_or(false)
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn has_toc_dotted_leader(text: &str) -> bool {
+    let t = text.trim();
+    if t.contains("...") || t.contains(". . .") || t.contains('…') {
+        return true;
+    }
+    // Leader of 2+ dots followed by spaces and trailing page number
+    if t.contains("..") {
+        if let Some(last) = t.split_whitespace().last() {
+            if last.len() <= 5 && last.chars().all(|c| c.is_ascii_digit() || matches!(c, 'i' | 'v' | 'x' | 'I' | 'V' | 'X')) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+fn is_short_numeric_or_page_token(text: &str) -> bool {
+    let t = text.trim().trim_end_matches('.');
+    if t.is_empty() || t.len() > 6 || t.contains(char::is_whitespace) {
+        return false;
+    }
+    t.chars().all(|c| c.is_ascii_digit())
+        || t.chars()
+            .all(|c| matches!(c, 'i' | 'v' | 'x' | 'l' | 'I' | 'V' | 'X' | 'L'))
 }
 
 fn ends_with_sentence_punct(trimmed_end: &str) -> bool {
@@ -413,10 +520,20 @@ fn can_merge_into_group(
         return false;
     }
 
+    if is_list_or_section_item_start(&candidate.text) {
+        return false;
+    }
+    if has_toc_dotted_leader(&prev.text) || has_toc_dotted_leader(&candidate.text) {
+        return false;
+    }
+    if is_short_numeric_or_page_token(&prev.text) && is_short_numeric_or_page_token(&candidate.text) {
+        return false;
+    }
+
     let col_center = (col_left + col_right) / 2.0;
     let cand_center = (candidate.x0 + candidate.x1) / 2.0;
-    let left_aligned = (candidate.x0 - col_left).abs() <= max_fs * 1.8;
-    let prev_left_aligned = (candidate.x0 - prev.x0).abs() <= max_fs * 1.8;
+    let left_aligned = (candidate.x0 - col_left).abs() <= max_fs * 0.55;
+    let prev_left_aligned = (candidate.x0 - prev.x0).abs() <= max_fs * 0.55;
     let first_line_indented = group.len() == 1
         && prev.x0 > candidate.x0
         && prev.x0 - candidate.x0 <= max_fs * 4.5
@@ -428,7 +545,10 @@ fn can_merge_into_group(
             || (candidate.x1 - prev.x1).abs() <= max_fs * 2.5
             || prev.x1 - prev.x0 >= max_fs * 8.0);
     let center_aligned = (cand_center - col_center).abs() <= max_fs * 1.25;
-    let right_aligned = (candidate.x1 - col_right).abs() <= max_fs * 1.25;
+    let right_aligned = (candidate.x1 - col_right).abs() <= max_fs * 1.25
+        && (prev.x1 - col_left) >= max_fs * 6.0
+        && (candidate.x1 - candidate.x0) >= max_fs * 4.0
+        && prev.text.split_whitespace().count() >= 2;
 
     if !left_aligned
         && !prev_left_aligned
@@ -440,11 +560,24 @@ fn can_merge_into_group(
         return false;
     }
 
-    if group.len() == 1 && prev.bold && !candidate.bold {
-        let expected_right = col_right.max(candidate.x1);
-        let word_could_fit_on_prev = prev.x1 + prev.font_size * 0.35 + candidate.first_word_width
-            < expected_right - prev.font_size * 1.2;
-        if prev.x1 + prev.font_size * 1.5 < candidate.x1 && word_could_fit_on_prev {
+    if candidate.bold != prev.bold {
+        if !prev.bold && candidate.bold {
+            return false;
+        }
+        if group.len() == 1 {
+            let expected_right = col_right.max(candidate.x1);
+            let word_could_fit_on_prev = prev.x1 + prev.font_size * 0.35 + candidate.first_word_width
+                < expected_right - prev.font_size * 1.2;
+            let prev_short_heading =
+                prev.x1 + prev.font_size * 1.5 < expected_right && word_could_fit_on_prev;
+            let trimmed_prev = prev.text.trim();
+            let prev_all_upper = trimmed_prev.len() > 2
+                && trimmed_prev == trimmed_prev.to_uppercase()
+                && !trimmed_prev.chars().any(|c| c.is_lowercase());
+            if prev_short_heading || prev_all_upper {
+                return false;
+            }
+        } else {
             return false;
         }
     }
@@ -568,7 +701,7 @@ pub fn build_detected_text_blocks(
                 sum += group[i].baseline_y - group[i - 1].baseline_y;
             }
             let avg_diff = sum / (group.len() - 1) as f64;
-            line_height = round_to((avg_diff / first.font_size).clamp(1.0, 2.1), 2);
+            line_height = round_to((avg_diff / first.font_size).clamp(0.95, 3.0), 2);
         }
 
         let bold_count = group.iter().filter(|l| l.bold).count();
@@ -586,6 +719,8 @@ pub fn build_detected_text_blocks(
                 text: l.text.trim().to_string(),
                 bold: Some(l.bold),
                 italic: Some(l.italic),
+                underline: None,
+                strikethrough: None,
                 script: Some(TextScriptMode::Normal),
             }]
         };
@@ -621,6 +756,8 @@ pub fn build_detected_text_blocks(
                 },
                 bold: Some(dom_bold),
                 italic: Some(dom_italic),
+                underline: None,
+                strikethrough: None,
                 script: Some(TextScriptMode::Normal),
             });
             merged_runs.extend(line_runs(next));
@@ -677,7 +814,7 @@ pub fn build_detected_text_blocks(
             } else {
                 parsed_dominant.font_family
             }),
-            font_source: Some("builtin".to_string()),
+            font_source: first.font_source.clone().or_else(|| Some("builtin".to_string())),
             raw_font_name: Some(first.raw_font_name.clone()),
             original_font_name: Some(
                 first
@@ -695,6 +832,22 @@ pub fn build_detected_text_blocks(
             color: first.color.clone(),
             line_height,
             baseline_offset: first.baseline_y - min_y,
+            lines: Some(
+                group
+                    .iter()
+                    .enumerate()
+                    .map(|(i, l)| DetectedTextLine {
+                        text: normalize_unicode_for_pdf(l.text.trim()),
+                        x0: l.x0,
+                        x1: l.x1,
+                        y0: l.y0,
+                        y1: l.y1,
+                        baseline_y: l.baseline_y,
+                        font_size: l.font_size,
+                        soft_wrap_after: soft_wrapped_flags.get(i).copied().unwrap_or(false),
+                    })
+                    .collect(),
+            ),
         });
     }
 

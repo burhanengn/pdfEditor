@@ -152,6 +152,7 @@ class GpEditorToolDock extends StatelessWidget {
     required this.onSelectTool,
     required this.onOpenSignaturePad,
     required this.onOpenOrganizeSheet,
+    this.onInsertImage,
   });
 
   final GpEditorTool activeTool;
@@ -159,6 +160,7 @@ class GpEditorToolDock extends StatelessWidget {
   final void Function(GpEditorTool tool) onSelectTool;
   final VoidCallback onOpenSignaturePad;
   final VoidCallback onOpenOrganizeSheet;
+  final VoidCallback? onInsertImage;
 
   @override
   Widget build(BuildContext context) {
@@ -248,7 +250,7 @@ class GpEditorToolDock extends StatelessWidget {
               buildBtn(
                 key: const Key('tool-eraser'),
                 icon: Icons.auto_fix_normal_outlined,
-                label: 'Erase',
+                label: l10n.t('mobile.tool.eraser'),
                 selected: activeTool == GpEditorTool.eraser,
                 onTap: () => onSelectTool(GpEditorTool.eraser),
               ),
@@ -274,6 +276,21 @@ class GpEditorToolDock extends StatelessWidget {
                 onTap: () => onSelectTool(GpEditorTool.shape),
               ),
               buildBtn(
+                key: const Key('tool-line'),
+                icon: Icons.horizontal_rule,
+                label: l10n.t('mobile.tool.line'),
+                selected: activeTool == GpEditorTool.line,
+                onTap: () => onSelectTool(GpEditorTool.line),
+              ),
+              if (onInsertImage != null)
+                buildBtn(
+                  key: const Key('tool-image'),
+                  icon: Icons.add_photo_alternate_outlined,
+                  label: l10n.t('mobile.tool.image'),
+                  selected: activeTool == GpEditorTool.image,
+                  onTap: onInsertImage!,
+                ),
+              buildBtn(
                 key: const Key('tool-redact'),
                 icon: Icons.visibility_off_outlined,
                 label: l10n.t('mobile.tool.redact'),
@@ -289,6 +306,80 @@ class GpEditorToolDock extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class GpShapeVariantStrip extends StatelessWidget {
+  const GpShapeVariantStrip({
+    super.key,
+    required this.activeShapeType,
+    required this.activeStrokeColorValue,
+    required this.onSelectShape,
+    required this.onSelectColor,
+  });
+
+  final String activeShapeType;
+  final int activeStrokeColorValue;
+  final void Function(String shapeType) onSelectShape;
+  final void Function(int colorValue) onSelectColor;
+
+  @override
+  Widget build(BuildContext context) {
+    final palette = Theme.of(context).extension<GpPalette>() ?? GpPalette.dark;
+    return Container(
+      margin: const EdgeInsets.symmetric(horizontal: GpSpacing.s3, vertical: 6),
+      padding: const EdgeInsets.symmetric(horizontal: GpSpacing.s2, vertical: 6),
+      decoration: BoxDecoration(
+        color: palette.surfaceOverlay.withValues(alpha: 0.96),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: palette.border),
+        boxShadow: const [BoxShadow(blurRadius: 10, color: Color(0x33000000))],
+      ),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: Row(
+          children: [
+            for (final s in const [
+              ('rect', Icons.crop_square),
+              ('ellipse', Icons.circle_outlined),
+              ('triangle', Icons.change_history),
+              ('diamond', Icons.diamond_outlined),
+              ('arrow', Icons.arrow_forward),
+            ])
+              IconButton(
+                key: Key('shape-variant-${s.$1}'),
+                constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
+                isSelected: activeShapeType == s.$1,
+                onPressed: () => onSelectShape(s.$1),
+                icon: Icon(
+                  s.$2,
+                  color: activeShapeType == s.$1 ? palette.accent : palette.textPrimary,
+                ),
+              ),
+            const SizedBox(width: 8),
+            for (final c in const [0xFF2563EB, 0xFFDC2626, 0xFF15803D, 0xFF0F172A])
+              Padding(
+                padding: const EdgeInsets.only(right: 6),
+                child: InkWell(
+                  onTap: () => onSelectColor(c),
+                  child: Container(
+                    width: 24,
+                    height: 24,
+                    decoration: BoxDecoration(
+                      color: Color(c),
+                      shape: BoxShape.circle,
+                      border: Border.all(
+                        color: activeStrokeColorValue == c ? palette.accent : palette.border,
+                        width: activeStrokeColorValue == c ? 2.5 : 1,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
         ),
       ),
     );

@@ -55,6 +55,7 @@ export function InlineTextEditor({
   const updateElements = useEditorStore((s) => s.updateElements);
   const beginTransaction = useEditorStore((s) => s.beginTransaction);
   const commitTransaction = useEditorStore((s) => s.commitTransaction);
+  const abortTransaction = useEditorStore((s) => s.abortTransaction);
   const userFonts = useEditorStore((s) => s.userFonts);
   const extractedFonts = useEditorStore((s) => s.extractedFonts);
 
@@ -241,6 +242,7 @@ export function InlineTextEditor({
       onFinish();
       return;
     }
+    let changed = false;
     if (ed) {
       const prevHeight = ed.style.height;
       const prevMinH = ed.style.minHeight;
@@ -252,14 +254,23 @@ export function InlineTextEditor({
       ed.style.minHeight = prevMinH;
       const renderedLineCount = Math.max(1, Math.round(contentHeightPx / lineStepPx));
       const parsed = parseContainerRuns(ed, el.bold, el.italic);
-      if (parsed.text !== el.text || el.renderedLineCount !== renderedLineCount) {
+      const existingRuns = ensureRunsFromElement(el.text, el.runs, el.bold, el.italic);
+      const runsChanged =
+        computeRunsSignature(parsed.runs, el.bold, el.italic) !==
+        computeRunsSignature(existingRuns, el.bold, el.italic);
+      changed = parsed.text !== el.text || runsChanged;
+      if (changed) {
         updateElements(
           [{ id: el.id, patch: { text: parsed.text, runs: parsed.runs, renderedLineCount } }],
           false,
         );
       }
     }
-    commitTransaction();
+    if (changed) {
+      commitTransaction();
+    } else {
+      abortTransaction();
+    }
     onFinish();
   };
 

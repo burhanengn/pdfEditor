@@ -1,5 +1,13 @@
 import { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import {
+  AlignCenterHorizontal,
+  AlignCenterVertical,
+  AlignEndHorizontal,
+  AlignEndVertical,
+  AlignHorizontalDistributeCenter,
+  AlignStartHorizontal,
+  AlignStartVertical,
+  AlignVerticalDistributeCenter,
   ArrowDown,
   ArrowDownToLine,
   ArrowUp,
@@ -23,6 +31,7 @@ import {
   Type,
   Unlock,
 } from 'lucide-react';
+import type { AlignAction } from '@/utils/alignment';
 import type {
   CanvasElement,
   TextAddElement,
@@ -90,6 +99,7 @@ export function CanvasContextMenu() {
   const releaseImageCropAndMask = useEditorStore((s) => s.releaseImageCropAndMask);
   const addElement = useEditorStore((s) => s.addElement);
   const setToolMode = useEditorStore((s) => s.setToolMode);
+  const alignSelectedElements = useEditorStore((s) => s.alignSelectedElements);
 
   const menuRef = useRef<HTMLDivElement | null>(null);
   const [coords, setCoords] = useState<{ left: number; top: number }>({ left: 0, top: 0 });
@@ -408,6 +418,58 @@ export function CanvasContextMenu() {
                   </span>
                 </button>
               )}
+            </div>
+          )}
+
+          {/* Align & Distribute (Multi-select) */}
+          {selected.length >= 2 && (
+            <div className="space-y-1 border-b border-slate-100 pb-1.5 dark:border-slate-800">
+              <div className="px-2 pt-0.5 text-xs font-medium text-slate-400">Hizala</div>
+              <div className="grid grid-cols-4 gap-1 px-1.5">
+                {(
+                  [
+                    ['left', AlignStartVertical, 'Sola Hizala'],
+                    ['center-h', AlignCenterVertical, 'Yatay Ortala'],
+                    ['right', AlignEndVertical, 'Sağa Hizala'],
+                    ['top', AlignStartHorizontal, 'Üste Hizala'],
+                    ['center-v', AlignCenterHorizontal, 'Dikey Ortala'],
+                    ['bottom', AlignEndHorizontal, 'Alta Hizala'],
+                  ] as Array<[AlignAction, typeof AlignStartVertical, string]>
+                ).map(([action, Icon, title]) => (
+                  <button
+                    key={action}
+                    type="button"
+                    title={title}
+                    data-testid={`ctx-align-${action}`}
+                    onClick={() => closeAnd(() => alignSelectedElements(action))}
+                    className="flex items-center justify-center rounded-md border border-slate-200 py-1 text-slate-700 hover:bg-blue-50 hover:text-blue-600 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                  </button>
+                ))}
+                {selected.length >= 3 && (
+                  <>
+                    <button
+                      type="button"
+                      title="Yatay Eşit Dağıt"
+                      data-testid="ctx-align-distribute-h"
+                      onClick={() => closeAnd(() => alignSelectedElements('distribute-h'))}
+                      className="flex items-center justify-center rounded-md border border-slate-200 py-1 text-slate-700 hover:bg-blue-50 hover:text-blue-600 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                    >
+                      <AlignHorizontalDistributeCenter className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      title="Dikey Eşit Dağıt"
+                      data-testid="ctx-align-distribute-v"
+                      onClick={() => closeAnd(() => alignSelectedElements('distribute-v'))}
+                      className="flex items-center justify-center rounded-md border border-slate-200 py-1 text-slate-700 hover:bg-blue-50 hover:text-blue-600 dark:border-slate-700 dark:text-slate-200 dark:hover:bg-slate-800"
+                    >
+                      <AlignVerticalDistributeCenter className="h-3.5 w-3.5" />
+                    </button>
+                  </>
+                )}
+              </div>
             </div>
           )}
 

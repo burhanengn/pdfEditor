@@ -1,6 +1,7 @@
 import { useRef, useState } from 'react';
 import {
   ArrowRight,
+  BoxSelect,
   Check,
   Circle,
   Diamond,
@@ -119,6 +120,8 @@ export function TopToolbar({
   const setPageNumberingModalOpen = useEditorStore((s) => s.setPageNumberingModalOpen);
   const selectBackgroundMode = useEditorStore((s) => s.selectBackgroundMode);
   const setSelectBackgroundMode = useEditorStore((s) => s.setSelectBackgroundMode);
+  const marqueeSelectMode = useEditorStore((s) => s.marqueeSelectMode);
+  const setMarqueeSelectMode = useEditorStore((s) => s.setMarqueeSelectMode);
   const mobileSheet = useEditorStore((s) => s.mobileSheet);
   const setMobileSheet = useEditorStore((s) => s.setMobileSheet);
   const pendingSignaturePlacement = useEditorStore((s) => s.pendingSignaturePlacement);
@@ -407,6 +410,28 @@ export function TopToolbar({
               className="inline-flex min-h-[36px] shrink-0 items-center gap-1 rounded-lg px-2 text-xs font-medium text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-800"
             >
               <LayoutGrid className="h-4 w-4" />
+            </button>
+            <button
+              type="button"
+              title="Alan Seç (Sürükleyerek çoklu seçim)"
+              aria-pressed={marqueeSelectMode}
+              data-testid="toggle-marquee-select"
+              onClick={() => {
+                if (toolMode !== 'select') {
+                  setToolMode('select');
+                  setMarqueeSelectMode(true);
+                } else {
+                  setMarqueeSelectMode(!marqueeSelectMode);
+                }
+              }}
+              className={`inline-flex min-h-[36px] shrink-0 items-center gap-1 rounded-lg px-2 text-xs font-medium ${
+                toolMode === 'select' && marqueeSelectMode
+                  ? 'bg-blue-600 text-white'
+                  : 'text-slate-600 hover:bg-white dark:text-slate-300 dark:hover:bg-slate-800'
+              }`}
+            >
+              <BoxSelect className="h-4 w-4" />
+              {!isCompact && <span>Alan Seç</span>}
             </button>
             <button
               type="button"

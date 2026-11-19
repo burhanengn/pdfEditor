@@ -1,12 +1,14 @@
 import { useState, type PointerEvent as ReactPointerEvent, type RefObject } from 'react';
-import { Check, Plus } from 'lucide-react';
+import { Check, Plus, Spline, Trash2 } from 'lucide-react';
 import type { VectorPathElement } from '@/types/elements';
 import type { Point, RotationAngle } from '@/types/pdf';
 import { pointBaseToDisplay, pointDisplayToBase } from '@/engine/coordinates';
 import {
   denormalizePathPoints,
   findNearestOpenPathEndpoint,
+  pointIsSmooth,
   type OpenPathSnapHit,
+  type PathPoint,
 } from '@/engine/vectorShapes';
 import { useEditorStore } from '@/store/useEditorStore';
 
@@ -49,6 +51,10 @@ export function PathNodeEditorOverlay({
     point: Point;
     kind: 'self-close' | 'join-peer';
   } | null>(null);
+  const selectedIndices = useEditorStore((s) => s.selectedPathVertexIndices);
+  const setSelectedPathVertexIndices = useEditorStore((s) => s.setSelectedPathVertexIndices);
+  const togglePathVerticesSmooth = useEditorStore((s) => s.togglePathVerticesSmooth);
+  const deletePathVertices = useEditorStore((s) => s.deletePathVertices);
 
   const absPts = denormalizePathPoints(element);
   if (absPts.length < 2) return null;
@@ -70,19 +76,28 @@ export function PathNodeEditorOverlay({
 
   const startAnchorDrag = (
     e: ReactPointerEvent<HTMLButtonElement>,
-    initialPts: Point[],
+    initialPts: PathPoint[],
     index: number,
+    activeSelected: number[],
     alreadyBegunTransaction: boolean,
   ) => {
     const target = e.currentTarget;
-    target.setPointerCapture(e.pointerId);
+    try {
+      target.setPointerCapture(e.pointerId);
+    } catch {
+      // ignore synthetic test pointer events
+    }
 
     const originPt = initialPts[index];
+    const movingIndices =
+      activeSelected.length > 1 && activeSelected.includes(index) ? activeSelected : [index];
+    const movingIndexSet = new Set(movingIndices);
     if (!alreadyBegunTransaction) {
       beginTransaction();
     }
 
     let aborted = false;
+    let didMove = false;
     let workingPts = initialPts.map((p) => ({ ...p }));
     let activeSnap: { point: Point; kind: 'self-close' | 'join-peer'; peerId?: string } | null =
       null;
@@ -117,7 +132,7 @@ export function PathNodeEditorOverlay({
       }
 
       let cur = toBasePt(me.clientX, me.clientY);
-      if (me.shiftKey) {
+      if (me.shiftKey && movingIndices.length === 1) {
         if (Math.abs(cur.x - originPt.x) >= Math.abs(cur.y - originPt.y)) {
           cur = { x: cur.x, y: originPt.y };
         } else {
@@ -127,10 +142,12 @@ export function PathNodeEditorOverlay({
 
       activeSnap = null;
       const snapRadius = 11 / Math.max(0.25, zoom);
-      const isOpenEndpoint = !element.closed && (index === 0 || index === workingPts.length - 1);
+      const isSingleOpenEndpoint =
+        movingIndices.length === 1 &&
+        !element.closed &&
+        (index === 0 || index === workingPts.length - 1);
 
-      if (isOpenEndpoint) {
-        // Check closing onto opposite end of same path
+      if (isSingleOpenEndpoint) {
         if (workingPts.length >= 3) {
           const otherEnd = index === 0 ? workingPts[workingPts.length - 1] : workingPts[0];
           if (Math.hypot(cur.x - otherEnd.x, cur.y - otherEnd.y) <= snapRadius) {
@@ -138,7 +155,6 @@ export function PathNodeEditorOverlay({
             activeSnap = { point: otherEnd, kind: 'self-close' };
           }
         }
-        // Else check magnetic snap onto another open path endpoint on the same page
         if (!activeSnap) {
           const peerHit: OpenPathSnapHit | null = findNearestOpenPathEndpoint(
             cur,
@@ -157,8 +173,15 @@ export function PathNodeEditorOverlay({
         }
       }
 
+      const dx = cur.x - originPt.x;
+      const dy = cur.y - originPt.y;
+      if (Math.hypot(dx, dy) >= 1) {
+        didMove = true;
+      }
       setSnapTarget(activeSnap ? { point: activeSnap.point, kind: activeSnap.kind } : null);
-      workingPts[index] = cur;
+      workingPts = initialPts.map((pt, i) =>
+        movingIndexSet.has(i) ? { ...pt, x: pt.x + dx, y: pt.y + dy } : { ...pt },
+      );
       updatePathPoints(element.id, workingPts, { recordHistory: false });
     };
 
@@ -167,7 +190,12 @@ export function PathNodeEditorOverlay({
       cleanup();
       setSnapTarget(null);
 
-      if (activeSnap?.kind === 'self-close' && workingPts.length >= 3) {
+      if (!didMove) {
+        abortTransaction();
+        return;
+      }
+
+      if (activeSnap?.kind === 'self-close' && workingPts.length >= 3 && movingIndices.length === 1) {
         const trimmed = index === 0 ? workingPts.slice(1) : workingPts.slice(0, -1);
         updatePathPoints(element.id, trimmed, { closed: true, recordHistory: false });
         commitTransaction();
@@ -195,12 +223,25 @@ export function PathNodeEditorOverlay({
     e.stopPropagation();
 
     if (e.altKey && absPts.length > 2) {
-      const next = absPts.filter((_, i) => i !== index);
-      updatePathPoints(element.id, next, { recordHistory: true });
+      deletePathVertices(element.id, [index]);
       return;
     }
 
-    startAnchorDrag(e, absPts, index, false);
+    let nextSelected: number[];
+    if (e.shiftKey) {
+      nextSelected = selectedIndices.includes(index)
+        ? selectedIndices.filter((i) => i !== index)
+        : [...selectedIndices, index];
+      setSelectedPathVertexIndices(nextSelected);
+      if (!nextSelected.includes(index)) return;
+    } else if (selectedIndices.includes(index) && selectedIndices.length > 1) {
+      nextSelected = selectedIndices;
+    } else {
+      nextSelected = [index];
+      setSelectedPathVertexIndices(nextSelected);
+    }
+
+    startAnchorDrag(e, absPts, index, nextSelected, false);
   };
 
   const handleMidpointPointerDown = (e: ReactPointerEvent<HTMLButtonElement>, segIdx: number) => {
@@ -212,12 +253,17 @@ export function PathNodeEditorOverlay({
 
     const a = absPts[segIdx];
     const b = absPts[(segIdx + 1) % absPts.length];
-    const mid: Point = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+    const mid: PathPoint = {
+      x: (a.x + b.x) / 2,
+      y: (a.y + b.y) / 2,
+      smooth: pointIsSmooth(element.points[segIdx], Boolean(element.smooth)),
+    };
 
     beginTransaction();
     const inserted = [...absPts.slice(0, segIdx + 1), mid, ...absPts.slice(segIdx + 1)];
     updatePathPoints(element.id, inserted, { recordHistory: false });
-    startAnchorDrag(e, inserted, segIdx + 1, true);
+    setSelectedPathVertexIndices([segIdx + 1]);
+    startAnchorDrag(e, inserted, segIdx + 1, [segIdx + 1], true);
   };
 
   const dispPts = absPts.map(toDispPt);
@@ -225,6 +271,11 @@ export function PathNodeEditorOverlay({
   const topMostDispY = Math.min(...dispPts.map((p) => p.y));
   const avgDispX = dispPts.reduce((sum, p) => sum + p.x, 0) / dispPts.length;
   const snapDisp = snapTarget ? toDispPt(snapTarget.point) : null;
+  const allSelectedSmooth =
+    selectedIndices.length > 0 &&
+    selectedIndices.every((idx) =>
+      element.points[idx] ? pointIsSmooth(element.points[idx], Boolean(element.smooth)) : false,
+    );
 
   return (
     <div data-testid={`path-node-editor-${element.id}`} className="pointer-events-none absolute inset-0" style={{ zIndex: 525 }}>
@@ -276,49 +327,84 @@ export function PathNodeEditorOverlay({
         );
       })}
 
-      {/* Primary vertex anchor handles */}
-      {dispPts.map((p, idx) => (
-        <button
-          key={`anchor-${idx}`}
-          type="button"
-          data-testid={`path-anchor-handle-${idx}`}
-          title="Sürükle: Noktayı taşı (Alt+Tık / Çift tık: Sil)"
-          onPointerDown={(e) => handleAnchorPointerDown(e, idx)}
-          onDoubleClick={(e) => {
-            e.stopPropagation();
-            if (absPts.length > 2) {
-              updatePathPoints(
-                element.id,
-                absPts.filter((_, i) => i !== idx),
-                { recordHistory: true },
-              );
-            }
-          }}
-          style={{
-            position: 'absolute',
-            left: `${p.x - 6}px`,
-            top: `${p.y - 6}px`,
-            touchAction: 'none',
-          }}
-          className={`pointer-events-auto h-3 w-3 rounded-full border-2 shadow-sm transition-transform hover:scale-125 ${
-            idx === 0
-              ? 'border-emerald-600 bg-white ring-1 ring-emerald-400/50'
-              : 'border-blue-600 bg-white'
-          }`}
-        />
-      ))}
+      {/* Primary vertex anchor handles (circle = smooth corner, diamond = sharp corner) */}
+      {dispPts.map((p, idx) => {
+        const isVertSmooth = pointIsSmooth(element.points[idx], Boolean(element.smooth));
+        const isVertSelected = selectedIndices.includes(idx);
+        return (
+          <button
+            key={`anchor-${idx}`}
+            type="button"
+            data-testid={`path-anchor-handle-${idx}`}
+            title="Sürükle: Taşı (Shift+Tık: Çoklu Seç, Alt+Tık / Çift tık: Sil)"
+            onPointerDown={(e) => handleAnchorPointerDown(e, idx)}
+            onDoubleClick={(e) => {
+              e.stopPropagation();
+              if (absPts.length > 2) {
+                deletePathVertices(element.id, [idx]);
+              }
+            }}
+            style={{
+              position: 'absolute',
+              left: `${p.x - 6}px`,
+              top: `${p.y - 6}px`,
+              touchAction: 'none',
+              transform: !isVertSmooth ? (isVertSelected ? 'rotate(45deg) scale(1.2)' : 'rotate(45deg)') : undefined,
+            }}
+            className={`pointer-events-auto h-3 w-3 border-2 shadow-sm transition-transform hover:scale-125 ${
+              isVertSmooth ? 'rounded-full' : 'rounded-[1px]'
+            } ${
+              isVertSelected
+                ? 'border-white bg-blue-600 ring-2 ring-blue-500 scale-125'
+                : idx === 0
+                  ? 'border-emerald-600 bg-white ring-1 ring-emerald-400/50'
+                  : 'border-blue-600 bg-white'
+            }`}
+          />
+        );
+      })}
 
-      {/* Compact inline bar to exit node mode cleanly */}
+      {/* Compact inline bar with per-vertex Smooth/Sharp, Delete & Done */}
       <div
         onPointerDown={(e) => e.stopPropagation()}
         style={{
           position: 'absolute',
-          left: `${Math.max(8, Math.min(baseWidth * zoom - 190, avgDispX - 85))}px`,
-          top: `${Math.max(8, topMostDispY - 38)}px`,
+          left: `${Math.max(8, Math.min(baseWidth * zoom - 290, avgDispX - 135))}px`,
+          top: `${Math.max(8, topMostDispY - 40)}px`,
         }}
-        className="pointer-events-auto flex items-center gap-2 rounded-full border border-blue-500/40 bg-slate-900/95 px-2.5 py-1 text-xs font-medium text-white shadow-xl"
+        className="pointer-events-auto flex items-center gap-1.5 rounded-full border border-blue-500/40 bg-slate-900/95 px-2.5 py-1 text-xs font-medium text-white shadow-xl"
       >
-        <span className="text-slate-300">Nokta Düzenle</span>
+        <span className="text-slate-300">
+          {selectedIndices.length > 0 ? `${selectedIndices.length} nokta` : 'Nokta Düzenle'}
+        </span>
+        {selectedIndices.length > 0 && (
+          <>
+            <button
+              type="button"
+              data-testid="toggle-selected-vertices-smooth-btn"
+              onClick={() => togglePathVerticesSmooth(element.id, selectedIndices, !allSelectedSmooth)}
+              className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs font-semibold ${
+                allSelectedSmooth
+                  ? 'bg-amber-600 text-white hover:bg-amber-500'
+                  : 'bg-emerald-600 text-white hover:bg-emerald-500'
+              }`}
+            >
+              <Spline className="h-3 w-3" />
+              {allSelectedSmooth ? 'Keskin' : 'Eğri'}
+            </button>
+            {absPts.length - selectedIndices.length >= 2 && (
+              <button
+                type="button"
+                data-testid="delete-selected-vertices-btn"
+                onClick={() => deletePathVertices(element.id, selectedIndices)}
+                title="Seçili noktaları sil"
+                className="inline-flex items-center gap-1 rounded-full bg-rose-600 px-1.5 py-0.5 text-xs font-semibold text-white hover:bg-rose-500"
+              >
+                <Trash2 className="h-3 w-3" />
+              </button>
+            )}
+          </>
+        )}
         <button
           type="button"
           data-testid="finish-path-edit-btn"
