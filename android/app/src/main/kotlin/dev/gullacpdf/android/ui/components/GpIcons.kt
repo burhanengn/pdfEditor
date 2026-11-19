@@ -646,4 +646,101 @@ object GpIcons {
             }
         }
     }
+
+    private fun strokeIcon(name: String, block: androidx.compose.ui.graphics.vector.PathBuilder.() -> Unit): ImageVector =
+        vecIcon(name) {
+            path(
+                stroke = SolidColor(Color.Black),
+                strokeLineWidth = 1.9f,
+                strokeLineCap = StrokeCap.Round,
+                strokeLineJoin = StrokeJoin.Round,
+                pathBuilder = block,
+            )
+        }
+
+    val Crop by lazy {
+        strokeIcon("Crop") {
+            moveTo(6f, 2f); verticalLineTo(18f); horizontalLineTo(22f)
+            moveTo(2f, 6f); horizontalLineTo(18f); verticalLineTo(22f)
+        }
+    }
+    val Cut by lazy {
+        strokeIcon("Cut") {
+            moveTo(9f, 6f); arcToRelative(3f, 3f, 0f, true, true, -6f, 0f); arcToRelative(3f, 3f, 0f, true, true, 6f, 0f)
+            moveTo(9f, 18f); arcToRelative(3f, 3f, 0f, true, true, -6f, 0f); arcToRelative(3f, 3f, 0f, true, true, 6f, 0f)
+            moveTo(8.1f, 8.1f); lineTo(20f, 20f)
+            moveTo(8.1f, 15.9f); lineTo(20f, 4f)
+        }
+    }
+    val Paste by lazy {
+        strokeIcon("Paste") {
+            moveTo(9f, 4f); horizontalLineTo(6f); verticalLineTo(21f); horizontalLineTo(18f); verticalLineTo(4f); horizontalLineTo(15f)
+            moveTo(9f, 2.5f); horizontalLineTo(15f); verticalLineTo(5.5f); horizontalLineTo(9f); close()
+            moveTo(9f, 11f); horizontalLineTo(15f); moveTo(9f, 15f); horizontalLineTo(13f)
+        }
+    }
+    val Duplicate by lazy {
+        strokeIcon("Duplicate") {
+            moveTo(8f, 8f); horizontalLineTo(20f); verticalLineTo(20f); horizontalLineTo(8f); close()
+            moveTo(4f, 16f); verticalLineTo(4f); horizontalLineTo(16f)
+            moveTo(14f, 11f); verticalLineTo(17f); moveTo(11f, 14f); horizontalLineTo(17f)
+        }
+    }
+    val FlipH by lazy {
+        strokeIcon("FlipH") {
+            moveTo(12f, 3f); verticalLineTo(21f)
+            moveTo(9f, 6f); lineTo(3f, 18f); horizontalLineTo(9f); close()
+            moveTo(15f, 6f); lineTo(21f, 18f); horizontalLineTo(15f); close()
+        }
+    }
+    val FlipV by lazy {
+        strokeIcon("FlipV") {
+            moveTo(3f, 12f); horizontalLineTo(21f)
+            moveTo(6f, 9f); lineTo(18f, 3f); verticalLineTo(9f); close()
+            moveTo(6f, 15f); lineTo(18f, 21f); verticalLineTo(15f); close()
+        }
+    }
+    val BringFront by lazy {
+        strokeIcon("BringFront") {
+            moveTo(8f, 8f); horizontalLineTo(20f); verticalLineTo(20f); horizontalLineTo(8f); close()
+            moveTo(4f, 14f); verticalLineTo(4f); horizontalLineTo(14f)
+            moveTo(14f, 17f); verticalLineTo(11f); moveTo(11.5f, 13.5f); lineTo(14f, 11f); lineTo(16.5f, 13.5f)
+        }
+    }
+    val SendBack by lazy {
+        strokeIcon("SendBack") {
+            moveTo(4f, 4f); horizontalLineTo(16f); verticalLineTo(16f); horizontalLineTo(4f); close()
+            moveTo(20f, 10f); verticalLineTo(20f); horizontalLineTo(10f)
+            moveTo(10f, 7f); verticalLineTo(13f); moveTo(7.5f, 10.5f); lineTo(10f, 13f); lineTo(12.5f, 10.5f)
+        }
+    }
+    val Layers by lazy {
+        strokeIcon("Layers") {
+            moveTo(12f, 3f); lineTo(21f, 8f); lineTo(12f, 13f); lineTo(3f, 8f); close()
+            moveTo(3f, 12.5f); lineTo(12f, 17.5f); lineTo(21f, 12.5f)
+            moveTo(3f, 16.5f); lineTo(12f, 21.5f); lineTo(21f, 16.5f)
+        }
+    }
+    val TextAdd by lazy {
+        strokeIcon("TextAdd") {
+            moveTo(4f, 6f); verticalLineTo(4f); horizontalLineTo(14f); verticalLineTo(6f)
+            moveTo(9f, 4f); verticalLineTo(18f); moveTo(7f, 18f); horizontalLineTo(11f)
+            moveTo(18f, 12f); verticalLineTo(20f); moveTo(14f, 16f); horizontalLineTo(22f)
+        }
+    }
+    val SelectAll by lazy {
+        strokeIcon("SelectAll") {
+            moveTo(3f, 7f); verticalLineTo(3f); horizontalLineTo(7f)
+            moveTo(17f, 3f); horizontalLineTo(21f); verticalLineTo(7f)
+            moveTo(21f, 17f); verticalLineTo(21f); horizontalLineTo(17f)
+            moveTo(7f, 21f); horizontalLineTo(3f); verticalLineTo(17f)
+            moveTo(8f, 8f); horizontalLineTo(16f); verticalLineTo(16f); horizontalLineTo(8f); close()
+        }
+    }
+    val Info by lazy {
+        strokeIcon("Info") {
+            moveTo(21f, 12f); arcToRelative(9f, 9f, 0f, true, true, -18f, 0f); arcToRelative(9f, 9f, 0f, true, true, 18f, 0f)
+            moveTo(12f, 11f); verticalLineTo(17f); moveTo(12f, 7.5f); verticalLineTo(7.6f)
+        }
+    }
 }

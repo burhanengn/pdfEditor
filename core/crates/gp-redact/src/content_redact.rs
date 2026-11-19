@@ -172,7 +172,7 @@ impl BBox {
 struct ImageStripTargets {
     redact: Vec<BBox>,
     exact: Vec<BBox>,
-    moves: Vec<(BBox, Matrix2D)>,
+    moves: Vec<(BBox, Matrix2D, ClipPolygon)>,
 }
 
 impl ImageStripTargets {
@@ -180,8 +180,8 @@ impl ImageStripTargets {
         self.redact.iter().any(|rb| img.intersects(rb)) || self.exact.iter().any(|eb| img.matches(eb))
     }
 
-    fn move_for(&self, img: &BBox) -> Option<&Matrix2D> {
-        self.moves.iter().find(|(from, _)| img.matches(from)).map(|(_, m)| m)
+    fn move_for(&self, img: &BBox) -> Option<(&Matrix2D, &ClipPolygon)> {
+        self.moves.iter().find(|(from, _, _)| img.matches(from)).map(|(_, m, c)| (m, c))
     }
 }
 
@@ -244,6 +244,9 @@ pub struct ObjectTransform {
     pub to_rotation_deg: f64,
     pub flip_x_changed: bool,
     pub flip_y_changed: bool,
+    /// Optional crop window (visual page rect, rotated by `to_rotation_deg` about its centre):
+    /// the re-placed object is clipped to it.
+    pub clip: Option<RedactionRect>,
 }
 
 /// Which kind of original object an in-place edit targets.
@@ -259,7 +262,7 @@ pub fn element_in_place_transform(
     page_index: usize,
 ) -> Option<(InPlaceKind, ObjectTransform)> {
     use gp_model::CanvasElement;
-    let (kind, base, orig, rot0, fx_changed, fy_changed) = match el {
+    let (clip, kind, base, orig, rot0, fx_changed, fy_changed) = match el {
         CanvasElement::ImageReplacement {
             base,
             original_rect,
@@ -270,8 +273,16 @@ pub fn element_in_place_transform(
             original_rotation,
             original_flip_x,
             original_flip_y,
+            in_place_clip,
             ..
         } if !deleted.unwrap_or(false) => (
+            in_place_clip.as_ref().map(|c| RedactionRect {
+                page_index,
+                x: c.x,
+                y: c.y,
+                width: c.width,
+                height: c.height,
+            }),
             InPlaceKind::Image,
             base,
             (*original_rect)?,
@@ -285,7 +296,7 @@ pub fn element_in_place_transform(
             in_place: Some(true),
             deleted,
             ..
-        } if !deleted.unwrap_or(false) => (InPlaceKind::Shape, base, (*original_rect)?, 0.0, false, false),
+        } if !deleted.unwrap_or(false) => (None, InPlaceKind::Shape, base, (*original_rect)?, 0.0, false, false),
         _ => return None,
     };
     Some((
@@ -306,6 +317,7 @@ pub fn element_in_place_transform(
             to_rotation_deg: base.rotation,
             flip_x_changed: fx_changed,
             flip_y_changed: fy_changed,
+            clip,
         },
     ))
 }
@@ -326,6 +338,54 @@ pub fn element_text_strip_rects(el: &gp_model::CanvasElement) -> Vec<gp_model::R
 
 /// Builds the user-space matrix `A` with `new_placement = old_placement then A`.
 fn object_transform_matrix(t: &ObjectTransform, crop_box: [f64; 4], rotation: i64) -> Option<(BBox, Matrix2D)> {
+    object_transform_with_clip(t, crop_box, rotation).map(|(b, m, _)| (b, m))
+}
+
+/// Visual (top-down page points) -> PDF user space for a page with `crop_box` and `/Rotate`.
+fn visual_point_to_user(vx: f64, vy: f64, crop_box: [f64; 4], rotation: i64) -> (f64, f64) {
+    let [cx0, cy0, cx1, cy1] = crop_box;
+    match ((rotation % 360) + 360) % 360 {
+        90 => (cx0 + vy, cy0 + vx),
+        180 => (cx1 - vx, cy0 + vy),
+        270 => (cx1 - vy, cy1 - vx),
+        _ => (cx0 + vx, cy1 - vy),
+    }
+}
+
+/// Clip polygon (user space) of a crop window rotated clockwise by `rot_deg` about its centre.
+fn clip_polygon_user(clip: &RedactionRect, rot_deg: f64, crop_box: [f64; 4], rotation: i64) -> [(f64, f64); 4] {
+    let cx = clip.x + clip.width * 0.5;
+    let cy = clip.y + clip.height * 0.5;
+    let (s, c) = rot_deg.to_radians().sin_cos();
+    let hw = clip.width * 0.5;
+    let hh = clip.height * 0.5;
+    let local = [(-hw, -hh), (hw, -hh), (hw, hh), (-hw, hh)];
+    let mut out = [(0.0, 0.0); 4];
+    for (i, (lx, ly)) in local.iter().enumerate() {
+        // y-down visual space: clockwise rotation keeps the usual matrix form.
+        let vx = cx + lx * c - ly * s;
+        let vy = cy + lx * s + ly * c;
+        out[i] = visual_point_to_user(vx, vy, crop_box, rotation);
+    }
+    out
+}
+
+type ClipPolygon = Option<[(f64, f64); 4]>;
+
+fn object_transform_with_clip(
+    t: &ObjectTransform,
+    crop_box: [f64; 4],
+    rotation: i64,
+) -> Option<(BBox, Matrix2D, ClipPolygon)> {
+    let clip = t
+        .clip
+        .filter(|c| c.width > 0.01 && c.height > 0.01)
+        .map(|c| clip_polygon_user(&c, t.to_rotation_deg, crop_box, rotation));
+    let (from, m) = object_transform_matrix_inner(t, crop_box, rotation)?;
+    Some((from, m, clip))
+}
+
+fn object_transform_matrix_inner(t: &ObjectTransform, crop_box: [f64; 4], rotation: i64) -> Option<(BBox, Matrix2D)> {
     let from = visual_rect_to_user_bbox(&t.from, crop_box, rotation);
     let to_rect = RedactionRect {
         page_index: t.from.page_index,
@@ -600,7 +660,7 @@ pub fn redact_pdf_bytes_with_lopdf(
                 .collect(),
             moves: page_image_moves
                 .iter()
-                .filter_map(|t| object_transform_matrix(t, crop_box, rotation))
+                .filter_map(|t| object_transform_with_clip(t, crop_box, rotation))
                 .collect(),
         };
         let shape_boxes = ShapeTargets {
@@ -1340,7 +1400,7 @@ fn rewrite_operations(
                                 if strip_img {
                                     keep_do = false;
                                     modified = true;
-                                } else if let Some(a) = image_boxes
+                                } else if let Some((a, clip)) = image_boxes
                                     .move_for(&raw_bbox)
                                     .or_else(|| image_boxes.move_for(&clipped_bbox))
                                 {
@@ -1348,6 +1408,19 @@ fn rewrite_operations(
                                         keep_do = false;
                                         modified = true;
                                         out_ops.push(Operation::new("q", vec![]));
+                                        if let (Some(poly), Some(inv)) = (clip, gs.ctm.inverse()) {
+                                            // Path coordinates are read under the current CTM.
+                                            for (i, (ux, uy)) in poly.iter().enumerate() {
+                                                let (px, py) = inv.transform_point(*ux, *uy);
+                                                out_ops.push(Operation::new(
+                                                    if i == 0 { "m" } else { "l" },
+                                                    vec![real_op(px), real_op(py)],
+                                                ));
+                                            }
+                                            out_ops.push(Operation::new("h", vec![]));
+                                            out_ops.push(Operation::new("W", vec![]));
+                                            out_ops.push(Operation::new("n", vec![]));
+                                        }
                                         out_ops.push(matrix_op(&local));
                                         out_ops.push(op.clone());
                                         out_ops.push(Operation::new("Q", vec![]));
@@ -1797,6 +1870,7 @@ mod image_target_tests {
                     to_rotation_deg: 0.0,
                     flip_x_changed: false,
                     flip_y_changed: false,
+                    clip: None,
                 }],
                 ..Default::default()
             },
@@ -1811,6 +1885,46 @@ mod image_target_tests {
         assert!((bg.y0 - 391.0).abs() < 0.05 && (bg.y1 - 812.0).abs() < 0.05, "{bg:?}");
         let logo = painted[1].1;
         assert!((logo.x0 - 400.0).abs() < 0.01 && (logo.y0 - 600.0).abs() < 0.01, "{logo:?}");
+    }
+
+    #[test]
+    fn cropping_background_in_place_clips_it_and_keeps_layer_order() {
+        // Full page image re-placed at the same spot but clipped to the top-left quarter.
+        let out = redact_pdf_bytes_with_lopdf(
+            &two_image_pdf(),
+            &[],
+            RedactionOptions {
+                image_transforms: vec![ObjectTransform {
+                    from: RedactionRect { page_index: 0, x: 0.0, y: 0.0, width: 595.0, height: 842.0 },
+                    to_x: 0.0,
+                    to_y: 0.0,
+                    to_width: 595.0,
+                    to_height: 842.0,
+                    from_rotation_deg: 0.0,
+                    to_rotation_deg: 0.0,
+                    flip_x_changed: false,
+                    flip_y_changed: false,
+                    clip: Some(RedactionRect { page_index: 0, x: 10.0, y: 20.0, width: 200.0, height: 100.0 }),
+                }],
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .0;
+        let painted = painted_images(&out);
+        assert_eq!(painted.iter().map(|p| p.0.as_str()).collect::<Vec<_>>(), vec!["Bg", "Logo"]);
+        let doc = Document::load_mem(&out).unwrap();
+        let page_id = *doc.get_pages().get(&1).unwrap();
+        let ops = Content::decode(&doc.get_page_content(page_id)).unwrap().operations;
+        let w = ops.iter().position(|o| o.operator == "W").expect("clip operator");
+        let bg_do = ops.iter().position(|o| o.operator == "Do").unwrap();
+        assert!(w < bg_do, "clip must precede the background Do");
+        // First clip vertex: visual (10,20) -> user (10, 842-20), emitted under the image's
+        // own CTM (595 0 0 842 0 0), i.e. in unit-square coordinates.
+        let m = ops.iter().position(|o| o.operator == "m").unwrap();
+        let x = num_arg(ops[m].operands.first()).unwrap() * 595.0;
+        let y = num_arg(ops[m].operands.get(1)).unwrap() * 842.0;
+        assert!((x - 10.0).abs() < 0.05 && (y - 822.0).abs() < 0.05, "({x},{y})");
     }
 
     #[test]

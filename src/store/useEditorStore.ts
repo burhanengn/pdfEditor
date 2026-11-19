@@ -3317,3 +3317,7 @@ export type {
   StrokeElement,
   HighlightElement,
 };
+
+if (import.meta.env.DEV && typeof window !== 'undefined') {
+  (window as unknown as { __gpEditorStore?: typeof useEditorStore }).__gpEditorStore = useEditorStore;
+}

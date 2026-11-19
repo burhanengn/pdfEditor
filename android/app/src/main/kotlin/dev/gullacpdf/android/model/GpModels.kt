@@ -298,7 +298,8 @@ data class GpOverlayElement(
             "t|$fontSize|$fontFamily|$bold|$italic|$underline|$strikethrough|$scriptMode|$align|" +
                 "$lineHeight|$horizontalScale|$letterSpacing|$embeddedFontId|$colorValue|$opacity|$backgroundColorValue"
         "shapeReplacement" -> "s|$fillColorValue|$colorValue|$strokeWidth|$opacity|$svgPath|$strokeDash"
-        "imageReplacement" -> "i|$opacity|$cropRect"
+        // Crop is applied in place too (clip path around the original image), so it is not a style change.
+        "imageReplacement" -> "i|$opacity"
         else -> kind
     }
 
@@ -320,6 +321,7 @@ data class GpOverlayElement(
         r = 31 * r + rotationDeg.hashCode()
         r = 31 * r + flipX.hashCode()
         r = 31 * r + flipY.hashCode()
+        r = 31 * r + cropRect.hashCode()
         return r
     }
 
@@ -516,10 +518,21 @@ data class GpOverlayElement(
                     put("id", id)
                     put("pageId", pageId)
                     put("kind", if (isRep) "image-replacement" else "image")
-                    put("x", x)
-                    put("y", y)
-                    put("width", width)
-                    put("height", height)
+                    // An in-place crop re-places the FULL original image and clips it to this frame.
+                    val inPlaceCrop = isRep && cropRect != null && movesInPlace()
+                    val full = if (inPlaceCrop) CropMath.fullFramePage(this@GpOverlayElement) else null
+                    put("x", full?.left ?: x)
+                    put("y", full?.top ?: y)
+                    put("width", full?.width ?: width)
+                    put("height", full?.height ?: height)
+                    if (inPlaceCrop) {
+                        put("inPlaceClip", JSONObject().apply {
+                            put("x", x)
+                            put("y", y)
+                            put("width", width)
+                            put("height", height)
+                        })
+                    }
                     put("rotation", rotationDeg)
                     put("opacity", opacity)
                     put("zIndex", if (zIndex == 0) 6 else zIndex)

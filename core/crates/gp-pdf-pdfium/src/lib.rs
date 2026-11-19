@@ -1634,6 +1634,7 @@ mod tests {
             flip_x: None,
             flip_y: None,
             in_place: None,
+            in_place_clip: None,
             original_rotation: None,
             original_flip_x: None,
             original_flip_y: None,

@@ -77,6 +77,7 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import dev.gullacpdf.android.l10n.GpStrings
 import dev.gullacpdf.android.model.GpAppMode
 import dev.gullacpdf.android.model.GpEditorTool
+import dev.gullacpdf.android.model.GpPoint
 import dev.gullacpdf.android.model.GpSheetKind
 import dev.gullacpdf.android.theme.GpReadingTheme
 import dev.gullacpdf.android.theme.GpSpacing
@@ -86,6 +87,9 @@ import dev.gullacpdf.android.theme.LocalGpPalette
 import dev.gullacpdf.android.ui.components.GpIcons
 import dev.gullacpdf.android.ui.editor.CollapsibleBottomTextPanel
 import dev.gullacpdf.android.ui.editor.CompactElementSelectionBar
+import dev.gullacpdf.android.ui.editor.CanvasContextMenu
+import dev.gullacpdf.android.ui.editor.CanvasMenuActions
+import dev.gullacpdf.android.ui.editor.CropModeBar
 import dev.gullacpdf.android.ui.editor.EditorToolDock
 import dev.gullacpdf.android.ui.editor.EditorTopBar
 import dev.gullacpdf.android.ui.editor.ElementInspectorSheet
@@ -298,6 +302,8 @@ private fun GullacRootScreen(
     // Structured Android Back button handling
     BackHandler(enabled = state.hasDocument || state.activeSheet != GpSheetKind.NONE || state.inlineEditElementId != null) {
         when {
+            state.contextMenu != null -> vm.dismissContextMenu()
+            state.cropElementId != null -> vm.finishCrop(apply = false)
             state.inlineEditElementId != null -> vm.endInlineEdit()
             state.activeSheet != GpSheetKind.NONE -> vm.closeSheet()
             state.ghostSignature != null -> vm.setGhostSignature(null)
@@ -513,6 +519,9 @@ private fun GullacRootScreen(
                                 onSetSelectedPathVertexIndices = { indices -> vm.setSelectedPathVertexIndices(indices) },
                                 onTogglePathVertexIndex = { idx -> vm.togglePathVertexIndex(idx) },
                                 onMoveSelectedElementsBy = { pageId, ids, dx, dy -> vm.moveSelectedElementsBy(pageId, ids, dx, dy) },
+                                onLongPress = { req -> vm.openContextMenu(req) },
+                                onCropUpdate = { el -> vm.updateCrop(el) },
+                                onCropFinish = { vm.finishCrop(apply = true) },
                                 onLineModeTap = { pageIdx, pt, snapRadius -> vm.handleLineModeTap(pageIdx, pt, snapRadius) },
                                 onLineModeDragSegment = { pageIdx, p0, p1 -> vm.startDraggingFirstLineSegment(pageIdx, p0, p1) },
                                 onPlaceGhostAt = { pageIdx, pt -> vm.commitGhostSignature(pageIdx, pt) },
@@ -531,6 +540,51 @@ private fun GullacRootScreen(
                                 },
                                 modifier = Modifier.fillMaxSize(),
                             )
+
+                            // Long-press context menu (touch equivalent of the web right-click menu)
+                            val menuReq = state.contextMenu
+                            if (menuReq != null && state.mode == GpAppMode.EDIT) {
+                                CanvasContextMenu(
+                                    request = menuReq,
+                                    element = menuReq.elementId?.let { id -> state.elements.firstOrNull { it.id == id && !it.deleted } },
+                                    hasClipboard = state.clipboardElement != null,
+                                    pageCount = state.pages.size,
+                                    strings = strings,
+                                    actions = CanvasMenuActions(
+                                        onCopy = { vm.copyElement(it) },
+                                        onCut = { vm.cutElement(it) },
+                                        onPaste = { pIdx, x, y ->
+                                            vm.pasteClipboard(pIdx, if (x != null && y != null) GpPoint(x, y) else null)
+                                        },
+                                        onDuplicate = { vm.duplicateElement(it) },
+                                        onDelete = { vm.deleteElement(it) },
+                                        onEditText = { id ->
+                                            val len = state.elements.firstOrNull { it.id == id }?.text?.length ?: 0
+                                            vm.beginInlineEdit(id)
+                                            viewportController.requestInlineCaret(len)
+                                        },
+                                        onFormatText = { id -> vm.selectElement(id); vm.setTextPanelExpanded(true) },
+                                        onCrop = { vm.beginCrop(it) },
+                                        onFlip = { id, h -> vm.flipElement(id, h) },
+                                        onRotate = { id, deg -> vm.rotateElementBy(id, deg) },
+                                        onBringFront = { vm.bringForward(it) },
+                                        onSendBack = { vm.sendBackward(it) },
+                                        onToggleLock = { vm.toggleLockElement(it) },
+                                        onApplyAllPages = { vm.applyElementAcrossPages(it, "all") },
+                                        onProperties = { id -> vm.selectElement(id); vm.setSheet(GpSheetKind.ELEMENT_INSPECTOR) },
+                                        onAddTextAt = { pIdx, x, y -> vm.addTextAt(pIdx, x, y) },
+                                        onAddShapeAt = { pIdx, x, y -> vm.addShapeAt(pIdx, x, y) },
+                                        onInsertImage = {
+                                            imagePickPurpose = ImagePickPurpose.INSERT_IMAGE
+                                            openImageLauncher.launch(arrayOf("image/png", "image/jpeg", "image/webp", "image/*"))
+                                        },
+                                        onAddSignature = { vm.setSheet(GpSheetKind.SIGNATURE_STUDIO) },
+                                        onBoxSelect = { vm.setMarqueeSelectMode(true) },
+                                        onRotatePage = { pIdx -> vm.rotatePageBy(pIdx, 90) },
+                                    ),
+                                    onDismiss = { vm.dismissContextMenu() },
+                                )
+                            }
 
                             // On-page text editing: invisible keyboard target (caret is painted by the viewport).
                             val inlineEl = state.inlineEditElementId?.let { id ->
@@ -618,8 +672,19 @@ private fun GullacRootScreen(
                         }
                     }
 
+                    // Interactive crop replaces every other editor bar until applied or cancelled.
+                    if (state.mode == GpAppMode.EDIT && state.cropElementId != null) {
+                        val cropEl = state.elements.firstOrNull { it.id == state.cropElementId }
+                        CropModeBar(
+                            strings = strings,
+                            canReset = cropEl?.cropRect != null,
+                            onCancel = { vm.finishCrop(apply = false) },
+                            onReset = { vm.resetCrop() },
+                            onDone = { vm.finishCrop(apply = true) },
+                        )
+                    }
                     // Bottom Editor Contextual Bars + Collapsible Text Panel + Primary Tool Dock
-                    if (state.mode == GpAppMode.EDIT) {
+                    if (state.mode == GpAppMode.EDIT && state.cropElementId == null) {
                         Column(modifier = Modifier.fillMaxWidth()) {
                             val selected = state.selectedElement
 
@@ -680,6 +745,9 @@ private fun GullacRootScreen(
                                         onDuplicate = { vm.duplicateElement(selected.id) },
                                         onDelete = { vm.deleteSelectedElement() },
                                         onClose = { vm.selectElement(null) },
+                                        onCrop = if (selected.kind == "image" || selected.kind == "imageReplacement") {
+                                            { vm.beginCrop(selected.id) }
+                                        } else null,
                                         selectedVertexIndices = state.selectedPathVertexIndices,
                                         marqueeSelectMode = state.marqueeSelectMode,
                                         onToggleMarqueeSelect = { vm.toggleMarqueeSelectMode() },
@@ -795,6 +863,7 @@ private fun GullacRootScreen(
                     onSendBackward = { vm.sendBackward(sel.id) },
                     onDuplicate = { vm.duplicateElement(sel.id); vm.closeSheet() },
                     onToggleLock = { vm.toggleLockElement(sel.id) },
+                    onStartCrop = { vm.beginCrop(sel.id) },
                     onApplyAllPages = { sc -> vm.applyElementAcrossPages(sel.id, sc); vm.closeSheet() },
                     onDelete = { vm.deleteSelectedElement(); vm.closeSheet() },
                     onDismiss = { vm.closeSheet() },

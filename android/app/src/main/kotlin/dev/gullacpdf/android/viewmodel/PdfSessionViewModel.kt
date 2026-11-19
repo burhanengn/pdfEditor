@@ -14,6 +14,7 @@ import dev.gullacpdf.android.engine.TileBitmapCache
 import dev.gullacpdf.android.engine.TileKey
 import dev.gullacpdf.android.l10n.GpLocale
 import dev.gullacpdf.android.l10n.GpStrings
+import dev.gullacpdf.android.model.CropMath
 import dev.gullacpdf.android.model.GpAppMode
 import dev.gullacpdf.android.model.GpCleanElementMeta
 import dev.gullacpdf.android.model.GpDetectedImageObj
@@ -120,6 +121,12 @@ data class GpAppState(
     val pageLinks: Map<Int, List<GpPageLink>> = emptyMap(),
     val pageTextPreview: String = "",
     val jumpToPageEvent: Pair<Int, Long>? = null,
+    /** Image element currently in interactive crop mode (handles drag the crop window). */
+    val cropElementId: String? = null,
+    /** Element copied with Copy/Cut, pasted with Paste (long-press menu). */
+    val clipboardElement: GpOverlayElement? = null,
+    /** Long-press context menu anchored at a viewport position. */
+    val contextMenu: GpContextMenuRequest? = null,
 ) {
     val hasDocument: Boolean get() = docId != null && pages.isNotEmpty()
     val canUndo: Boolean get() = undoStack.isNotEmpty()
@@ -129,6 +136,17 @@ data class GpAppState(
     val selectedElements: List<GpOverlayElement>
         get() = elements.filter { it.id in selectedElementIds && !it.deleted }
 }
+
+/** A long-press on the page: where to show the menu and which page point was pressed. */
+data class GpContextMenuRequest(
+    val screenX: Float,
+    val screenY: Float,
+    val pageIndex: Int,
+    val pdfX: Float,
+    val pdfY: Float,
+    /** Element selected by the long-press (null = empty page area). */
+    val elementId: String?,
+)
 
 class PdfSessionViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = PreferencesStore(application)
@@ -284,6 +302,8 @@ class PdfSessionViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun setMode(next: GpAppMode) {
+        if (_state.value.cropElementId != null) finishCrop(apply = true)
+        dismissContextMenu()
         _state.update { st ->
             val nextSelectedId = if (next == GpAppMode.VIEW) null else st.selectedElementId
             val nextSelectedIds = if (next == GpAppMode.VIEW) emptySet() else st.selectedElementIds
@@ -310,6 +330,8 @@ class PdfSessionViewModel(application: Application) : AndroidViewModel(applicati
     }
 
     fun setTool(tool: GpEditorTool) {
+        if (_state.value.cropElementId != null) finishCrop(apply = true)
+        dismissContextMenu()
         _state.update { st ->
             val keepSel = tool == GpEditorTool.SELECT || tool == GpEditorTool.TEXT
             val nextIds = if (keepSel) st.selectedElementIds else emptySet()
@@ -1656,6 +1678,210 @@ class PdfSessionViewModel(application: Application) : AndroidViewModel(applicati
         addElement(dup)
     }
 
+    // ---- Long-press context menu ------------------------------------------------------------
+
+    fun openContextMenu(req: GpContextMenuRequest) {
+        // The long-press already selected whatever is under the finger (or cleared the selection).
+        _state.update { it.copy(contextMenu = req.copy(elementId = it.selectedElementId), textPanelExpanded = false) }
+    }
+
+    fun addTextAt(pageIndex: Int, x: Float, y: Float) {
+        val st = _state.value
+        val page = st.pages.getOrNull(pageIndex) ?: return
+        val id = "el_${System.nanoTime()}"
+        addElement(
+            GpOverlayElement(
+                id = id,
+                pageId = page.id,
+                kind = "textAdd",
+                x = x.toDouble(),
+                y = (y - 10f).toDouble().coerceAtLeast(0.0),
+                width = 180.0,
+                height = 30.0,
+                text = "",
+                fontSize = 14.0,
+                colorValue = st.activeTextColorValue,
+                backgroundColorValue = st.activeTextBgColorValue,
+            ),
+        )
+        beginInlineEdit(id)
+    }
+
+    fun addShapeAt(pageIndex: Int, x: Float, y: Float) {
+        val st = _state.value
+        val page = st.pages.getOrNull(pageIndex) ?: return
+        addElement(
+            GpOverlayElement(
+                id = "shp_${System.nanoTime()}",
+                pageId = page.id,
+                kind = "shape",
+                shapeType = st.activeShapeType,
+                x = x.toDouble() - 55.0,
+                y = y.toDouble() - 35.0,
+                width = 110.0,
+                height = 70.0,
+                colorValue = st.activeStrokeColorValue,
+                fillColorValue = st.activeFillColorValue,
+                strokeWidth = st.activeStrokeWidth,
+            ),
+        )
+    }
+
+    fun dismissContextMenu() {
+        if (_state.value.contextMenu != null) _state.update { it.copy(contextMenu = null) }
+    }
+
+    // ---- Clipboard ---------------------------------------------------------------------------
+
+    fun copyElement(id: String) {
+        val src = _state.value.elements.firstOrNull { it.id == id && !it.deleted } ?: return
+        // Text/image/shape promoted from the PDF become plain overlay copies when pasted.
+        val clip = when (src.kind) {
+            "textEdit" -> src.copy(kind = "textAdd", sourceBlockId = "", pristine = false)
+            "imageReplacement" -> src.copy(kind = "image", sourceBlockId = "", pristine = false)
+            "shapeReplacement" -> src.copy(kind = "shape", sourceBlockId = "", pristine = false)
+            else -> src
+        }
+        _state.update { it.copy(clipboardElement = clip, statusToast = GpStrings(it.locale).t("mobile.copied")) }
+        if (src.kind == "imageReplacement" && clip.imageBytes == null) {
+            val page = _state.value.pages.firstOrNull { it.id == src.pageId } ?: return
+            viewModelScope.launch {
+                val bytes = ensureSourceImageBytes(page, src.sourceBlockId) ?: return@launch
+                _state.update { cur ->
+                    val c = cur.clipboardElement
+                    if (c != null && c.imageBytes == null) cur.copy(clipboardElement = c.copy(imageBytes = bytes)) else cur
+                }
+            }
+        }
+    }
+
+    fun cutElement(id: String) {
+        copyElement(id)
+        deleteElements(setOf(id))
+    }
+
+    /** Pastes the clipboard element on [pageIndex]; centred on [at] (page points) when given. */
+    fun pasteClipboard(pageIndex: Int, at: GpPoint? = null) {
+        val st = _state.value
+        val clip = st.clipboardElement ?: return
+        val page = st.pages.getOrNull(pageIndex) ?: return
+        val nx: Double
+        val ny: Double
+        if (at != null) {
+            nx = (at.x - clip.width / 2.0).coerceIn(0.0, (page.displayWidth - clip.width).coerceAtLeast(0.0))
+            ny = (at.y - clip.height / 2.0).coerceIn(0.0, (page.displayHeight - clip.height).coerceAtLeast(0.0))
+        } else if (clip.pageId == page.id) {
+            nx = clip.x + 18.0
+            ny = clip.y + 18.0
+        } else {
+            nx = clip.x
+            ny = clip.y
+        }
+        val dx = (nx - clip.x).toFloat()
+        val dy = (ny - clip.y).toFloat()
+        val maxZ = st.elements.filter { it.pageId == page.id }.maxOfOrNull { it.zIndex } ?: 0
+        val pasted = clip.cloneForPage("paste_${System.nanoTime()}", page.id).copy(
+            x = nx,
+            y = ny,
+            points = clip.points.map { it.copy(x = it.x + dx, y = it.y + dy) },
+            zIndex = maxZ + 1,
+            locked = false,
+            deleted = false,
+            pristine = false,
+        )
+        addElement(pasted)
+        // A following paste without a position cascades from the last pasted copy.
+        _state.update { it.copy(clipboardElement = pasted) }
+    }
+
+    // ---- Transform helpers -------------------------------------------------------------------
+
+    fun rotateElementBy(id: String, deltaDeg: Double) {
+        val src = _state.value.elements.firstOrNull { it.id == id && !it.deleted } ?: return
+        if (src.locked) return
+        var next = (src.rotationDeg + deltaDeg) % 360.0
+        if (next > 180.0) next -= 360.0
+        if (next <= -180.0) next += 360.0
+        updateElement(src.copy(rotationDeg = next))
+    }
+
+    fun flipElement(id: String, horizontal: Boolean) {
+        val src = _state.value.elements.firstOrNull { it.id == id && !it.deleted } ?: return
+        if (src.locked) return
+        updateElement(if (horizontal) src.copy(flipX = !src.flipX) else src.copy(flipY = !src.flipY))
+    }
+
+    // ---- Interactive image crop --------------------------------------------------------------
+
+    private var cropSessionSnapshot: List<GpOverlayElement>? = null
+
+    fun beginCrop(id: String) {
+        val st = _state.value
+        val el = st.elements.firstOrNull { it.id == id && !it.deleted } ?: return
+        if (el.kind != "image" && el.kind != "imageReplacement") return
+        if (el.locked) {
+            _state.update { it.copy(statusToast = GpStrings(it.locale).t("mobile.elementLocked")) }
+            return
+        }
+        cropSessionSnapshot = st.elements
+        _state.update {
+            it.copy(
+                cropElementId = id,
+                selectedElementId = id,
+                selectedElementIds = setOf(id),
+                selectedPathVertexIndices = emptySet(),
+                contextMenu = null,
+                activeSheet = if (it.activeSheet == GpSheetKind.ELEMENT_INSPECTOR) GpSheetKind.NONE else it.activeSheet,
+                tool = GpEditorTool.SELECT,
+                marqueeSelectMode = false,
+                inlineEditElementId = null,
+            )
+        }
+        if (el.kind == "imageReplacement" && el.imageBytes == null) {
+            val page = st.pages.firstOrNull { it.id == el.pageId } ?: return
+            viewModelScope.launch { ensureSourceImageBytes(page, el.sourceBlockId) }
+        }
+    }
+
+    /** Live crop update from the viewport (no history entry; the whole session is one undo step). */
+    fun updateCrop(updated: GpOverlayElement) {
+        if (_state.value.cropElementId != updated.id) return
+        updateElement(updated, recordHistory = false)
+    }
+
+    fun resetCrop() {
+        val st = _state.value
+        val id = st.cropElementId ?: return
+        val el = st.elements.firstOrNull { it.id == id } ?: return
+        if (el.cropRect == null) return
+        updateCrop(CropMath.withDisplayCrop(el, GpRectF(0f, 0f, 1f, 1f)))
+    }
+
+    fun finishCrop(apply: Boolean) {
+        val st = _state.value
+        val id = st.cropElementId ?: return
+        val snapshot = cropSessionSnapshot
+        cropSessionSnapshot = null
+        if (!apply && snapshot != null) {
+            _state.update { it.copy(elements = snapshot, cropElementId = null) }
+            st.elements.firstOrNull { it.id == id }?.let { rebuildCleanPreviewForPage(it.pageId) }
+            return
+        }
+        val before = snapshot?.firstOrNull { it.id == id }
+        val after = st.elements.firstOrNull { it.id == id }
+        val changed = snapshot != null && before != after
+        _state.update {
+            it.copy(
+                cropElementId = null,
+                undoStack = if (changed) (it.undoStack + listOf(snapshot!!)).takeLast(60) else it.undoStack,
+                redoStack = if (changed) emptyList() else it.redoStack,
+                dirty = it.dirty || changed,
+            )
+        }
+        if (changed) scheduleAutosave()
+    }
+
+
     fun bringForward(id: String) {
         val src = _state.value.elements.firstOrNull { it.id == id } ?: return
         val maxZ = _state.value.elements.maxOfOrNull { it.zIndex } ?: 0
@@ -1715,6 +1941,8 @@ class PdfSessionViewModel(application: Application) : AndroidViewModel(applicati
                 textPanelExpanded = false,
                 activePolylineId = null,
                 inlineEditElementId = null,
+                cropElementId = null,
+                contextMenu = null,
                 dirty = true,
             )
         }
@@ -1741,6 +1969,8 @@ class PdfSessionViewModel(application: Application) : AndroidViewModel(applicati
                 textPanelExpanded = false,
                 activePolylineId = null,
                 inlineEditElementId = null,
+                cropElementId = null,
+                contextMenu = null,
                 dirty = true,
             )
         }

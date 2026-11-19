@@ -402,6 +402,10 @@ pub enum CanvasElement {
         /// layer order and original encoding) instead of stripping and re-drawing it on top.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         in_place: Option<bool>,
+        /// In-place crop: the visible window (visual page rect, rotated by the element rotation
+        /// about its own centre). `base` then describes the FULL uncropped image placement.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        in_place_clip: Option<RectBox>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         original_rotation: Option<f64>,
         #[serde(default, skip_serializing_if = "Option::is_none")]

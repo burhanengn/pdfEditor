@@ -65,6 +65,20 @@ export function InlineTextEditor({
   const lastSignatureRef = useRef<string>('');
   const elementRef = useRef(element);
   elementRef.current = element;
+  // Snapshot of the text/runs when the editing session started. `onInput` keeps the store in
+  // sync on every keystroke, so "did anything change?" must compare against this snapshot,
+  // not against the (already updated) live element.
+  const initialSnapshotRef = useRef<{ text: string; runsSig: string } | null>(null);
+  if (initialSnapshotRef.current === null) {
+    initialSnapshotRef.current = {
+      text: element.text,
+      runsSig: computeRunsSignature(
+        ensureRunsFromElement(element.text, element.runs, element.bold, element.italic),
+        element.bold,
+        element.italic,
+      ),
+    };
+  }
 
   const frame = rectBaseToDisplayFrame(
     { x: element.x, y: element.y, width: element.width, height: element.height },
@@ -254,16 +268,33 @@ export function InlineTextEditor({
       ed.style.minHeight = prevMinH;
       const renderedLineCount = Math.max(1, Math.round(contentHeightPx / lineStepPx));
       const parsed = parseContainerRuns(ed, el.bold, el.italic);
-      const existingRuns = ensureRunsFromElement(el.text, el.runs, el.bold, el.italic);
-      const runsChanged =
-        computeRunsSignature(parsed.runs, el.bold, el.italic) !==
-        computeRunsSignature(existingRuns, el.bold, el.italic);
-      changed = parsed.text !== el.text || runsChanged;
-      if (changed) {
+      const parsedSig = computeRunsSignature(parsed.runs, el.bold, el.italic);
+      const snapshot = initialSnapshotRef.current;
+      changed =
+        !snapshot || parsed.text !== snapshot.text || parsedSig !== snapshot.runsSig;
+      const liveSig = computeRunsSignature(
+        ensureRunsFromElement(el.text, el.runs, el.bold, el.italic),
+        el.bold,
+        el.italic,
+      );
+      const needsSync =
+        parsed.text !== el.text ||
+        parsedSig !== liveSig ||
+        el.renderedLineCount !== renderedLineCount;
+      if (changed && needsSync) {
         updateElements(
           [{ id: el.id, patch: { text: parsed.text, runs: parsed.runs, renderedLineCount } }],
           false,
         );
+      }
+    }
+    // Style edits made from the inspector during the session (font, size, color…) also count.
+    if (!changed) {
+      const state = useEditorStore.getState();
+      const before = state.transactionBaseline?.elements.find((x) => x.id === el.id);
+      const now = state.elements.find((x) => x.id === el.id);
+      if (before && now && JSON.stringify(before) !== JSON.stringify(now)) {
+        changed = true;
       }
     }
     if (changed) {

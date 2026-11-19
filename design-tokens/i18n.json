@@ -424,16 +424,16 @@
     "tr": "Metin panoya kopyalandı"
   },
   "mobile.alignLeft": {
-    "en": "Left",
-    "tr": "Sola Yasla"
+    "en": "Align Left",
+    "tr": "Sola Hizala"
   },
   "mobile.alignCenter": {
     "en": "Center",
     "tr": "Ortala"
   },
   "mobile.alignRight": {
-    "en": "Right",
-    "tr": "Sağa Yasla"
+    "en": "Align Right",
+    "tr": "Sağa Hizala"
   },
   "mobile.alignJustify": {
     "en": "Justify",
@@ -519,17 +519,9 @@
     "en": "Delete Points",
     "tr": "Noktaları Sil"
   },
-  "mobile.alignLeft": {
-    "en": "Align Left",
-    "tr": "Sola Hizala"
-  },
   "mobile.alignCenterH": {
     "en": "Center Horizontal",
     "tr": "Yatay Ortala"
-  },
-  "mobile.alignRight": {
-    "en": "Align Right",
-    "tr": "Sağa Hizala"
   },
   "mobile.alignTop": {
     "en": "Align Top",
@@ -550,5 +542,113 @@
   "mobile.distributeV": {
     "en": "Distribute Vertically",
     "tr": "Dikey Dağıt"
+  },
+  "mobile.copied": {
+    "en": "Copied",
+    "tr": "Kopyalandı"
+  },
+  "mobile.elementLocked": {
+    "en": "This object is locked. Unlock it first.",
+    "tr": "Bu nesne kilitli. Önce kilidini açın."
+  },
+  "mobile.ctx.copy": {
+    "en": "Copy",
+    "tr": "Kopyala"
+  },
+  "mobile.ctx.cut": {
+    "en": "Cut",
+    "tr": "Kes"
+  },
+  "mobile.ctx.paste": {
+    "en": "Paste",
+    "tr": "Yapıştır"
+  },
+  "mobile.ctx.pasteHere": {
+    "en": "Paste here",
+    "tr": "Buraya yapıştır"
+  },
+  "mobile.ctx.editText": {
+    "en": "Edit text",
+    "tr": "Metni düzenle"
+  },
+  "mobile.ctx.formatText": {
+    "en": "Text style",
+    "tr": "Yazı biçimi"
+  },
+  "mobile.ctx.crop": {
+    "en": "Crop",
+    "tr": "Kırp"
+  },
+  "mobile.ctx.flipH": {
+    "en": "Flip horizontal",
+    "tr": "Yatay çevir"
+  },
+  "mobile.ctx.flipV": {
+    "en": "Flip vertical",
+    "tr": "Dikey çevir"
+  },
+  "mobile.ctx.rotateLeft": {
+    "en": "Rotate left",
+    "tr": "Sola döndür"
+  },
+  "mobile.ctx.rotateRight": {
+    "en": "Rotate right",
+    "tr": "Sağa döndür"
+  },
+  "mobile.ctx.bringFront": {
+    "en": "Bring to front",
+    "tr": "En öne getir"
+  },
+  "mobile.ctx.sendBack": {
+    "en": "Send to back",
+    "tr": "En arkaya gönder"
+  },
+  "mobile.ctx.properties": {
+    "en": "Properties",
+    "tr": "Özellikler"
+  },
+  "mobile.ctx.applyAll": {
+    "en": "Apply to all pages",
+    "tr": "Tüm sayfalara uygula"
+  },
+  "mobile.ctx.addTextHere": {
+    "en": "Add text here",
+    "tr": "Buraya metin ekle"
+  },
+  "mobile.ctx.addShapeHere": {
+    "en": "Add shape here",
+    "tr": "Buraya şekil ekle"
+  },
+  "mobile.ctx.addImage": {
+    "en": "Insert image",
+    "tr": "Resim ekle"
+  },
+  "mobile.ctx.boxSelect": {
+    "en": "Select area",
+    "tr": "Alan seç"
+  },
+  "mobile.ctx.rotatePage": {
+    "en": "Rotate page",
+    "tr": "Sayfayı döndür"
+  },
+  "mobile.ctx.addSignature": {
+    "en": "Add signature",
+    "tr": "İmza ekle"
+  },
+  "mobile.crop.title": {
+    "en": "Crop image",
+    "tr": "Resmi kırp"
+  },
+  "mobile.crop.hint": {
+    "en": "Drag the corners or edges",
+    "tr": "Köşeleri veya kenarları sürükleyin"
+  },
+  "mobile.crop.reset": {
+    "en": "Reset",
+    "tr": "Sıfırla"
+  },
+  "mobile.crop.done": {
+    "en": "Done",
+    "tr": "Tamam"
   }
 }

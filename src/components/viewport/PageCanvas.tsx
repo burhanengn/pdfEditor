@@ -538,11 +538,15 @@ export function PageCanvas({
   // Transitional mask ONLY during ~15ms before clean-stripped canvas completes for edited text;
   // deleted/moved images never draw an opaque white box so underlying tables stay visible.
   const maskedOriginalRects = useMemo(() => {
-    if (isBaseStripped) return [];
     const masks: Array<{ id: string; rect: RectBox; color: string }> = [];
     for (const el of pageElements) {
       if (el.kind === 'text-edit') {
-        if (isUnmodifiedTextEdit(el) && editingTextElementId !== el.id) continue;
+        const unmodified = isUnmodifiedTextEdit(el);
+        if (unmodified && editingTextElementId !== el.id) continue;
+        // Modified text is removed from the stripped base render; a text block that is only
+        // being edited (not yet changed) is NOT part of the strip request, so it still needs
+        // its own mask even when other blocks on the page already use the clean render.
+        if (isBaseStripped && !unmodified) continue;
         masks.push({ id: `mask-${el.id}`, rect: el.originalRect, color: el.maskColor ?? '#ffffff' });
       }
     }
@@ -1590,7 +1594,9 @@ export function PageCanvas({
           baseHeight={page.baseHeight}
           userRotation={page.userRotation}
           zoom={zoom}
-          isBaseStripped={isBaseStripped}
+          isBaseStripped={
+            isBaseStripped && !(el.kind === 'text-edit' && isUnmodifiedTextEdit(el))
+          }
           onFinish={() => setEditingTextElementId(null)}
         />
       );

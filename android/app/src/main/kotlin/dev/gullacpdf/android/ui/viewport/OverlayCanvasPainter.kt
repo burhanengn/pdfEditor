@@ -82,20 +82,56 @@ data class SnapGuideLines(
     val horizontalPdfY: Float? = null,
 )
 
-class ElementBitmapCache {
-    private val map = LinkedHashMap<String, Bitmap>(16, 0.75f, true)
-    private val lock = Any()
+/** Edge-midpoint resize handles appear only on boxes at least this many dp long. */
+internal const val SELECTION_MID_HANDLE_MIN_DP = 44f
 
-    fun getOrDecode(el: GpOverlayElement): Bitmap? {
-        val bytes = el.imageBytes ?: return null
-        if (bytes.isEmpty()) return null
+/**
+ * Decoded overlay image bitmaps. Decoding a large PNG/JPEG on the draw pass caused visible
+ * frame drops, so misses are decoded on a background thread and [onDecoded] asks the viewport
+ * to repaint; the frame in between shows a light placeholder.
+ */
+class ElementBitmapCache(private val onDecoded: () -> Unit = {}) {
+    private val map = LinkedHashMap<String, Bitmap>(16, 0.75f, true)
+    private val pending = HashSet<String>()
+    private val lock = Any()
+    private val executor = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "gp-overlay-decode").apply { priority = Thread.NORM_PRIORITY - 1; isDaemon = true }
+    }
+    private val mainHandler = android.os.Handler(android.os.Looper.getMainLooper())
+
+    private fun keyOf(el: GpOverlayElement, bytes: ByteArray): String {
         val head = if (bytes.size >= 4) {
             (bytes[0].toInt() and 0xFF) xor ((bytes[1].toInt() and 0xFF) shl 8) xor ((bytes[2].toInt() and 0xFF) shl 16)
         } else 0
-        val key = "${el.id}:${bytes.size}:$head"
+        return "${el.id}:${bytes.size}:$head"
+    }
+
+    /** Cached bitmap, or null while it is being decoded in the background. */
+    fun getOrDecode(el: GpOverlayElement): Bitmap? {
+        val bytes = el.imageBytes ?: return null
+        if (bytes.isEmpty()) return null
+        val key = keyOf(el, bytes)
         synchronized(lock) {
             map[key]?.let { if (!it.isRecycled) return it }
+            if (!pending.add(key)) return null
         }
+        executor.execute {
+            val bmp = decode(bytes)
+            synchronized(lock) {
+                pending.remove(key)
+                if (bmp != null) {
+                    if (map.size >= 24) {
+                        map.keys.firstOrNull()?.let { map.remove(it) }
+                    }
+                    map[key] = bmp
+                }
+            }
+            if (bmp != null) mainHandler.post(onDecoded)
+        }
+        return null
+    }
+
+    private fun decode(bytes: ByteArray): Bitmap? {
         val boundsOpts = BitmapFactory.Options().apply { inJustDecodeBounds = true }
         BitmapFactory.decodeByteArray(bytes, 0, bytes.size, boundsOpts)
         var sample = 1
@@ -107,15 +143,7 @@ class ElementBitmapCache {
             inSampleSize = sample
             inPreferredConfig = Bitmap.Config.ARGB_8888
         }
-        val bmp = BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts) ?: return null
-        synchronized(lock) {
-            if (map.size >= 24) {
-                val eldest = map.keys.firstOrNull()
-                if (eldest != null) map.remove(eldest)
-            }
-            map[key] = bmp
-        }
-        return bmp
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size, decodeOpts)?.also { it.prepareToDraw() }
     }
 
     fun clear() {
@@ -1172,20 +1200,26 @@ class OverlayCanvasPainter(
         nc.drawCircle(topCenterX, rotY, handleR, fillPaint)
         nc.drawCircle(topCenterX, rotY, handleR, strokePaint)
 
-        // 8 resize handles
-        val handles = arrayOf(
-            rect.left to rect.top,
-            rect.centerX() to rect.top,
-            rect.right to rect.top,
-            rect.right to rect.centerY(),
-            rect.right to rect.bottom,
-            rect.centerX() to rect.bottom,
-            rect.left to rect.bottom,
-            rect.left to rect.centerY(),
-        )
-        for ((hx, hy) in handles) {
-            nc.drawCircle(hx, hy, 5.8f * density, fillPaint)
-            nc.drawCircle(hx, hy, 5.8f * density, strokePaint)
+        // Resize handles: corners always, edge midpoints only when the box is big enough that
+        // they don't cover the content (must match PdfViewport's handle hit-test).
+        val showMidX = rect.width() >= SELECTION_MID_HANDLE_MIN_DP * density
+        val showMidY = rect.height() >= SELECTION_MID_HANDLE_MIN_DP * density
+        val hr = 5.2f * density
+        fun handle(hx: Float, hy: Float) {
+            nc.drawCircle(hx, hy, hr, fillPaint)
+            nc.drawCircle(hx, hy, hr, strokePaint)
+        }
+        handle(rect.left, rect.top)
+        handle(rect.right, rect.top)
+        handle(rect.right, rect.bottom)
+        handle(rect.left, rect.bottom)
+        if (showMidX) {
+            handle(rect.centerX(), rect.top)
+            handle(rect.centerX(), rect.bottom)
+        }
+        if (showMidY) {
+            handle(rect.right, rect.centerY())
+            handle(rect.left, rect.centerY())
         }
 
         // Draggable vertex node handles for polylines/paths

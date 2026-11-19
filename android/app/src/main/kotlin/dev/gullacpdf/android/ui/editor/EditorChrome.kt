@@ -71,6 +71,8 @@ import androidx.compose.ui.text.input.TextFieldValue
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.ui.zIndex
 import dev.gullacpdf.android.l10n.GpStrings
 import dev.gullacpdf.android.model.GpEditorTool
@@ -125,8 +127,12 @@ fun EditorTopBar(
                         containerColor = palette.accent,
                         contentColor = palette.accentForeground,
                     ),
+                    shape = RoundedCornerShape(12.dp),
+                    contentPadding = PaddingValues(start = 10.dp, end = 14.dp),
                     modifier = Modifier.height(38.dp),
                 ) {
+                    Icon(GpIcons.Check, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(6.dp))
                     Text(strings.t("action.done"), style = GpTypography.label)
                 }
                 Spacer(Modifier.width(GpSpacing.s2))
@@ -247,9 +253,9 @@ fun EditorToolDock(
                 modifier = Modifier
                     .fillMaxWidth()
                     .horizontalScroll(rememberScrollState())
-                    .padding(horizontal = GpSpacing.s2, vertical = 6.dp),
+                    .padding(horizontal = GpSpacing.s2, vertical = 4.dp),
                 verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                horizontalArrangement = Arrangement.spacedBy(2.dp),
             ) {
                 ToolDockItem(GpIcons.SelectArrow, strings.t("mobile.tool.select"), activeTool == GpEditorTool.SELECT && !marqueeSelectMode) {
                     onSelectTool(GpEditorTool.SELECT)
@@ -257,20 +263,18 @@ fun EditorToolDock(
                 ToolDockItem(GpIcons.BoxSelect, strings.t("mobile.boxSelect"), activeTool == GpEditorTool.SELECT && marqueeSelectMode) {
                     onToggleMarqueeSelect()
                 }
+                ToolDockDivider()
                 ToolDockItem(GpIcons.TextTool, strings.t("mobile.tool.text"), activeTool == GpEditorTool.TEXT) {
                     onSelectTool(GpEditorTool.TEXT)
                 }
                 ToolDockItem(GpIcons.DrawPen, strings.t("mobile.tool.draw"), activeTool == GpEditorTool.DRAW) {
                     onSelectTool(GpEditorTool.DRAW)
                 }
-                ToolDockItem(GpIcons.Eraser, strings.t("mobile.tool.eraser"), activeTool == GpEditorTool.ERASER) {
-                    onSelectTool(GpEditorTool.ERASER)
-                }
                 ToolDockItem(GpIcons.Highlight, strings.t("mobile.tool.highlight"), activeTool == GpEditorTool.HIGHLIGHT) {
                     onSelectTool(GpEditorTool.HIGHLIGHT)
                 }
-                ToolDockItem(GpIcons.Signature, strings.t("mobile.tool.signature"), activeTool == GpEditorTool.SIGNATURE) {
-                    onOpenSignatureStudio()
+                ToolDockItem(GpIcons.Eraser, strings.t("mobile.tool.eraser"), activeTool == GpEditorTool.ERASER) {
+                    onSelectTool(GpEditorTool.ERASER)
                 }
                 ToolDockItem(GpIcons.ShapeRect, strings.t("mobile.tool.shape"), activeTool == GpEditorTool.SHAPE) {
                     onSelectTool(GpEditorTool.SHAPE)
@@ -278,44 +282,27 @@ fun EditorToolDock(
                 ToolDockItem(GpIcons.LineTool, strings.t("mobile.tool.line"), activeTool == GpEditorTool.LINE) {
                     onSelectTool(GpEditorTool.LINE)
                 }
+                ToolDockDivider()
+                ToolDockItem(GpIcons.Signature, strings.t("mobile.tool.signature"), activeTool == GpEditorTool.SIGNATURE) {
+                    onOpenSignatureStudio()
+                }
                 ToolDockItem(GpIcons.ImageAdd, strings.t("mobile.tool.image"), activeTool == GpEditorTool.IMAGE) {
                     onInsertImage()
                 }
                 ToolDockItem(GpIcons.Redact, strings.t("mobile.tool.redact"), activeTool == GpEditorTool.REDACT) {
                     onSelectTool(GpEditorTool.REDACT)
                 }
+                ToolDockDivider()
                 ToolDockItem(GpIcons.Pages, strings.t("nav.pages"), false) {
                     onOpenOrganizeSheet()
                 }
 
-                // Tool-Lock toggle button (keeps active drawing/shape tool locked across draws)
-                Surface(
-                    color = if (toolLocked) palette.warning.copy(alpha = 0.2f) else Color.Transparent,
-                    shape = RoundedCornerShape(10.dp),
-                    border = if (toolLocked) BorderStroke(1.dp, palette.warning) else null,
-                    modifier = Modifier
-                        .heightIn(min = GpComponents.primaryTouchTarget)
-                        .clickable { onToggleToolLock() },
-                ) {
-                    Column(
-                        modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                        verticalArrangement = Arrangement.Center,
-                    ) {
-                        Icon(
-                            imageVector = if (toolLocked) GpIcons.Lock else GpIcons.LockOpen,
-                            contentDescription = strings.t("mobile.toolLock"),
-                            tint = if (toolLocked) palette.warning else palette.textSecondary,
-                            modifier = Modifier.size(19.dp),
-                        )
-                        Spacer(Modifier.height(2.dp))
-                        Text(
-                            text = strings.t("mobile.toolLock"),
-                            style = GpTypography.caption,
-                            color = if (toolLocked) palette.warning else palette.textSecondary,
-                        )
-                    }
-                }
+                // Tool-Lock toggle (keeps the active drawing/shape tool after each use)
+                ToolDockItem(
+                    if (toolLocked) GpIcons.Lock else GpIcons.LockOpen,
+                    strings.t("mobile.toolLock"),
+                    toolLocked,
+                ) { onToggleToolLock() }
             }
         }
     }
@@ -329,33 +316,53 @@ private fun ToolDockItem(
     onClick: () -> Unit,
 ) {
     val palette = LocalGpPalette.current
-    Surface(
-        color = if (selected) palette.accent.copy(alpha = 0.18f) else Color.Transparent,
-        shape = RoundedCornerShape(10.dp),
-        border = if (selected) BorderStroke(1.dp, palette.accent) else null,
+    val pillColor by androidx.compose.animation.animateColorAsState(
+        targetValue = if (selected) palette.accent.copy(alpha = 0.20f) else Color.Transparent,
+        label = "toolPill",
+    )
+    val tint by androidx.compose.animation.animateColorAsState(
+        targetValue = if (selected) palette.accent else palette.textPrimary,
+        label = "toolTint",
+    )
+    Column(
         modifier = Modifier
+            .width(62.dp)
             .heightIn(min = GpComponents.primaryTouchTarget)
-            .clickable(onClick = onClick),
+            .clip(RoundedCornerShape(14.dp))
+            .clickable(onClick = onClick)
+            .padding(vertical = 4.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
     ) {
-        Column(
-            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-            horizontalAlignment = Alignment.CenterHorizontally,
-            verticalArrangement = Arrangement.Center,
+        Box(
+            contentAlignment = Alignment.Center,
+            modifier = Modifier
+                .size(width = 50.dp, height = 30.dp)
+                .clip(RoundedCornerShape(15.dp))
+                .background(pillColor),
         ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = label,
-                tint = if (selected) palette.accent else palette.textPrimary,
-                modifier = Modifier.size(20.dp),
-            )
-            Spacer(Modifier.height(2.dp))
-            Text(
-                text = label,
-                style = GpTypography.caption,
-                color = if (selected) palette.accent else palette.textSecondary,
-            )
+            Icon(imageVector = icon, contentDescription = label, tint = tint, modifier = Modifier.size(21.dp))
         }
+        Spacer(Modifier.height(3.dp))
+        Text(
+            text = label,
+            style = GpTypography.caption.copy(fontSize = 11.sp),
+            color = if (selected) palette.accent else palette.textSecondary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
+}
+
+@Composable
+private fun ToolDockDivider() {
+    Box(
+        modifier = Modifier
+            .padding(horizontal = 4.dp)
+            .width(1.dp)
+            .height(30.dp)
+            .background(LocalGpPalette.current.borderSubtle),
+    )
 }
 
 @Composable
@@ -999,6 +1006,7 @@ fun CompactElementSelectionBar(
     onToggleMarqueeSelect: () -> Unit = {},
     onToggleVerticesSmooth: (Boolean?) -> Unit = {},
     onDeleteSelectedVertices: () -> Unit = {},
+    onCrop: (() -> Unit)? = null,
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalGpPalette.current
@@ -1088,6 +1096,11 @@ fun CompactElementSelectionBar(
                     )
                 }
                 Spacer(Modifier.weight(1f))
+                if (onCrop != null) {
+                    IconButton(onClick = onCrop, modifier = Modifier.size(40.dp)) {
+                        Icon(GpIcons.Crop, contentDescription = strings.t("mobile.ctx.crop"), tint = palette.textPrimary, modifier = Modifier.size(20.dp))
+                    }
+                }
                 IconButton(onClick = onOpenFullInspector, modifier = Modifier.size(40.dp)) {
                     Icon(GpIcons.Tune, contentDescription = strings.t("mobile.tool.inspect"), tint = palette.accent, modifier = Modifier.size(20.dp))
                 }
@@ -1117,6 +1130,7 @@ fun ElementInspectorSheet(
     onSendBackward: () -> Unit,
     onDuplicate: () -> Unit,
     onToggleLock: () -> Unit,
+    onStartCrop: () -> Unit = {},
     onApplyAllPages: (String) -> Unit,
     onDelete: () -> Unit,
     onDismiss: () -> Unit,
@@ -1314,22 +1328,15 @@ fun ElementInspectorSheet(
                         modifier = Modifier.weight(1f),
                     )
                 }
-                Spacer(Modifier.height(6.dp))
-                Text(if (strings.isTr) "Kırpma (Yatay)" else "Crop Trim", style = GpTypography.caption, color = palette.textSecondary)
-                val curCrop = element.cropRect ?: GpRectF(0f, 0f, 1f, 1f)
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    RangeSlider(
-                        value = curCrop.left..curCrop.right,
-                        onValueChange = { rng ->
-                            if (rng.endInclusive - rng.start >= 0.12f) {
-                                onUpdate(element.copy(cropRect = curCrop.copy(left = rng.start, right = rng.endInclusive)))
-                            }
-                        },
-                        modifier = Modifier.weight(1f),
-                    )
-                    TextButton(onClick = { onUpdate(element.copy(cropRect = null)) }) {
-                        Text(if (strings.isTr) "Sıfırla" else "Reset")
-                    }
+                Spacer(Modifier.height(8.dp))
+                OutlinedButton(
+                    onClick = { onDismiss(); onStartCrop() },
+                    enabled = !element.locked,
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Icon(GpIcons.Crop, contentDescription = null, modifier = Modifier.size(18.dp))
+                    Spacer(Modifier.width(8.dp))
+                    Text(strings.t("mobile.ctx.crop"))
                 }
             }
 

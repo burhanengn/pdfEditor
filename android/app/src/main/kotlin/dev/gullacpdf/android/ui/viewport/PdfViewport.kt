@@ -46,6 +46,8 @@ import androidx.compose.ui.input.pointer.PointerId
 import androidx.compose.ui.input.pointer.PointerType
 import androidx.compose.ui.input.pointer.changedToDownIgnoreConsumed
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.hapticfeedback.HapticFeedbackType
+import androidx.compose.ui.platform.LocalHapticFeedback
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.unit.dp
@@ -56,6 +58,7 @@ import dev.gullacpdf.android.engine.TileKey
 import dev.gullacpdf.android.model.GpAppMode
 import dev.gullacpdf.android.model.GpDetectedImageObj
 import dev.gullacpdf.android.model.GpDetectedShapeObj
+import dev.gullacpdf.android.model.CropMath
 import dev.gullacpdf.android.model.GpDetectedTextBlock
 import dev.gullacpdf.android.model.GpEditorTool
 import dev.gullacpdf.android.model.GpOverlayElement
@@ -69,6 +72,7 @@ import dev.gullacpdf.android.theme.GpTypography
 import dev.gullacpdf.android.theme.LocalGpPalette
 import dev.gullacpdf.android.ui.text.GpTextEngine
 import dev.gullacpdf.android.viewmodel.GpAppState
+import dev.gullacpdf.android.viewmodel.GpContextMenuRequest
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -234,8 +238,10 @@ class PdfViewportController {
     }
 }
 
-private enum class ManipKind { NONE, MOVE, MOVE_GROUP, RESIZE, ROTATE, VERTEX, CREATE_SHAPE, CREATE_LINE_DRAG, MARQUEE_OBJECTS, MARQUEE_VERTICES }
-private enum class GesturePhase { IDLE, PENDING_DOUBLE_TAP, ADOBE_ZOOM, PAN, PINCH, DRAW_STROKE, MANIP }
+private enum class ManipKind { NONE, MOVE, MOVE_GROUP, RESIZE, ROTATE, VERTEX, CREATE_SHAPE, CREATE_LINE_DRAG, MARQUEE_OBJECTS, MARQUEE_VERTICES, CROP }
+private enum class GesturePhase { IDLE, PENDING_DOUBLE_TAP, ADOBE_ZOOM, PAN, PINCH, DRAW_STROKE, MANIP, LONG_PRESSED }
+
+private const val LONG_PRESS_MS = 480L
 
 private fun pageNeedsTransparentPdf(
     pageId: String,
@@ -268,16 +274,21 @@ fun PdfViewport(
     onSetSelectedPathVertexIndices: (Set<Int>) -> Unit = {},
     onTogglePathVertexIndex: (Int) -> Unit = {},
     onMoveSelectedElementsBy: (String, Set<String>, Double, Double) -> Unit = { _, _, _, _ -> },
+    onLongPress: (GpContextMenuRequest) -> Unit = {},
+    onCropUpdate: (GpOverlayElement) -> Unit = {},
+    onCropFinish: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val palette = LocalGpPalette.current
     val context = LocalContext.current
     val density = LocalDensity.current.density
     val scope = rememberCoroutineScope()
+    val haptic = LocalHapticFeedback.current
+    val cropChrome = remember { CropChromePainter() }
 
     val currentState by rememberUpdatedState(state)
     val bufferPool = remember { DirectBufferPool() }
-    val elementBitmapCache = remember { ElementBitmapCache() }
+    val elementBitmapCache = remember { ElementBitmapCache(onDecoded = { controller.tilePaintTick++ }) }
     val overlayPainter = remember(context) {
         OverlayCanvasPainter(elementBitmapCache, context.assets, context.cacheDir)
     }
@@ -667,8 +678,14 @@ fun PdfViewport(
         return false
     }
 
-    fun handleSingleTapAt(screenPos: GpPoint) {
+    fun handleSingleTapAt(screenPos: GpPoint, forMenu: Boolean = false) {
         val st = currentState
+        if (st.cropElementId != null) {
+            // Tapping outside the crop handles while cropping applies the crop.
+            if (!forMenu) onCropFinish()
+            return
+        }
+        val tool = if (forMenu) GpEditorTool.SELECT else st.tool
         val hit = hitPagePdfPoint(screenPos)
         if (hit == null) {
             if (st.mode == GpAppMode.EDIT) onSelectElement(null, false)
@@ -695,13 +712,13 @@ fun PdfViewport(
             return
         }
 
-        if (st.tool == GpEditorTool.LINE) {
+        if (tool == GpEditorTool.LINE) {
             val snapRadiusPdf = 20f / controller.zoom.coerceAtLeast(0.25f)
             onLineModeTap(pageIdx, pdfPt, snapRadiusPdf)
             return
         }
 
-        if (st.tool == GpEditorTool.TEXT) {
+        if (tool == GpEditorTool.TEXT) {
             val existingText = st.elements.lastOrNull { e ->
                 e.pageId == page.id && !e.deleted && e.isTextKind &&
                     GpRectF.fromLTWH(e.x.toFloat(), e.y.toFloat(), e.width.toFloat(), e.height.toFloat())
@@ -743,7 +760,7 @@ fun PdfViewport(
             return
         }
 
-        if (st.tool == GpEditorTool.SHAPE) {
+        if (tool == GpEditorTool.SHAPE) {
             onAddElement(
                 GpOverlayElement(
                     id = "shp_${System.nanoTime()}",
@@ -783,13 +800,13 @@ fun PdfViewport(
             .filter { !it.behindContent && !it.isBackgroundLayer && it.containsHit(hitTolPdf) }
             .minByOrNull { (it.width * it.height).coerceAtLeast(1.0) }
         if (fgHitEl != null) {
-            if (tapTextElement(fgHitEl, pdfPt)) return
+            if (!forMenu && tapTextElement(fgHitEl, pdfPt)) return
             onSelectElement(fgHitEl.id, false)
             return
         }
 
         val analysis = st.pageAnalyses[page.id]
-        if (st.tool == GpEditorTool.SELECT && analysis != null) {
+        if (tool == GpEditorTool.SELECT && analysis != null) {
             val hitBlk = analysis.textBlocks
                 .filter { it.id !in promotedOrDeletedIds && it.rect.inflate(3f).contains(pdfPt.x, pdfPt.y) }
                 .minByOrNull { it.width * it.height }
@@ -955,6 +972,10 @@ fun PdfViewport(
                         var manipSiblings = emptyList<GpRectF>()
                         var manipDragged = false
 
+                        // Long-press (context menu) state
+                        var longPressArmed = false
+                        var downTimeMs = 0L
+
                         fun cancelAllSingleFingerWork() {
                             draftStrokePdf.clear()
                             draftStrokePageIdx = -1
@@ -982,6 +1003,28 @@ fun PdfViewport(
                             if (st.mode != GpAppMode.EDIT || st.ghostSignature != null) return false
                             val scalePxPerPt = controller.zoom * density
                             val layouts = ViewportLayoutMath.computePageRects(st.pages, controller.zoom, controller.viewportWidthPx, density)
+
+                            // Interactive crop: handles resize the window, inside drags it, outside pans.
+                            val cropId = st.cropElementId
+                            if (cropId != null) {
+                                val cel = st.elements.firstOrNull { it.id == cropId && !it.deleted } ?: return false
+                                val pl = layouts.firstOrNull { it.page.id == cel.pageId } ?: return false
+                                val handle = cropHandleAt(
+                                    cel,
+                                    pl.rectSurface.left - controller.scrollX,
+                                    pl.rectSurface.top - controller.scrollY,
+                                    scalePxPerPt,
+                                    density,
+                                    pos,
+                                ) ?: return false
+                                manipKind = ManipKind.CROP
+                                manipHandle = handle
+                                manipPageIdx = pl.pageIndex
+                                manipOriginEl = cel
+                                manipLatestEl = cel
+                                manipDragged = false
+                                return true
+                            }
 
                             // Multi-select drag group (when not in box-select mode)
                             if (st.selectedElementIds.size > 1 && st.tool == GpEditorTool.SELECT && !st.marqueeSelectMode) {
@@ -1085,19 +1128,28 @@ fun PdfViewport(
                                         }
                                     }
 
-                                    // 3) 8 corner/edge resize handles (44dp touch zones)
-                                    val handleMap = listOf(
-                                        "nw" to (rect.left to rect.top),
-                                        "n" to (cx to rect.top),
-                                        "ne" to (rect.right to rect.top),
-                                        "e" to (rect.right to cy),
-                                        "se" to (rect.right to rect.bottom),
-                                        "s" to (cx to rect.bottom),
-                                        "sw" to (rect.left to rect.bottom),
-                                        "w" to (rect.left to cy),
-                                    )
+                                    // 3) Corner/edge resize handles. Small boxes only expose corners and a
+                                    //    tighter touch zone so taps on the content still move / place the caret.
+                                    val showMidX = rect.width() >= SELECTION_MID_HANDLE_MIN_DP * density
+                                    val showMidY = rect.height() >= SELECTION_MID_HANDLE_MIN_DP * density
+                                    val handleTol = (min(rect.width(), rect.height()) * 0.5f)
+                                        .coerceIn(12f * density, 22f * density)
+                                    val handleMap = buildList {
+                                        add("nw" to (rect.left to rect.top))
+                                        add("ne" to (rect.right to rect.top))
+                                        add("se" to (rect.right to rect.bottom))
+                                        add("sw" to (rect.left to rect.bottom))
+                                        if (showMidX) {
+                                            add("n" to (cx to rect.top))
+                                            add("s" to (cx to rect.bottom))
+                                        }
+                                        if (showMidY) {
+                                            add("e" to (rect.right to cy))
+                                            add("w" to (rect.left to cy))
+                                        }
+                                    }
                                     for ((hName, hPt) in handleMap) {
-                                        if (hypot(unrotX - hPt.first, unrotY - hPt.second) <= 22f * density) {
+                                        if (hypot(unrotX - hPt.first, unrotY - hPt.second) <= handleTol) {
                                             manipKind = ManipKind.RESIZE
                                             manipHandle = hName
                                             manipPageIdx = pageLayout.pageIndex
@@ -1146,7 +1198,34 @@ fun PdfViewport(
                         }
 
                         while (true) {
-                            val event = awaitPointerEvent(PointerEventPass.Main)
+                            val event = if (longPressArmed) {
+                                val remaining = LONG_PRESS_MS - (SystemClock.uptimeMillis() - downTimeMs)
+                                if (remaining > 0L) withTimeoutOrNull(remaining) { awaitPointerEvent(PointerEventPass.Main) } else null
+                            } else {
+                                awaitPointerEvent(PointerEventPass.Main)
+                            }
+                            if (event == null) {
+                                // Finger held still: open the context menu for whatever is under it.
+                                longPressArmed = false
+                                cancelAllSingleFingerWork()
+                                phase = GesturePhase.LONG_PRESSED
+                                val hit = hitPagePdfPoint(downPos)
+                                if (hit != null) {
+                                    haptic.performHapticFeedback(HapticFeedbackType.LongPress)
+                                    handleSingleTapAt(downPos, forMenu = true)
+                                    onLongPress(
+                                        GpContextMenuRequest(
+                                            screenX = downPos.x,
+                                            screenY = downPos.y,
+                                            pageIndex = hit.first,
+                                            pdfX = hit.second.x,
+                                            pdfY = hit.second.y,
+                                            elementId = null,
+                                        ),
+                                    )
+                                }
+                                continue
+                            }
                             val now = SystemClock.uptimeMillis()
 
                             for (c in event.changes) {
@@ -1158,6 +1237,7 @@ fun PdfViewport(
                             }
 
                             val pressedList = event.changes.filter { it.pressed }
+                            if (pressedList.size != 1) longPressArmed = false
                             if (pressedList.size >= 2) {
                                 // MANDATORY FIX 4: 2+ fingers IMMEDIATELY cancels shape/stroke/manip/double-tap and enters PINCH!
                                 if (phase != GesturePhase.PINCH) {
@@ -1250,9 +1330,20 @@ fun PdfViewport(
                                             st.tool == GpEditorTool.HIGHLIGHT ||
                                             st.tool == GpEditorTool.REDACT)
 
+                                    downTimeMs = now
+                                    val canLongPress = st.mode == GpAppMode.EDIT &&
+                                        st.ghostSignature == null &&
+                                        st.cropElementId == null &&
+                                        st.inlineEditElementId == null &&
+                                        !isDoubleTapCandidate &&
+                                        (st.tool == GpEditorTool.SELECT || st.tool == GpEditorTool.TEXT) &&
+                                        !st.marqueeSelectMode
+                                    longPressArmed = false
+
                                     // Check Manip (handles, drag shape/line) FIRST when not drawing ink and not double-tapping for zoom
                                     if (!isWithinCooldown && !isDoubleTapCandidate && tryBeginManip(pos)) {
                                         phase = GesturePhase.MANIP
+                                        longPressArmed = canLongPress && (manipKind == ManipKind.MOVE || manipKind == ManipKind.MOVE_GROUP)
                                         ch.consume()
                                         continue
                                     }
@@ -1300,6 +1391,7 @@ fun PdfViewport(
                                     }
 
                                     phase = GesturePhase.IDLE
+                                    longPressArmed = canLongPress && !isWithinCooldown
                                     ch.consume()
                                     continue
                                 }
@@ -1307,7 +1399,11 @@ fun PdfViewport(
                                 // Single-finger MOVE
                                 if (ch.id == primaryId) {
                                     val st = currentState
+                                    if (longPressArmed && hypot(pos.x - downPos.x, pos.y - downPos.y) >= touchSlopPx) {
+                                        longPressArmed = false
+                                    }
                                     when (phase) {
+                                        GesturePhase.LONG_PRESSED -> {}
                                         GesturePhase.PENDING_DOUBLE_TAP -> {
                                             if (hypot(pos.x - downPos.x, pos.y - downPos.y) >= touchSlopPx) {
                                                 phase = GesturePhase.ADOBE_ZOOM
@@ -1475,6 +1571,23 @@ fun PdfViewport(
                                                                     controller.transientElement = next
                                                                 }
                                                             }
+                                                            ManipKind.CROP -> {
+                                                                val rad = Math.toRadians(-origin.rotationDeg)
+                                                                val sdx = (pos.x - downPos.x).toDouble()
+                                                                val sdy = (pos.y - downPos.y).toDouble()
+                                                                val ldx = (sdx * cos(rad) - sdy * sin(rad)) / scale
+                                                                val ldy = (sdx * sin(rad) + sdy * cos(rad)) / scale
+                                                                val ff = CropMath.fullFrameLocal(origin)
+                                                                val d1 = CropMath.dragDisplayCrop(
+                                                                    CropMath.displayCropOf(origin),
+                                                                    manipHandle,
+                                                                    (ldx / ff.width.coerceAtLeast(1.0)).toFloat(),
+                                                                    (ldy / ff.height.coerceAtLeast(1.0)).toFloat(),
+                                                                )
+                                                                val next = CropMath.withDisplayCrop(origin, d1)
+                                                                manipLatestEl = next
+                                                                controller.transientElement = next
+                                                            }
                                                             ManipKind.VERTEX -> {
                                                                 val moveSet = if (manipVertexIdx in manipVertexIndices) manipVertexIndices else setOf(manipVertexIdx)
                                                                 val anyValid = moveSet.any { it in origin.points.indices }
@@ -1530,7 +1643,9 @@ fun PdfViewport(
                                 val upPos = event.changes.lastOrNull()?.position?.let { GpPoint(it.x, it.y) } ?: lastPos
                                 val st = currentState
 
+                                longPressArmed = false
                                 when (phase) {
+                                    GesturePhase.LONG_PRESSED -> {}
                                     GesturePhase.PINCH -> {
                                         lastPinchEndMs = now
                                         controller.isZoomingGesture = false
@@ -1637,7 +1752,9 @@ fun PdfViewport(
                                         cancelAllSingleFingerWork()
 
                                         if (!gestureHadMultiTouch) {
-                                            if (mKind == ManipKind.MARQUEE_OBJECTS && wasDragged && marqueePreview != null && mPageIdx in st.pages.indices) {
+                                            if (mKind == ManipKind.CROP) {
+                                                if (wasDragged && latest != null) onCropUpdate(latest)
+                                            } else if (mKind == ManipKind.MARQUEE_OBJECTS && wasDragged && marqueePreview != null && mPageIdx in st.pages.indices) {
                                                 val r = marqueePreview.rectPdf
                                                 if (r.width >= 4f || r.height >= 4f) {
                                                     onSelectElementsInRect(mPageIdx, r, false)
@@ -1821,7 +1938,7 @@ fun PdfViewport(
                                 layouts = listOf(layout),
                                 elements = state.elements,
                                 transientOverride = controller.transientElement,
-                                selectedElementId = state.selectedElementId,
+                                selectedElementId = if (state.cropElementId != null) null else state.selectedElementId,
                                 isEditMode = state.mode == GpAppMode.EDIT,
                                 activeTool = state.tool,
                                 activePolylineId = state.activePolylineId,
@@ -1844,7 +1961,7 @@ fun PdfViewport(
                                 customTtfBytes = state.customTtfBytes,
                                 pageAnalyses = state.pageAnalyses,
                                 renderPass = OverlayRenderPass.BEHIND_ONLY,
-                                selectedElementIds = state.selectedElementIds,
+                                selectedElementIds = if (state.cropElementId != null) emptySet() else state.selectedElementIds,
                                 selectedPathVertexIndices = state.selectedPathVertexIndices,
                                 draftMarqueePreview = controller.draftMarqueePreview,
                                 transientOverrides = controller.transientElements,
@@ -2015,7 +2132,7 @@ fun PdfViewport(
                         layouts = layouts,
                         elements = state.elements,
                         transientOverride = controller.transientElement,
-                        selectedElementId = state.selectedElementId,
+                        selectedElementId = if (state.cropElementId != null) null else state.selectedElementId,
                         isEditMode = state.mode == GpAppMode.EDIT,
                         activeTool = state.tool,
                         activePolylineId = state.activePolylineId,
@@ -2038,7 +2155,7 @@ fun PdfViewport(
                         customTtfBytes = state.customTtfBytes,
                         pageAnalyses = state.pageAnalyses,
                         renderPass = OverlayRenderPass.FOREGROUND_AND_CHROME,
-                        selectedElementIds = state.selectedElementIds,
+                        selectedElementIds = if (state.cropElementId != null) emptySet() else state.selectedElementIds,
                         selectedPathVertexIndices = state.selectedPathVertexIndices,
                         draftMarqueePreview = controller.draftMarqueePreview,
                         transientOverrides = controller.transientElements,
@@ -2049,6 +2166,24 @@ fun PdfViewport(
                             GpCaretSpec(id, controller.inlineSelStart, controller.inlineSelEnd, controller.caretBlinkOn)
                         },
                     )
+
+                    val cropId = state.cropElementId
+                    if (cropId != null) {
+                        val tr = controller.transientElement
+                        val cel = if (tr != null && tr.id == cropId) tr else state.elements.firstOrNull { it.id == cropId && !it.deleted }
+                        val pl = cel?.let { c -> layouts.firstOrNull { it.page.id == c.pageId } }
+                        if (cel != null && pl != null) {
+                            cropChrome.draw(
+                                nc = nc,
+                                el = cel,
+                                pageLeft = pl.rectSurface.left - curScrollX,
+                                pageTop = pl.rectSurface.top - curScrollY,
+                                scale = scalePxPerPt,
+                                density = density,
+                                bitmap = elementBitmapCache.getOrDecode(cel),
+                            )
+                        }
+                    }
                 }
             }
 
@@ -2229,5 +2364,154 @@ private fun paintBucketTiles(
             (destPage.top + (ty + cached.height) * scaleY).roundToInt().toFloat(),
         )
         nc.drawBitmap(cached.bitmap, scratchSrcRect, scratchDstRect, paint)
+    }
+}
+
+
+/** Hit-tests the crop window of [el]: a handle name, "move" inside, or null outside. */
+private fun cropHandleAt(
+    el: GpOverlayElement,
+    pageLeft: Float,
+    pageTop: Float,
+    scale: Float,
+    density: Float,
+    pos: GpPoint,
+): String? {
+    val cx = pageLeft + ((el.x + el.width / 2.0) * scale).toFloat()
+    val cy = pageTop + ((el.y + el.height / 2.0) * scale).toFloat()
+    val rad = Math.toRadians(-el.rotationDeg)
+    val dx = (pos.x - cx).toDouble()
+    val dy = (pos.y - cy).toDouble()
+    val lx = (dx * cos(rad) - dy * sin(rad)).toFloat()
+    val ly = (dx * sin(rad) + dy * cos(rad)).toFloat()
+    val hw = (el.width * scale / 2.0).toFloat()
+    val hh = (el.height * scale / 2.0).toFloat()
+    val tol = 24f * density
+    val nearL = abs(lx + hw) <= tol
+    val nearR = abs(lx - hw) <= tol
+    val nearT = abs(ly + hh) <= tol
+    val nearB = abs(ly - hh) <= tol
+    val inX = lx >= -hw - tol && lx <= hw + tol
+    val inY = ly >= -hh - tol && ly <= hh + tol
+    if (!inX || !inY) return null
+    return when {
+        nearT && nearL -> "nw"
+        nearT && nearR -> "ne"
+        nearB && nearL -> "sw"
+        nearB && nearR -> "se"
+        nearT && abs(lx) <= hw -> "n"
+        nearB && abs(lx) <= hw -> "s"
+        nearL && abs(ly) <= hh -> "w"
+        nearR && abs(ly) <= hh -> "e"
+        abs(lx) <= hw && abs(ly) <= hh -> "move"
+        else -> null
+    }
+}
+
+/** Paints the full (dimmed) image, the crop window, thirds grid and handles while cropping. */
+private class CropChromePainter {
+    private val bmpPaint = Paint().apply { isFilterBitmap = true; alpha = 110 }
+    private val scrimPaint = Paint().apply { color = 0x8C000000.toInt() }
+    private val framePaint = Paint().apply {
+        style = Paint.Style.STROKE
+        color = 0xFFFFFFFF.toInt()
+        isAntiAlias = true
+    }
+    private val outlinePaint = Paint().apply {
+        style = Paint.Style.STROKE
+        color = 0x99000000.toInt()
+        isAntiAlias = true
+    }
+    private val gridPaint = Paint().apply {
+        style = Paint.Style.STROKE
+        color = 0x80FFFFFF.toInt()
+        isAntiAlias = true
+    }
+    private val handlePaint = Paint().apply {
+        style = Paint.Style.STROKE
+        color = 0xFFFFFFFF.toInt()
+        strokeCap = Paint.Cap.ROUND
+        isAntiAlias = true
+    }
+    private val fullOutlinePaint = Paint().apply {
+        style = Paint.Style.STROKE
+        color = 0x993B82F6.toInt()
+        isAntiAlias = true
+    }
+
+    fun draw(
+        nc: android.graphics.Canvas,
+        el: GpOverlayElement,
+        pageLeft: Float,
+        pageTop: Float,
+        scale: Float,
+        density: Float,
+        bitmap: android.graphics.Bitmap?,
+    ) {
+        val cx = pageLeft + ((el.x + el.width / 2.0) * scale).toFloat()
+        val cy = pageTop + ((el.y + el.height / 2.0) * scale).toFloat()
+        val ff = CropMath.fullFrameLocal(el)
+        val full = RectF(
+            cx + (ff.left * scale).toFloat(),
+            cy + (ff.top * scale).toFloat(),
+            cx + ((ff.left + ff.width) * scale).toFloat(),
+            cy + ((ff.top + ff.height) * scale).toFloat(),
+        )
+        val hw = (el.width * scale / 2.0).toFloat()
+        val hh = (el.height * scale / 2.0).toFloat()
+        val win = RectF(cx - hw, cy - hh, cx + hw, cy + hh)
+
+        nc.save()
+        nc.rotate(el.rotationDeg.toFloat(), cx, cy)
+        if (bitmap != null && !bitmap.isRecycled) {
+            nc.save()
+            if (el.flipX || el.flipY) {
+                nc.scale(if (el.flipX) -1f else 1f, if (el.flipY) -1f else 1f, full.centerX(), full.centerY())
+            }
+            nc.drawBitmap(bitmap, null, full, bmpPaint)
+            nc.restore()
+        }
+        // Darken everything outside the window but inside the full image.
+        nc.drawRect(full.left, full.top, full.right, win.top, scrimPaint)
+        nc.drawRect(full.left, win.bottom, full.right, full.bottom, scrimPaint)
+        nc.drawRect(full.left, win.top, win.left, win.bottom, scrimPaint)
+        nc.drawRect(win.right, win.top, full.right, win.bottom, scrimPaint)
+        fullOutlinePaint.strokeWidth = 1f * density
+        nc.drawRect(full, fullOutlinePaint)
+
+        // Rule-of-thirds grid
+        gridPaint.strokeWidth = 0.8f * density
+        for (i in 1..2) {
+            val gx = win.left + win.width() * i / 3f
+            val gy = win.top + win.height() * i / 3f
+            nc.drawLine(gx, win.top, gx, win.bottom, gridPaint)
+            nc.drawLine(win.left, gy, win.right, gy, gridPaint)
+        }
+        outlinePaint.strokeWidth = 3f * density
+        nc.drawRect(win, outlinePaint)
+        framePaint.strokeWidth = 1.5f * density
+        nc.drawRect(win, framePaint)
+
+        // L-shaped corner handles + edge bars: a dark halo first so they read on white pages too.
+        val len = min(18f * density, min(win.width(), win.height()) / 3f)
+        val o = 1.5f * density
+        val bar = min(14f * density, min(win.width(), win.height()) / 4f)
+        for (pass in 0..1) {
+            handlePaint.color = if (pass == 0) 0x99000000.toInt() else 0xFFFFFFFF.toInt()
+            handlePaint.strokeWidth = (if (pass == 0) 6.5f else 4f) * density
+            fun corner(x: Float, y: Float, sx: Float, sy: Float) {
+                nc.drawLine(x - sx * o, y - sy * o, x + sx * len, y - sy * o, handlePaint)
+                nc.drawLine(x - sx * o, y - sy * o, x - sx * o, y + sy * len, handlePaint)
+            }
+            corner(win.left, win.top, 1f, 1f)
+            corner(win.right, win.top, -1f, 1f)
+            corner(win.left, win.bottom, 1f, -1f)
+            corner(win.right, win.bottom, -1f, -1f)
+            nc.drawLine(win.centerX() - bar, win.top - o, win.centerX() + bar, win.top - o, handlePaint)
+            nc.drawLine(win.centerX() - bar, win.bottom + o, win.centerX() + bar, win.bottom + o, handlePaint)
+            nc.drawLine(win.left - o, win.centerY() - bar, win.left - o, win.centerY() + bar, handlePaint)
+            nc.drawLine(win.right + o, win.centerY() - bar, win.right + o, win.centerY() + bar, handlePaint)
+        }
+        nc.restore()
     }
 }

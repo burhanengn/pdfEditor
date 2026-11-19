@@ -807,11 +807,33 @@ struct FamilyBucket {
     clean_name: String,
     base_key: String,
     fallback_family: String,
-    regular: Option<Vec<u8>>,
-    bold: Option<Vec<u8>>,
-    italic: Option<Vec<u8>>,
-    bold_italic: Option<Vec<u8>>,
+    regular: Option<FaceCandidate>,
+    bold: Option<FaceCandidate>,
+    italic: Option<FaceCandidate>,
+    bold_italic: Option<FaceCandidate>,
+}
+
+/// One embedded font program for a family/style slot. PDF producers commonly embed a separate
+/// subset of the SAME face per page (e.g. `ABCDEF+Poppins-Regular`, `GHIJKL+Poppins-Regular`),
+/// some containing only a page number glyph. The slot keeps the subset with the widest Unicode
+/// coverage so the editor never renders text through a near-empty subset.
+struct FaceCandidate {
+    bytes: Vec<u8>,
     codepoints: std::collections::BTreeSet<u32>,
+}
+
+fn offer_face(slot: &mut Option<FaceCandidate>, cand: FaceCandidate) -> bool {
+    let better = match slot {
+        None => true,
+        Some(cur) => {
+            cand.codepoints.len() > cur.codepoints.len()
+                || (cand.codepoints.len() == cur.codepoints.len() && cand.bytes.len() > cur.bytes.len())
+        }
+    };
+    if better {
+        *slot = Some(cand);
+    }
+    better
 }
 
 /// Extracts embedded `/FontFile2` TrueType streams from a PDF using `lopdf` and `ttf-parser`.
@@ -932,34 +954,47 @@ pub fn extract_embedded_fonts_with_lopdf(
             ..FamilyBucket::default()
         });
 
-        for cp in ttf_meta.supported_code_points {
-            bucket.codepoints.insert(cp);
-        }
-        match norm.variant {
-            FontStyleVariant::Regular if bucket.regular.is_none() => {
-                // Name the family after its regular face (not whichever variant came first).
-                bucket.clean_name = parsed.clean_font_name.clone();
-                bucket.fallback_family = parsed.font_family.clone();
-                bucket.regular = Some(ttf_bytes)
-            }
-            FontStyleVariant::Bold if bucket.bold.is_none() => bucket.bold = Some(ttf_bytes),
-            FontStyleVariant::Italic if bucket.italic.is_none() => bucket.italic = Some(ttf_bytes),
-            FontStyleVariant::BoldItalic if bucket.bold_italic.is_none() => {
-                bucket.bold_italic = Some(ttf_bytes)
-            }
-            _ => {
-                if bucket.regular.is_none() {
-                    bucket.regular = Some(ttf_bytes);
-                }
-            }
+        let cand = FaceCandidate {
+            bytes: ttf_bytes,
+            codepoints: ttf_meta.supported_code_points.into_iter().collect(),
+        };
+        let slot = match norm.variant {
+            FontStyleVariant::Regular => &mut bucket.regular,
+            FontStyleVariant::Bold => &mut bucket.bold,
+            FontStyleVariant::Italic => &mut bucket.italic,
+            FontStyleVariant::BoldItalic => &mut bucket.bold_italic,
+        };
+        let is_regular = matches!(norm.variant, FontStyleVariant::Regular);
+        if offer_face(slot, cand) && is_regular {
+            // Name the family after its regular face (not whichever variant came first).
+            bucket.clean_name = parsed.clean_font_name.clone();
+            bucket.fallback_family = parsed.font_family.clone();
         }
     }
 
     let mut fonts = Vec::new();
     let mut assets = Vec::new();
 
-    for (idx, (_key, bucket)) in buckets.into_iter().enumerate() {
-        let supported: Vec<u32> = bucket.codepoints.into_iter().collect();
+    for (idx, (_key, mut bucket)) in buckets.into_iter().enumerate() {
+        // A family that only embeds a styled face still needs a regular slot for plain text.
+        if bucket.regular.is_none() {
+            bucket.regular = bucket
+                .bold
+                .as_ref()
+                .or(bucket.italic.as_ref())
+                .or(bucket.bold_italic.as_ref())
+                .map(|f| FaceCandidate {
+                    bytes: f.bytes.clone(),
+                    codepoints: f.codepoints.clone(),
+                });
+        }
+        // Advertise only what the registered regular face can actually draw; styled faces
+        // fall back per glyph in the browser/platform text engine.
+        let supported: Vec<u32> = bucket
+            .regular
+            .as_ref()
+            .map(|f| f.codepoints.iter().copied().collect())
+            .unwrap_or_default();
         let has_latin_letters = (b'A'..=b'z').any(|c| supported.contains(&(c as u32)));
         let unicode_usable = has_latin_letters && supported.len() >= 20;
         let id = format!("embedded:{source_doc_id}:{idx}:{}", bucket.base_key);
@@ -983,10 +1018,10 @@ pub fn extract_embedded_fonts_with_lopdf(
         });
         assets.push(ExtractedFontBinaryAsset {
             family: id,
-            regular: bucket.regular,
-            bold: bucket.bold,
-            italic: bucket.italic,
-            bold_italic: bucket.bold_italic,
+            regular: bucket.regular.map(|f| f.bytes),
+            bold: bucket.bold.map(|f| f.bytes),
+            italic: bucket.italic.map(|f| f.bytes),
+            bold_italic: bucket.bold_italic.map(|f| f.bytes),
         });
     }
 
