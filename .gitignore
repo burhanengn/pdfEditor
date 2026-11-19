@@ -26,3 +26,15 @@ mobile/build/
 mobile/ios/Pods/
 mobile/android/.gradle/
 mobile/android/app/src/main/jniLibs/
+
+# Native Android (Kotlin) app build outputs & machine-local config
+android/.gradle/
+android/.kotlin/
+android/build/
+android/app/build/
+android/app/release/
+android/local.properties
+*.apk
+*.aab
+*.keystore
+*.jks
